@@ -1,0 +1,10 @@
+{
+	"lastChangelogVersion": "0.80.2",
+	"theme": "solarized-light/solarized-dark",
+	"defaultProvider": "anthropic",
+	"defaultModel": "claude-fable-5",
+	"defaultThinkingLevel": "xhigh",
+	"markdown": {
+		"codeBlockIndent": ""
+	}
+}
