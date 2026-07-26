@@ -43,7 +43,11 @@ local function apply_padding(window)
   local native_n = top_row_pane_count(window)
   local n = native_n > 1 and native_n or tmux_n
   local dims = window:get_dimensions()
-  local pdims = window:active_pane():get_dimensions()
+  -- active_pane() is nil during window setup/teardown (update-status can
+  -- fire before the first pane exists): bail instead of indexing nil.
+  local pane = window:active_pane()
+  if not pane then return end
+  local pdims = pane:get_dimensions()
   if not pdims or pdims.cols == 0 then return end
   local cell_w = pdims.pixel_width / pdims.cols
   local target_cols = n * MAX_COLS + (n - 1)
