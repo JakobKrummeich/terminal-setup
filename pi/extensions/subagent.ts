@@ -267,6 +267,11 @@ function metaLine(meta: RunMeta): string {
 		formatDuration(meta.durationMs),
 	].join(" \u00b7 ");
 }
+function labelFromPrompt(prompt: string): string {
+	const firstLine = prompt.split("\n").find((line) => line.trim()) ?? "agent task";
+	const words = firstLine.trim().split(/\s+/).slice(0, 5).join(" ");
+	return words.length > 48 ? `${words.slice(0, 47)}\u2026` : words;
+}
 function statusLine(record: ChildRecord): string {
 	const activity = record.currentTool ? `running ${record.currentTool}` : "thinking";
 	return `agent#${record.id} · ${record.description} · turn ${record.turns + 1} · ${activity}`;
@@ -395,7 +400,8 @@ export default function (pi: ExtensionAPI) {
 			}),
 			description: Type.Optional(
 				Type.String({
-					description: "Short 3-5 word label for this task, shown in the UI.",
+					description:
+						"Short 3-5 word label for this task, shown in the UI. Always pass it for a new agent; on resume it is optional.",
 				}),
 			),
 			resume_id: Type.Optional(
@@ -426,7 +432,7 @@ export default function (pi: ExtensionAPI) {
 					id,
 					session,
 					view: new ChildView(session, ctx.cwd),
-					description: params.description ?? "agent task",
+					description: params.description ?? labelFromPrompt(params.prompt),
 					turns: 0,
 					elapsedMs: 0,
 					running: false,
