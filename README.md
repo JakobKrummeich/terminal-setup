@@ -173,8 +173,27 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | `handoff.ts` | session handoff summaries |
 | `markdown-no-padding.ts` | strip paddingX=1 from rendered markdown (copy-safety); patches pi-tui internals — re-verify after `pi update` |
 | `rtk.ts` / `rtk-tools.ts` | route tool calls through rtk token filter |
+| `subagent.ts` | `Agent` tool: delegate a task to a child agent session, capped at one layer deep. Press **F2** to watch the running child live in the normal TUI style, `Esc` to step back out (override the key with `PI_SUBAGENT_WATCH_KEY`) |
 | `timer.ts` | one-shot wakeup timer tool for long background tasks |
 | `wsstate.ts` | report pi agent busy/idle to WezTerm workspace status via OSC 1337 |
+
+### Subagents (`subagent.ts`)
+
+The main agent delegates via the `Agent` tool and keeps the overview; the child is an
+ordinary pi session in the same cwd with the same system prompt, AGENTS.md, extensions
+and skills — it is not told it is a subagent. The one difference is that it has no `Agent`
+tool itself: every child is built with `excludeTools: ["Agent"]`, which is what caps
+nesting at one layer (structural, not a counter — nothing to configure).
+
+- Runs in the foreground: the main agent waits, and the tool row shows live child status
+  (`agent#<id> · <description> · turn N · running grep`).
+- **F2** opens the child's live conversation, `Esc` returns. The child keeps running either
+  way. The key is one constant in the file plus the `PI_SUBAGENT_WATCH_KEY` env override.
+- Child sessions are persisted (named `agent#<id>`), so a finished run can be reopened from
+  the session picker and audited.
+- A child that needs a decision just asks; the main agent answers by calling `Agent` again
+  with `resume_id`, continuing the same session. It stands in for the human.
+- No background runs, no parallelism, no agent types, no turn limits — deliberately.
 
 ## Known issues
 
