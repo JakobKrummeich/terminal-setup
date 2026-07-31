@@ -54,6 +54,7 @@ const TOOL_DESCRIPTION = `Delegate a task to a fresh agent session that works au
 
 The agent starts with no memory of this conversation, so the prompt must be self-contained.
 It has the same tools, skills and project context you do, and runs in the same working directory.
+Only its final message comes back to you, so ask for whatever you need in that one reply.
 
 Use this proactively, without being asked, for:
 - Exploration: "where is X", "how does Y work", anything spanning several files.
@@ -199,7 +200,16 @@ function watchChild(
 		}
 	});
 	pushStatus();
-	return { text: () => parts.join("\n\n").trim(), stop: unsub };
+	return {
+		text: () => {
+			for (let i = parts.length - 1; i >= 0; i--) {
+				const part = parts[i]?.trim();
+				if (part) return part;
+			}
+			return "";
+		},
+		stop: unsub,
+	};
 }
 function formatTokenCount(count: number): string {
 	if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
