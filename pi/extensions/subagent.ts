@@ -25,7 +25,6 @@ const MOUSE_ON = "\u001b[?1000h\u001b[?1006h";
 const MOUSE_OFF = "\u001b[?1006l\u001b[?1000l";
 const SGR_MOUSE = /^\u001b\[<(\d+);\d+;\d+([Mm])$/;
 const WHEEL_LINES = 3;
-const RESULT_PREVIEW_LINES = 5;
 interface ChildRecord {
 	id: string;
 	session: AgentSession;
@@ -455,7 +454,7 @@ export default function (pi: ExtensionAPI) {
 				{ ...collectMeta(record), aborted: signal?.aborted === true },
 			);
 		},
-		renderResult(result, options, theme, context) {
+		renderResult(result, _options, theme, context) {
 			const text = (result.content ?? [])
 				.filter((block: { type?: string }) => block?.type === "text")
 				.map((block: { text?: string }) => block.text ?? "")
@@ -464,17 +463,7 @@ export default function (pi: ExtensionAPI) {
 			const summary = meta ? theme.fg("toolTitle", metaLine(meta)) : "";
 			const body = theme.fg("toolOutput", text);
 			const component = (context.lastComponent as Text) ?? new Text("", 0, 0);
-			if (options.expanded || options.isPartial) {
-				component.setText([summary, body].filter(Boolean).join("\n"));
-				return component;
-			}
-			const lines = text.split("\n");
-			const skipped = Math.max(0, lines.length - RESULT_PREVIEW_LINES);
-			const hint = skipped
-				? theme.fg("toolOutput", `… (${skipped} earlier lines, ${EXPAND_KEY} to expand)`)
-				: "";
-			const preview = theme.fg("toolOutput", lines.slice(-RESULT_PREVIEW_LINES).join("\n"));
-			component.setText([summary, hint, preview].filter(Boolean).join("\n"));
+			component.setText([summary, body].filter(Boolean).join("\n"));
 			return component;
 		},
 	});
