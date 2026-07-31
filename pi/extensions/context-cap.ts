@@ -2,10 +2,10 @@
  * context-cap — token-cap + graceful handoff via context-scrub (session ≠ context).
  *
  * Always on. Coexists with /handoff (manual). Mechanism:
- *  - soft cap (160k): steer the agent mid-tool-use to write a handoff file
- *    (exact path given; "Current Task" section first — the next context sees ONLY this file)
+ *  - soft cap (160k): steer the agent mid-tool-use to call the `context_handoff`
+ *    tool ("Current Task" section first — the next context sees ONLY this text)
  *  - silent-stop fallback: turn ends without tool calls above soft cap → followUp
- *  - turn-end verification on both paths: file missing → bounded followUp reminders
+ *  - turn-end verification on both paths: no handoff → bounded followUp reminders
  *  - swap = context-scrub: a persistent custom-message marker entry
  *    (customType "context-cap-swap", content = preamble + handoff body, details =
  *    forensic metadata) is appended to the session, and a "context" event handler
@@ -19,11 +19,17 @@
  *  - pi's threshold auto-compaction stays naturally quiet: it keys off provider-
  *    reported usage, which post-swap reflects only the scrubbed context.
  *
+ * Handoff transport is a TOOL, not a file write by the agent: the agent passes
+ * markdown, the EXTENSION writes the file host-side. This is deliberate — in
+ * sandboxed setups (e.g. the podman "brain on host, hands in container" mode)
+ * the agent's write tool executes somewhere else entirely, so a host path in a
+ * prompt is unwritable (or, worse, silently writes into the sandbox) and the
+ * handoff never materializes. A tool has no path contract to get wrong.
+ *
  * Files: ~/.pi/agent/context-cap/<sessionId>-<seq>.md — seq is disk-derived per
  * sessionId (sessionId never changes — swaps are entries, not new sessions, so one
- * session accumulates seq 1, 2, 3…). YAML frontmatter is added by the extension
- * AFTER the agent writes plain markdown; it is stripped before injection. No
- * cleanup policy (v1).
+ * session accumulates seq 1, 2, 3…). YAML frontmatter is written by the extension;
+ * it is stripped before injection. No cleanup policy (v1).
  *
  * Config: constants below, overridable via env CONTEXT_CAP_SOFT / CONTEXT_CAP_HARD.
  * Live-verified (compaction-hijack predecessor + this design's API surface) 2026-07-08.
@@ -31,6 +37,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -44,6 +51,7 @@ const HARD_TRIGGER = envInt("CONTEXT_CAP_HARD", 200_000);
 const MAX_RETRIES = 2;
 const CAP_DIR = path.join(os.homedir(), ".pi", "agent", "context-cap");
 const MARKER_TYPE = "context-cap-swap";
+const TOOL_NAME = "context_handoff";
 
 function envInt(name: string, fallback: number): number {
 	const raw = process.env[name];
@@ -56,37 +64,31 @@ function envInt(name: string, fallback: number): number {
 // Messages
 // ---------------------------------------------------------------------------
 
-function contentSpec(expectedPath: string): string {
-	return `Write a handoff file to exactly this path:
-${expectedPath}
-
-Content requirements (plain markdown, NO YAML frontmatter, ~30 lines total):
-1. "## Current Task" — FIRST section: what you are working on right now and the overall goal. The next session sees ONLY this file; nobody will restate the task.
+const CONTENT_SPEC = `Call the \`${TOOL_NAME}\` tool. Its \`markdown\` argument (plain markdown, NO YAML frontmatter, ~30 lines total):
+1. "## Current Task" — FIRST section: what you are working on right now and the overall goal. The next session sees ONLY this text; nobody will restate the task.
 2. A brief summary of this session and current status
 3. Key file paths that were worked on
 4. Information you found surprising or where you struggled
 5. What the next session needs to know to continue
 
-The directory already exists. After writing the file, end your turn. Your context will then be replaced by this file.`;
-}
+After the tool returns, end your turn. Your context will then be replaced by this handoff.`;
 
-function steerMessage(tokens: number, expectedPath: string): string {
+function steerMessage(tokens: number): string {
 	return `[context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at ${tokens} tokens (soft cap ${SOFT_TRIGGER}, hard cap ${HARD_TRIGGER}).
 
-Finish your current logical unit of work first. Then: ${contentSpec(expectedPath)}`;
+Finish your current logical unit of work first. Then: ${CONTENT_SPEC}`;
 }
 
-function silentStopMessage(tokens: number, expectedPath: string): string {
+function silentStopMessage(tokens: number): string {
 	return `[context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at ${tokens} tokens (soft cap ${SOFT_TRIGGER}, hard cap ${HARD_TRIGGER}). This is your last turn before handoff.
 
-${contentSpec(expectedPath)}`;
+${CONTENT_SPEC}`;
 }
 
-function reminderMessage(expectedPath: string, attempt: number): string {
-	return `[context-cap] The handoff file was not found at:
-${expectedPath}
+function reminderMessage(attempt: number): string {
+	return `[context-cap] No handoff was recorded — the \`${TOOL_NAME}\` tool was not called.
 
-Write it now (see the earlier context-limit instructions), then end your turn. (reminder ${attempt}/${MAX_RETRIES})`;
+Call it now (see the earlier context-limit instructions), then end your turn. (reminder ${attempt}/${MAX_RETRIES})`;
 }
 
 const PREAMBLE =
@@ -142,16 +144,15 @@ function stripFrontmatter(text: string): string {
 	return m ? text.slice(m[0].length).replace(/^\s+/, "") : text;
 }
 
-/** Prepend YAML frontmatter (tooling metadata only — never injected). Idempotent. */
-function addFrontmatter(filePath: string, meta: { sessionId: string; seq: number; tokens: number }): void {
-	try {
-		const raw = fs.readFileSync(filePath, "utf8");
-		if (FRONTMATTER_RE.test(raw)) return;
-		const fm = `---\nsessionId: ${meta.sessionId}\ntimestamp: ${new Date().toISOString()}\ntokens: ${meta.tokens}\nseq: ${meta.seq}\n---\n\n`;
-		fs.writeFileSync(filePath, fm + raw);
-	} catch {
-		// non-fatal: frontmatter is tooling metadata only
-	}
+/** Write the handoff with YAML frontmatter (tooling metadata only — never injected). */
+function writeHandoff(
+	filePath: string,
+	body: string,
+	meta: { sessionId: string; seq: number; tokens: number },
+): void {
+	const fm = `---\nsessionId: ${meta.sessionId}\ntimestamp: ${new Date().toISOString()}\ntokens: ${meta.tokens}\nseq: ${meta.seq}\n---\n\n`;
+	fs.mkdirSync(path.dirname(filePath), { recursive: true });
+	fs.writeFileSync(filePath, fm + stripFrontmatter(body).trim() + "\n");
 }
 
 function fmtTokens(n: number): string {
@@ -180,7 +181,9 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 	let seq = 0;
 	let retries = 0;
 	let tokensAtTrigger = 0;
-	/** One-shot grace so the hard cap doesn't swap away the message carrying the handoff write. */
+	/** Set by the tool once the handoff file is on disk. Replaces existsSync polling. */
+	let handoffWritten = false;
+	/** One-shot grace so the hard cap doesn't swap away the message carrying the tool call. */
 	let hardGraceUsed = false;
 
 	function resetCycle() {
@@ -189,6 +192,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		seq = 0;
 		retries = 0;
 		tokensAtTrigger = 0;
+		handoffWritten = false;
 		hardGraceUsed = false;
 	}
 
@@ -217,6 +221,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		expectedPath = next.filePath;
 		retries = 0;
 		tokensAtTrigger = tokens;
+		handoffWritten = false;
 	}
 
 	function buildSummary(filePath: string, stale: boolean): string {
@@ -233,9 +238,6 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 	function doSwap(ctx: ExtensionContext, filePath: string | undefined, stale: boolean, trigger: SwapTrigger) {
 		let content: string;
 		if (filePath) {
-			if (filePath === expectedPath) {
-				addFrontmatter(filePath, { sessionId: sessionId(ctx), seq, tokens: tokensAtTrigger });
-			}
 			try {
 				content = buildSummary(filePath, stale);
 			} catch (e) {
@@ -283,12 +285,80 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			// reading so the marker's forensic tokensAtSwap reflects swap time.
 			tokensAtTrigger = tokens;
 		}
-		const fresh = expectedPath && fs.existsSync(expectedPath) ? expectedPath : undefined;
+		const fresh = expectedPath && handoffWritten ? expectedPath : undefined;
 		const fallback = fresh ?? latestPath(sessionId(ctx));
 		const stale = !fresh && fallback !== undefined; // older seq file substituted
 		ctx.ui.notify(`context-cap: hard cap (${fmtTokens(tokens)}) — forcing handoff`, "warning");
 		doSwap(ctx, fallback, stale, fallback ? "hard" : "hard-no-file");
 	}
+
+	// -- handoff tool -----------------------------------------------------------
+
+	// Always active (never hidden): tool definitions are part of the cached prompt
+	// prefix, so toggling them mid-session would invalidate the provider prompt
+	// cache at ~160k tokens — far pricier than the ~100 tokens this always costs.
+	// setActiveTools also only takes effect on the NEXT turn, i.e. not on the very
+	// turn the soft-cap steer lands, which is exactly when the tool is needed.
+	pi.registerTool({
+		name: TOOL_NAME,
+		label: "Context handoff",
+		description:
+			"INTERNAL — context-cap machinery. Call this ONLY when a [context-cap] message explicitly instructs you to. " +
+			"Never call it on your own initiative, and never because a handoff/summary sounds useful: calling it discards " +
+			"your entire context and replaces it with the text you pass. For a user-requested summary, write a normal reply.",
+		parameters: Type.Object({
+			markdown: Type.String({
+				description:
+					"Handoff body, plain markdown, no YAML frontmatter. First section must be '## Current Task'. ~30 lines.",
+			}),
+		}),
+
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			if (!expectedPath || phase === "idle") {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: "Refused: no handoff was requested. This tool may only be called after a [context-cap] instruction. Nothing was written; continue your work.",
+						},
+					],
+					details: {},
+					isError: true,
+				};
+			}
+			const body = params.markdown.trim();
+			if (!body) {
+				return {
+					content: [{ type: "text" as const, text: "Refused: 'markdown' is empty. Call again with the handoff body." }],
+					details: {},
+					isError: true,
+				};
+			}
+			try {
+				writeHandoff(expectedPath, body, { sessionId: sessionId(ctx), seq, tokens: tokensAtTrigger });
+			} catch (e) {
+				// Host-side write failed (disk full, permissions). Report so the agent
+				// can retry; the hard cap remains the backstop.
+				return {
+					content: [
+						{ type: "text" as const, text: `Handoff write failed: ${e instanceof Error ? e.message : e}` },
+					],
+					details: {},
+					isError: true,
+				};
+			}
+			handoffWritten = true;
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: "Handoff recorded. End your turn now (no further tool calls) — your context is replaced immediately afterwards.",
+					},
+				],
+				details: {},
+			};
+		},
+	});
 
 	// -- context scrub ----------------------------------------------------------
 
@@ -330,7 +400,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 				(phase === "steered" || phase === "prompted") &&
 				msg.stopReason === "toolUse" &&
 				expectedPath &&
-				!fs.existsSync(expectedPath) &&
+				!handoffWritten &&
 				!hardGraceUsed
 			) {
 				hardGraceUsed = true;
@@ -348,7 +418,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			updateStatus(ctx, tokens);
 			// stopReason "toolUse" ⇒ run is streaming, so steer is the live path;
 			// deliverAs is ignored when idle (plain prompt), making one call safe for both.
-			pi.sendUserMessage(steerMessage(tokens, expectedPath!), { deliverAs: "steer" });
+			pi.sendUserMessage(steerMessage(tokens), { deliverAs: "steer" });
 			ctx.ui.notify(`context-cap: soft cap (${fmtTokens(tokens)}) — handoff requested`, "info");
 		}
 	});
@@ -359,18 +429,18 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 
 		// Verification (both steer and silent-stop paths): swap as soon as the file exists.
 		if ((phase === "steered" || phase === "prompted" || phase === "exhausted") && expectedPath) {
-			if (fs.existsSync(expectedPath)) {
+			if (handoffWritten) {
 				doSwap(ctx, expectedPath, false, "soft");
 				return;
 			}
 			if (phase === "exhausted" || hasToolCalls) return; // still working / already gave up
 			if (retries < MAX_RETRIES) {
 				retries++;
-				send(reminderMessage(expectedPath, retries));
+				send(reminderMessage(retries));
 			} else {
 				phase = "exhausted";
 				updateStatus(ctx, tokens);
-				ctx.ui.notify("context-cap: handoff file never written — waiting for hard cap backstop", "warning");
+				ctx.ui.notify("context-cap: handoff never recorded — waiting for hard cap backstop", "warning");
 			}
 			return;
 		}
@@ -381,7 +451,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			startCycle(ctx, tokens);
 			phase = "prompted";
 			updateStatus(ctx, tokens);
-			send(silentStopMessage(tokens, expectedPath!));
+			send(silentStopMessage(tokens));
 			ctx.ui.notify(`context-cap: soft cap (${fmtTokens(tokens)}) — last-turn handoff requested`, "info");
 		}
 	});
