@@ -1,4 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 import {
@@ -8,7 +10,6 @@ import {
 	createAgentSession,
 	getAgentDir,
 	getMarkdownTheme,
-	FooterComponent,
 	SessionManager,
 	SettingsManager,
 	ToolExecutionComponent,
@@ -18,6 +19,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Container, type KeyId, matchesKey, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { renderFooterLines } from "./custom-footer.ts";
 const TOOL_NAME = "Agent";
 const WATCH_KEY = (process.env.PI_SUBAGENT_WATCH_KEY ?? "f2") as KeyId;
 const EXPAND_KEY = (process.env.PI_SUBAGENT_EXPAND_KEY ?? "ctrl+o") as KeyId;
@@ -25,6 +27,7 @@ const MOUSE_ON = "\u001b[?1000h\u001b[?1006h";
 const MOUSE_OFF = "\u001b[?1006l\u001b[?1000l";
 const SGR_MOUSE = /^\u001b\[<(\d+);\d+;\d+([Mm])$/;
 const WHEEL_LINES = 3;
+const SOFT_TRIGGER = Number(process.env.CONTEXT_CAP_SOFT ?? 160_000);
 interface ChildRecord {
 	id: string;
 	session: AgentSession;
@@ -300,17 +303,42 @@ async function createChildSession(ctx: ExtensionContext): Promise<AgentSession> 
 function textResult(text: string, details: Record<string, unknown>) {
 	return { content: [{ type: "text" as const, text }] as TextContent[], details };
 }
+function gitBranch(cwd: string): string | null {
+	try {
+		let gitDir = join(cwd, ".git");
+		try {
+			const pointer = readFileSync(gitDir, "utf8").match(/^gitdir: (.+)$/m);
+			if (pointer?.[1]) gitDir = pointer[1].trim();
+		} catch {}
+		const head = readFileSync(join(gitDir, "HEAD"), "utf8").trim();
+		const match = /^ref: refs\/heads\/(.+)$/.exec(head);
+		return match?.[1] ?? head.slice(0, 7);
+	} catch {
+		return null;
+	}
+}
+function childFooterData(ctx: ExtensionContext, record: ChildRecord) {
+	const session = record.session;
+	const usage = session.getContextUsage();
+	const tokens = usage?.tokens == null ? "?" : formatTokenCount(usage.tokens);
+	return {
+		cost: session.getSessionStats().cost,
+		usingSubscription: session.model ? ctx.modelRegistry.isUsingOAuth(session.model) : false,
+		cwd: ctx.cwd,
+		branch: gitBranch(ctx.cwd),
+		sessionName: session.sessionName,
+		modelId: session.model?.id,
+		reasoning: session.model?.reasoning === true,
+		thinkingLevel: session.thinkingLevel,
+		statuses: new Map([["context-cap", `${tokens}/${formatTokenCount(SOFT_TRIGGER)}`]]),
+	};
+}
 async function openChildView(ctx: ExtensionContext, record: ChildRecord): Promise<void> {
 	await ctx.ui.custom<void>(
-		(tui, _theme, _keybindings, done) => {
+		(tui, theme, _keybindings, done) => {
 			record.view.setRenderer(() => tui.requestRender());
-			const childFooter = new FooterComponent(record.session, {
-				getGitBranch: () => null,
-				getExtensionStatuses: () => new Map(),
-				getAvailableProviderCount: () => 1,
-				onBranchChange: () => () => {},
-			} as never);
-			childFooter.setAutoCompactEnabled(record.session.autoCompactionEnabled);
+			const childFooter = (width: number) =>
+				renderFooterLines(width, theme as never, childFooterData(ctx, record));
 			process.stdout.write(MOUSE_ON);
 			let offset = 0;
 			let follow = true;
@@ -333,8 +361,8 @@ async function openChildView(ctx: ExtensionContext, record: ChildRecord): Promis
 					const hint = `esc back · wheel/↑↓/pgup/pgdn scroll · end follow · ${EXPAND_KEY} expand${
 						follow ? "" : " · paused"
 					}`;
-					const footerLines = childFooter.render(width);
-					viewport = Math.max(1, tui.terminal.rows - 2 - footerLines.length);
+					const footerLines = childFooter(width);
+					viewport = Math.max(1, tui.terminal.rows - 3 - footerLines.length);
 					const body = record.view.render(width);
 					const maxOffset = Math.max(0, body.length - viewport);
 					if (follow) offset = maxOffset;
@@ -344,7 +372,7 @@ async function openChildView(ctx: ExtensionContext, record: ChildRecord): Promis
 					}
 					const window = body.slice(offset, offset + viewport);
 					while (window.length < viewport) window.push("");
-					return [header, ...window, hint, ...footerLines].slice(0, tui.terminal.rows);
+					return [header, ...window, "", hint, ...footerLines].slice(0, tui.terminal.rows);
 				},
 				handleInput(data: string) {
 					const mouse = SGR_MOUSE.exec(data);
