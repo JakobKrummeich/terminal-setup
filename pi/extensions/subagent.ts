@@ -8,6 +8,7 @@ import {
 	createAgentSession,
 	getAgentDir,
 	getMarkdownTheme,
+	FooterComponent,
 	SessionManager,
 	SettingsManager,
 	ToolExecutionComponent,
@@ -15,19 +16,35 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { Container, type KeyId, matchesKey, Spacer, type TUI } from "@earendil-works/pi-tui";
+import { Container, type KeyId, matchesKey, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 const TOOL_NAME = "Agent";
 const WATCH_KEY = (process.env.PI_SUBAGENT_WATCH_KEY ?? "f2") as KeyId;
 const EXPAND_KEY = (process.env.PI_SUBAGENT_EXPAND_KEY ?? "ctrl+o") as KeyId;
+const MOUSE_ON = "\u001b[?1000h\u001b[?1006h";
+const MOUSE_OFF = "\u001b[?1006l\u001b[?1000l";
+const SGR_MOUSE = /^\u001b\[<(\d+);\d+;\d+([Mm])$/;
+const WHEEL_LINES = 3;
+const RESULT_PREVIEW_LINES = 5;
 interface ChildRecord {
 	id: string;
 	session: AgentSession;
 	view: ChildView;
 	description: string;
 	turns: number;
+	elapsedMs: number;
 	currentTool?: string;
 	running: boolean;
+}
+interface RunMeta {
+	id: string;
+	turns: number;
+	contextTokens: number | null;
+	contextWindow: number;
+	contextPercent: number | null;
+	resets: number;
+	costUsd: number;
+	durationMs: number;
 }
 const liveChildren = new Map<string, ChildRecord>();
 const childSessionFlag = new AsyncLocalStorage<true>();
@@ -184,6 +201,63 @@ function watchChild(
 	pushStatus();
 	return { text: () => parts.join("\n\n").trim(), stop: unsub };
 }
+function formatTokenCount(count: number): string {
+	if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
+	if (count >= 1000) return `${Math.round(count / 1000)}k`;
+	return String(count);
+}
+function formatDuration(ms: number): string {
+	const seconds = Math.round(ms / 1000);
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	if (minutes < 60) return `${minutes}m${String(seconds % 60).padStart(2, "0")}s`;
+	return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}m`;
+}
+function countResets(session: AgentSession): number {
+	let resets = 0;
+	for (const entry of session.sessionManager.getEntries() as Array<{ type?: string }>) {
+		if (entry?.type === "compaction") resets++;
+	}
+	for (const message of session.messages) {
+		if (message.role !== "assistant") continue;
+		const content = (message as { content?: unknown }).content;
+		if (!Array.isArray(content)) continue;
+		for (const block of content as Array<{ type?: string; name?: string }>) {
+			if (block?.type === "toolCall" && block.name === "context_handoff") resets++;
+		}
+	}
+	return resets;
+}
+function collectMeta(record: ChildRecord): RunMeta {
+	const stats = record.session.getSessionStats();
+	const usage = record.session.getContextUsage();
+	return {
+		id: record.id,
+		turns: record.turns,
+		contextTokens: usage?.tokens ?? null,
+		contextWindow: usage?.contextWindow ?? 0,
+		contextPercent: usage?.percent ?? null,
+		resets: countResets(record.session),
+		costUsd: stats.cost,
+		durationMs: record.elapsedMs,
+	};
+}
+function metaLine(meta: RunMeta): string {
+	const context =
+		meta.contextTokens === null
+			? "ctx ?"
+			: `ctx ${formatTokenCount(meta.contextTokens)}/${formatTokenCount(meta.contextWindow)}${
+					meta.contextPercent === null ? "" : ` (${Math.round(meta.contextPercent)}%)`
+				}`;
+	return [
+		`agent#${meta.id}`,
+		`${meta.turns} turns`,
+		context,
+		`${meta.resets} resets`,
+		`$${meta.costUsd.toFixed(3)}`,
+		formatDuration(meta.durationMs),
+	].join(" \u00b7 ");
+}
 function statusLine(record: ChildRecord): string {
 	const activity = record.currentTool ? `running ${record.currentTool}` : "thinking";
 	return `agent#${record.id} · ${record.description} · turn ${record.turns + 1} · ${activity}`;
@@ -216,6 +290,14 @@ async function openChildView(ctx: ExtensionContext, record: ChildRecord): Promis
 	await ctx.ui.custom<void>(
 		(tui, _theme, _keybindings, done) => {
 			record.view.setRenderer(() => tui.requestRender());
+			const childFooter = new FooterComponent(record.session, {
+				getGitBranch: () => null,
+				getExtensionStatuses: () => new Map(),
+				getAvailableProviderCount: () => 1,
+				onBranchChange: () => () => {},
+			} as never);
+			childFooter.setAutoCompactEnabled(record.session.autoCompactionEnabled);
+			process.stdout.write(MOUSE_ON);
 			let offset = 0;
 			let follow = true;
 			let viewport = 1;
@@ -226,15 +308,19 @@ async function openChildView(ctx: ExtensionContext, record: ChildRecord): Promis
 			};
 			return {
 				dispose() {
+					process.stdout.write(MOUSE_OFF);
 					record.view.setRenderer(() => {});
 				},
 				invalidate() {},
 				render(width: number): string[] {
 					const header = record.running
 						? `▶ ${statusLine(record)}`
-						: `■ agent#${record.id} · ${record.description} · finished`;
-					const footer = `esc back · ↑↓/pgup/pgdn scroll · end follow · ${EXPAND_KEY} expand${follow ? "" : " · paused"}`;
-					viewport = Math.max(1, tui.terminal.rows - 2);
+						: `■ ${metaLine(collectMeta(record))} · ${record.description} · finished`;
+					const hint = `esc back · wheel/↑↓/pgup/pgdn scroll · end follow · ${EXPAND_KEY} expand${
+						follow ? "" : " · paused"
+					}`;
+					const footerLines = childFooter.render(width);
+					viewport = Math.max(1, tui.terminal.rows - 2 - footerLines.length);
 					const body = record.view.render(width);
 					const maxOffset = Math.max(0, body.length - viewport);
 					if (follow) offset = maxOffset;
@@ -244,9 +330,16 @@ async function openChildView(ctx: ExtensionContext, record: ChildRecord): Promis
 					}
 					const window = body.slice(offset, offset + viewport);
 					while (window.length < viewport) window.push("");
-					return [header, ...window, footer];
+					return [header, ...window, hint, ...footerLines].slice(0, tui.terminal.rows);
 				},
 				handleInput(data: string) {
+					const mouse = SGR_MOUSE.exec(data);
+					if (mouse) {
+						const button = Number(mouse[1]);
+						if (button === 64) scrollBy(-WHEEL_LINES);
+						else if (button === 65) scrollBy(WHEEL_LINES);
+						return;
+					}
 					if (matchesKey(data, "escape")) done();
 					else if (matchesKey(data, "up")) scrollBy(-1);
 					else if (matchesKey(data, "down")) scrollBy(1);
@@ -263,7 +356,17 @@ async function openChildView(ctx: ExtensionContext, record: ChildRecord): Promis
 				},
 			};
 		},
-		{ overlay: true, overlayOptions: () => ({ width: "100%", maxHeight: "100%" }) },
+		{
+			overlay: true,
+			overlayOptions: () => ({
+				anchor: "top-left",
+				row: 0,
+				col: 0,
+				width: "100%",
+				maxHeight: "100%",
+				margin: 0,
+			}),
+		},
 	);
 }
 function watchTarget(): ChildRecord | undefined {
@@ -281,9 +384,11 @@ export default function (pi: ExtensionAPI) {
 				description:
 					"The self-contained brief for the agent — or, with resume_id, your answer to its question.",
 			}),
-			description: Type.String({
-				description: "Short 3-5 word label for this task, shown in the UI.",
-			}),
+			description: Type.Optional(
+				Type.String({
+					description: "Short 3-5 word label for this task, shown in the UI.",
+				}),
+			),
 			resume_id: Type.Optional(
 				Type.String({
 					description:
@@ -303,7 +408,7 @@ export default function (pi: ExtensionAPI) {
 					);
 				}
 				record = existing;
-				record.description = params.description;
+				if (params.description) record.description = params.description;
 			} else {
 				const id = randomUUID().slice(0, 8);
 				const session = await createChildSession(ctx);
@@ -312,8 +417,9 @@ export default function (pi: ExtensionAPI) {
 					id,
 					session,
 					view: new ChildView(session, ctx.cwd),
-					description: params.description,
+					description: params.description ?? "agent task",
 					turns: 0,
+					elapsedMs: 0,
 					running: false,
 				};
 				liveChildren.set(id, record);
@@ -323,9 +429,11 @@ export default function (pi: ExtensionAPI) {
 			const watcher = watchChild(record, onUpdate);
 			const onAbort = () => void record.session.abort();
 			signal?.addEventListener("abort", onAbort, { once: true });
+			const startedAt = Date.now();
 			try {
 				await record.session.prompt(params.prompt);
 			} finally {
+				record.elapsedMs += Date.now() - startedAt;
 				watcher.stop();
 				record.running = false;
 				record.currentTool = undefined;
@@ -334,8 +442,30 @@ export default function (pi: ExtensionAPI) {
 			const text = watcher.text();
 			return textResult(
 				`${text || "(agent produced no text output)"}\n\n---\nagent id: ${record.id} (pass as resume_id to continue this session)`,
-				{ id: record.id, aborted: signal?.aborted === true },
+				{ ...collectMeta(record), aborted: signal?.aborted === true },
 			);
+		},
+		renderResult(result, options, theme, context) {
+			const text = (result.content ?? [])
+				.filter((block: { type?: string }) => block?.type === "text")
+				.map((block: { text?: string }) => block.text ?? "")
+				.join("\n");
+			const meta = result.details as RunMeta | undefined;
+			const summary = meta ? theme.fg("toolTitle", metaLine(meta)) : "";
+			const body = theme.fg("toolOutput", text);
+			const component = (context.lastComponent as Text) ?? new Text("", 0, 0);
+			if (options.expanded || options.isPartial) {
+				component.setText([summary, body].filter(Boolean).join("\n"));
+				return component;
+			}
+			const lines = text.split("\n");
+			const skipped = Math.max(0, lines.length - RESULT_PREVIEW_LINES);
+			const hint = skipped
+				? theme.fg("toolOutput", `… (${skipped} earlier lines, ${EXPAND_KEY} to expand)`)
+				: "";
+			const preview = theme.fg("toolOutput", lines.slice(-RESULT_PREVIEW_LINES).join("\n"));
+			component.setText([summary, hint, preview].filter(Boolean).join("\n"));
+			return component;
 		},
 	});
 	if (isChild) return;
