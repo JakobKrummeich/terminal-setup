@@ -227,7 +227,25 @@ nesting at one layer (structural, not a counter — nothing to configure).
   -> wezterm user-var-changed -> padding fits N centered 75-col columns
   (zoom = 1 column). Known transient: brief jumbled frame on split/zoom --
   tmux re-lays before wezterm widens; inherent to dual layout engines. Accepted.
-- WezTerm workspace status through tmux requires OSC passthrough. Direct
-  WezTerm->WSL/container chains are simplest; nested `podman exec` behind tmux
-  needs the emitting process to know tmux is in front (`TMUX` set) so it wraps
-  OSC in tmux DCS passthrough.
+- WezTerm workspace status through tmux requires OSC passthrough, and tmux
+  drops it silently in three cases — each leaves the marker latched on the last
+  value that got out (usually `busy`, emitted by the shell preexec of `ssh` /
+  `tmux attach` / `pi`, since nothing ever re-syncs):
+  1. `allow-passthrough` unset — **tmux's default is `off`** (3.3+). A host that
+     only ran `install-pi.sh` has no `tmux/tmux.conf` link, so every wrapped
+     `wsstate` from inside tmux is eaten and the workspace shows busy forever.
+     `tmux show -g allow-passthrough` to check; `tmux set -g allow-passthrough
+     all` applies live, no server restart.
+  2. Pane not visible — with `on`, tmux passes through only for the current
+     window of an attached session, so an agent cooking in a background tmux
+     window never reports. Use `all` (repo tmux.conf still ships the safer `on`;
+     `all` widens the escape-injection surface to invisible panes, worth it on
+     a machine whose output you trust).
+  3. Client detached — nothing is buffered or replayed. On reattach the WezTerm
+     pane is new and has no user var, so the workspace reads *idle* even if the
+     agent is mid-turn, until pi's next state change. No re-emit hook exists
+     (tmux's `client-attached` only drives panecols).
+  Independently: nested `podman exec` behind tmux needs the emitting process to
+  know tmux is in front (`TMUX` set) so it wraps OSC in tmux DCS passthrough;
+  `podman exec` does not inherit `TMUX`, so the raw OSC gets swallowed. Direct
+  WezTerm->WSL/container chains avoid all of this.
