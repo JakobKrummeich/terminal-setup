@@ -1,0 +1,50 @@
+{
+  "run_id": "preflight1-t1",
+  "arm": "treatment",
+  "task": "t1",
+  "wall_s": 336.3,
+  "pi_exit": 0,
+  "cost_usd": 1.9803,
+  "explorer_calls": 1,
+  "agent_calls": 0,
+  "parent_tool_calls": 40,
+  "all_tool_calls": 57,
+  "parent_tools": {
+    "Explorer": 1,
+    "ls": 1,
+    "read": 12,
+    "bash": 15,
+    "write": 2,
+    "edit": 9
+  },
+  "parent_context_tokens": 66786,
+  "session_files": 2,
+  "per_session": [
+    {
+      "file": "2026-08-02T21-04-12-259Z_019fc44a-9de2-7171-a340-2e7aad73a473.jsonl",
+      "cost": 1.92,
+      "tools": {
+        "Explorer": 1,
+        "ls": 1,
+        "read": 12,
+        "bash": 15,
+        "write": 2,
+        "edit": 9
+      }
+    },
+    {
+      "file": "2026-08-02T21-04-18-722Z_019fc44a-b722-7512-8c07-e38e5209f11a.jsonl",
+      "cost": 0.0602,
+      "tools": {
+        "ls": 6,
+        "find": 1,
+        "read": 10
+      }
+    }
+  ],
+  "files_changed": 8,
+  "diff_lines": 797,
+  "tests_pass": 1135,
+  "tests_fail": 0,
+  "test_exit": 0
+}

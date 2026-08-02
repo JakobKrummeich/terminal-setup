@@ -1,0 +1,37 @@
+{
+  "run_id": "main-t2-control",
+  "arm": "control",
+  "task": "t2",
+  "wall_s": 503.6,
+  "pi_exit": 0,
+  "cost_usd": 3.5521,
+  "explorer_calls": 0,
+  "agent_calls": 0,
+  "parent_tool_calls": 68,
+  "all_tool_calls": 68,
+  "parent_tools": {
+    "bash": 40,
+    "read": 8,
+    "write": 2,
+    "edit": 18
+  },
+  "parent_context_tokens": 87773,
+  "session_files": 1,
+  "per_session": [
+    {
+      "file": "2026-08-02T22-05-44-016Z_019fc482-f2d0-700b-be30-1558bb41ce0b.jsonl",
+      "cost": 3.5521,
+      "tools": {
+        "bash": 40,
+        "read": 8,
+        "write": 2,
+        "edit": 18
+      }
+    }
+  ],
+  "files_changed": 15,
+  "diff_lines": 887,
+  "tests_pass": 1185,
+  "tests_fail": 0,
+  "test_exit": 0
+}

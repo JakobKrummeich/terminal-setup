@@ -1,0 +1,47 @@
+{
+  "run_id": "preflight1-t3",
+  "arm": "treatment",
+  "task": "t3",
+  "wall_s": 355.6,
+  "pi_exit": 0,
+  "cost_usd": 1.8475,
+  "explorer_calls": 1,
+  "agent_calls": 0,
+  "parent_tool_calls": 43,
+  "all_tool_calls": 67,
+  "parent_tools": {
+    "Explorer": 1,
+    "bash": 23,
+    "read": 9,
+    "edit": 10
+  },
+  "parent_context_tokens": 60883,
+  "session_files": 2,
+  "per_session": [
+    {
+      "file": "2026-08-02T21-19-41-694Z_019fc458-cc7e-7400-a0dc-e5b08e90415a.jsonl",
+      "cost": 1.7511,
+      "tools": {
+        "Explorer": 1,
+        "bash": 23,
+        "read": 9,
+        "edit": 10
+      }
+    },
+    {
+      "file": "2026-08-02T21-19-46-624Z_019fc458-dfc0-7f18-8ce7-be0accc3e4ef.jsonl",
+      "cost": 0.0964,
+      "tools": {
+        "ls": 6,
+        "find": 3,
+        "read": 10,
+        "grep": 5
+      }
+    }
+  ],
+  "files_changed": 7,
+  "diff_lines": 591,
+  "tests_pass": 1128,
+  "tests_fail": 0,
+  "test_exit": 0
+}

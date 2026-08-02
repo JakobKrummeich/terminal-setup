@@ -1,0 +1,14 @@
+{
+  "t1": {
+    "solution-1": "control",
+    "solution-2": "treatment"
+  },
+  "t2": {
+    "solution-1": "control",
+    "solution-2": "treatment"
+  },
+  "t3": {
+    "solution-1": "control",
+    "solution-2": "treatment"
+  }
+}
