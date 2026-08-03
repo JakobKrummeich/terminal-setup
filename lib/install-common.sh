@@ -81,7 +81,11 @@ install_pi_azure_response_retry_patch() {
         echo "SKIPPED: Pi Azure retry patch (pi is not installed)"
         return 0
     fi
-    node "$REPO/pi/patches/pi-0.83.0-azure-response-failed-retry.cjs"
+    local pi_bin pi_root pi_ai_root
+    pi_bin="$(readlink -f "$(command -v pi)")"
+    pi_root="$(cd "$(dirname "$pi_bin")/.." && pwd)"
+    pi_ai_root="$pi_root/node_modules/@earendil-works/pi-ai"
+    PI_AI_ROOT="$pi_ai_root" node "$REPO/pi/patches/pi-0.83.0-azure-response-failed-retry.cjs"
 }
 
 install_wezterm() {

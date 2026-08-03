@@ -6,7 +6,6 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
-const childProcess = require("node:child_process");
 
 const expectedVersion = "0.83.0";
 const baselineSha256 = "916476be8a85ad16f9de3d0cfc3eb341b3290445fde3717593b139fd7ee31b7b";
@@ -18,14 +17,8 @@ function sha256(content) {
   return crypto.createHash("sha256").update(content).digest("hex");
 }
 
-function resolvePiAiRoot() {
-  if (process.env.PI_AI_ROOT) return process.env.PI_AI_ROOT;
-  const piCommand = childProcess.execFileSync("bash", ["-lc", "command -v pi"], { encoding: "utf8" }).trim();
-  const piBin = fs.realpathSync(piCommand);
-  return path.join(path.dirname(piBin), "..", "node_modules", "@earendil-works", "pi-ai");
-}
-
-const piAiRoot = resolvePiAiRoot();
+const piAiRoot = process.env.PI_AI_ROOT;
+if (!piAiRoot) throw new Error("PI_AI_ROOT is required; run install-pi.sh.");
 const packageJsonPath = path.join(piAiRoot, "package.json");
 const retryPath = path.join(piAiRoot, "dist", "utils", "retry.js");
 if (!fs.existsSync(packageJsonPath) || !fs.existsSync(retryPath)) {

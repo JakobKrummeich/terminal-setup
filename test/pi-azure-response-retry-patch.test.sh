@@ -8,7 +8,7 @@ trap 'rm -rf "$FIXTURE"' EXIT
 
 mkdir -p "$FIXTURE/dist/utils"
 printf '{"version":"0.83.0","type":"module"}\n' > "$FIXTURE/package.json"
-cp /home/dev/.local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/utils/retry.js.pi-0.83.0-backup "$FIXTURE/dist/utils/retry.js"
+cp "$REPO/test/fixtures/pi-ai-0.83.0-retry.js" "$FIXTURE/dist/utils/retry.js"
 
 PI_AI_ROOT="$FIXTURE" node "$PATCH"
 PI_AI_ROOT="$FIXTURE" node "$PATCH"
