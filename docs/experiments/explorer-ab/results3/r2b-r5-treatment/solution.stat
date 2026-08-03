@@ -1,9 +1,0 @@
- .../src/app/facilitator/RosterPanel.module.css     | 66 +++++++++++++++
- frontend/src/app/facilitator/RosterPanel.tsx       | 30 +++++++
- .../app/facilitator/__tests__/RosterPanel.test.tsx | 47 ++++++++++
- .../app/facilitator/__tests__/facilitator.test.tsx |  5 ++
- .../facilitator/__tests__/useRosterPanel.test.ts   | 99 ++++++++++++++++++++++
- frontend/src/app/facilitator/page.module.css       |  7 ++
- frontend/src/app/facilitator/page.tsx              |  6 +-
- frontend/src/app/facilitator/useRosterPanel.ts     | 34 ++++++++
- 8 files changed, 293 insertions(+), 1 deletion(-)

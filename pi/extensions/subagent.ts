@@ -56,8 +56,7 @@ export default function (pi: ExtensionAPI) {
 			),
 		}),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			// Agents may not spawn agents, but they keep Explorer: exploration stays
-			// available at every depth, full delegation does not.
+			// Agents may not spawn agents: nesting is capped at one layer, structurally.
 			return runChildTool(
 				params,
 				{ kind: "agent", excludeTools: [AGENT_TOOL] },
@@ -74,12 +73,12 @@ export default function (pi: ExtensionAPI) {
 	if (inChildSession()) return;
 
 	pi.registerShortcut(WATCH_KEY, {
-		description: "Watch the running agent or explorer",
+		description: "Watch the running agent",
 		handler: async (ctx) => {
 			if (!ctx.hasUI) return;
 			const record = watchTarget();
 			if (!record) {
-				ctx.ui.notify("No agent or explorer has run yet in this session.", "info");
+				ctx.ui.notify("No agent has run yet in this session.", "info");
 				return;
 			}
 			await openChildView(ctx, record);

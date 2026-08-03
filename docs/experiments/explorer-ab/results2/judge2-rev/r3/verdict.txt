@@ -1,6 +1,0 @@
-solution-1 correctness: 8
-solution-1 quality: 7
-solution-2 correctness: 9
-solution-2 quality: 8
-preference: solution-2
-reasoning: Production change nearly identical: both set `HeaderNames.RetryAfter` from `rateLimit.Window` with `Math.Max(1, ceil(seconds))` and invariant formatting, keeping 429 status, log call, and partition logic untouched. Difference is test strength. Solution-1 asserts `Delta == 600s` against a helper that hard-codes the window setting to "600", so a literally hard-coded `Retry-After: 600` would pass — it fails to prove the "derived from configured window, not hard-coded" requirement. Solution-2 parameterizes `LimitedBackend` with `windowSeconds` (default 600, existing tests unchanged) and uses a `[Theory]` with 600 and 90, which actually pins the header to config. Both tests go end-to-end through `POST /api/sessions` and assert status plus header, matching existing test naming and helper style. Minor style edge to solution-1's private property over solution-2's static helper, but solution-2's extra test-helper parameter is proportionate and non-invasive. Test discrimination decides it.

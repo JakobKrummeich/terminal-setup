@@ -1,6 +1,0 @@
-solution-1 correctness: 9
-solution-1 quality: 9
-solution-2 correctness: 7
-solution-2 quality: 7
-preference: solution-1
-reasoning: Production changes near-identical: both set `HeaderNames.RetryAfter` from `rateLimit.Window`, both clamp with `Math.Max(1, Math.Ceiling(...))` and format with `InvariantCulture`, both leave status code, log call, and partitioning untouched. Difference is test strength. Solution-1 turns the case into a `[Theory]` over 600 and 90 seconds and threads `windowSeconds` through the `LimitedBackend` helper (default 600, so existing tests unchanged), so it actually proves the header tracks configuration rather than a constant. Solution-2 asserts only `TimeSpan.FromSeconds(600)`, which is exactly the hard-coded helper value — a hard-coded `"600"` header would pass that test, so the central "consistent with configured window, not hard-coded" criterion is unverified. Minor code detail also favors 1: a static pure helper taking the window is clearer and cheaper than solution-2's instance property that re-formats the string on every rejection. Both fit codebase conventions (behaviour-named test methods, Shouldly, WebApplicationFactory settings overrides), and both suites pass. Solution-1 is strictly better with no added cost.

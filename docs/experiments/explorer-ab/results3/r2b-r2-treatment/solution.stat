@@ -1,3 +1,0 @@
- backend/Domain.Tests/SessionJoinTests.cs | 55 ++++++++++++++++++++++++++++++++
- backend/Domain/Session.cs                |  8 +++++
- 2 files changed, 63 insertions(+)

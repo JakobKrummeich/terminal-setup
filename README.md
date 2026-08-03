@@ -34,7 +34,12 @@ wezterm/          wezterm.lua + workspace-status.lua (symlinked on Linux;
 install-terminal.sh  terminal installer: WezTerm, tmux, shell wsstate hook (no pi)
 install-pi.sh     pi installer: pi config, rtk, shell wsstate hook (no WezTerm/tmux)
 lib/              shared installer helpers
+docs/decisions/   why things are the way they are, incl. what was removed again
 ```
+
+Tooling experiments (A/B runs measuring whether a tool earns its keep) live in a separate
+repository, `~/agent-experiments` — they are not configuration and cost money to run. The
+`Explorer` extension was removed after one such experiment: `docs/decisions/explorer-removed.md`.
 
 ## Install terminal config (new Linux/WSL host)
 
@@ -174,8 +179,7 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | `context-cap.ts` | auto token-cap handoff: at 160k the agent writes a handoff file (`~/.pi/agent/context-cap/<sessionId>-<seq>.md`), then a persistent swap-marker entry is appended and a `context` handler slices the LLM context at it — the next LLM call sees only the handoff (session ≠ context: full history + forensic swap metadata stay in the session file); 200k hard backstop with stale-file fallback |
 | `custom-footer.ts` | cumulative token/cost footer |
 | `dump-system-prompt.ts` | debug: dump active system prompt |
-| `explorer.ts` | `Explorer` tool: cheap read-only child agent that reports *where to look* (paths + line ranges). Available to every agent, including subagents. Model picked with `/explorer-model` |
-| `lib/child-session.ts` | shared child-session plumbing for `subagent.ts` and `explorer.ts` (not an extension: pi's loader only scans top-level `*.ts`) |
+| `lib/child-session.ts` | shared child-session plumbing for `subagent.ts` (not an extension: pi's loader only scans top-level `*.ts`) |
 | `handoff.ts` | session handoff summaries |
 | `markdown-no-padding.ts` | strip paddingX=1 from rendered markdown (copy-safety); patches pi-tui internals — re-verify after `pi update` |
 | `rtk.ts` / `rtk-tools.ts` | route tool calls through rtk token filter |
@@ -189,8 +193,7 @@ The main agent delegates via the `Agent` tool and keeps the overview; the child 
 ordinary pi session in the same cwd with the same system prompt, AGENTS.md, extensions
 and skills — it is not told it is a subagent. The one difference is that it has no `Agent`
 tool itself: every child is built with `excludeTools: ["Agent"]`, which is what caps
-nesting at one layer (structural, not a counter — nothing to configure). It does keep
-`Explorer` (see below): exploration stays available at every depth, delegation does not.
+nesting at one layer (structural, not a counter — nothing to configure).
 
 - Runs in the foreground: the main agent waits, and the tool row shows live child status
   (`agent#<id> · <description> · turn N · running grep`).
@@ -206,32 +209,6 @@ nesting at one layer (structural, not a counter — nothing to configure). It do
 - A child that needs a decision just asks; the main agent answers by calling `Agent` again
   with `resume_id`, continuing the same session. It stands in for the human.
 - No background runs, no parallelism, no agent types, no turn limits — deliberately.
-
-### Explorer (`explorer.ts`)
-
-A second child-session tool, sharing all plumbing with `subagent.ts` via `lib/child-session.ts`.
-It answers "where do I look" on a cheap model so the caller spends flagship tokens on thinking
-and reads only the files that matter. Design notes in `docs/ideas/explorer-subagent.md`.
-
-- **Every agent has it, at every depth.** Children are built with `excludeTools: ["Agent"]` only,
-  so a subagent can still explore; an explorer excludes `Agent`, `Explorer`, `edit`, `write`,
-  `bash` and `timer`, so it can neither delegate nor change anything.
-- **Reports pointers, not answers**: `path:line-range — why`, no pasted code. The contract lives in
-  the prompt; the reply is never validated or reshaped (models drift, callers cope).
-- **Model is configuration, not code.** `/explorer-model` opens a selector over authenticated models
-  and writes `~/.pi/agent/explorer-model.json` (copied once from `pi/explorer-model.json`, never
-  symlinked — same reference-copy rule as `settings.json`). `/explorer-model anthropic/claude-haiku-4-5`
-  sets it directly.
-- **Ships unset on purpose** — no guessed model id. Until you pick one, pi warns at session start and
-  every `Explorer` call returns an error telling the agent to have you run `/explorer-model`. It
-  **never** falls back to the parent model: that would silently pay flagship prices.
-- Resolution is local only (`registry.find` + `hasConfiguredAuth`, snapshot reads) — a misconfigured
-  explorer costs zero tokens to discover.
-- No turn caps, no output budgets, no mid-flight aborts: the cheap model *is* the cost control, and
-  it inherits `context-cap.ts` like any other child.
-- Runs show as `explorer#<id>` and share the **F2** watch view with agents.
-- Note: `anthropicAPIProxy` needs a pricing entry for the explorer model or its dashboard misprices
-  the traffic (added for `claude-haiku-4-5`); pi's own cost line comes from pi-ai's catalog.
 
 ## Tests
 

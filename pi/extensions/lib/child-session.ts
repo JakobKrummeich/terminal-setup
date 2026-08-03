@@ -1,4 +1,4 @@
-// Shared plumbing for child-session tools (Agent, Explorer).
+// Shared plumbing for child-session tools (currently just Agent).
 //
 // Not an extension: pi's loader only scans top-level *.ts in the extensions dir
 // (core/package-manager.js collectAutoExtensionEntries), so files under lib/ are
@@ -25,7 +25,6 @@ import { Container, type KeyId, matchesKey, Spacer, Text, type TUI } from "@eare
 import { renderFooterLines } from "../custom-footer.ts";
 
 export const AGENT_TOOL = "Agent";
-export const EXPLORER_TOOL = "Explorer";
 const WATCH_KEY = (process.env.PI_SUBAGENT_WATCH_KEY ?? "f2") as KeyId;
 const EXPAND_KEY = (process.env.PI_SUBAGENT_EXPAND_KEY ?? "ctrl+o") as KeyId;
 const MOUSE_ON = "\u001b[?1000h\u001b[?1006h";
@@ -444,7 +443,7 @@ export interface ChildToolParams {
 }
 
 export interface RunChildOptions extends ChildSessionOptions {
-	/** Shown in ids, status and meta lines: "agent" / "explorer". */
+	/** Shown in ids, status and meta lines, e.g. "agent". */
 	kind: string;
 	/** Prepended to every prompt sent to the child (role and output contract). */
 	promptPrefix?: string;

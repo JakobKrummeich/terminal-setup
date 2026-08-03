@@ -1,4 +1,0 @@
- backend/Domain.Tests/SessionJoinTests.cs | 47 ++++++++++++++++++++++++++++++++
- backend/Domain/Roster.cs                 | 11 ++++++++
- design/domain-model.md                   |  2 +-
- 3 files changed, 59 insertions(+), 1 deletion(-)
