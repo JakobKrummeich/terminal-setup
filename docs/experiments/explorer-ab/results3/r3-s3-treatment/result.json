@@ -1,0 +1,164 @@
+{
+  "run_id": "r3-s3-treatment",
+  "arm": "treatment",
+  "task": "s3",
+  "wall_s": 3790.4,
+  "pi_exit": 0,
+  "cost_usd": 20.9756,
+  "cost_explorers": 0.7888,
+  "parent_peak_context": 162800,
+  "parent_end_context": 68310,
+  "parent_tool_calls": 104,
+  "caller_peak_context_sum": 508013,
+  "explorer_calls_parent": 2,
+  "explorer_calls_subagent": 3,
+  "agent_calls": 3,
+  "subagents": 3,
+  "explorer_sessions": 5,
+  "explorer_tool_calls": 287,
+  "sessions": [
+    {
+      "role": "parent",
+      "model": "claude-opus-5",
+      "cost": 7.3394,
+      "tool_calls": 104,
+      "tools": {
+        "read": 3,
+        "Explorer": 2,
+        "bash": 65,
+        "write": 9,
+        "edit": 21,
+        "context_handoff": 1,
+        "Agent": 3
+      },
+      "peak_context": 162800,
+      "end_context": 68310
+    },
+    {
+      "role": "explorer",
+      "model": "claude-haiku-4-5",
+      "cost": 0.2035,
+      "tool_calls": 80,
+      "tools": {
+        "ls": 33,
+        "read": 36,
+        "find": 1,
+        "grep": 10
+      },
+      "peak_context": 39092,
+      "end_context": 39092
+    },
+    {
+      "role": "subagent",
+      "model": "claude-opus-5",
+      "cost": 2.1829,
+      "tool_calls": 37,
+      "tools": {
+        "read": 4,
+        "bash": 24,
+        "edit": 8,
+        "write": 1
+      },
+      "peak_context": 75530,
+      "end_context": 75530
+    },
+    {
+      "role": "subagent",
+      "model": "claude-opus-5",
+      "cost": 6.063,
+      "tool_calls": 74,
+      "tools": {
+        "bash": 29,
+        "Explorer": 2,
+        "read": 25,
+        "edit": 13,
+        "write": 5
+      },
+      "peak_context": 152728,
+      "end_context": 152728
+    },
+    {
+      "role": "explorer",
+      "model": "claude-haiku-4-5",
+      "cost": 0.1846,
+      "tool_calls": 43,
+      "tools": {
+        "ls": 10,
+        "grep": 4,
+        "read": 25,
+        "find": 4
+      },
+      "peak_context": 43269,
+      "end_context": 43269
+    },
+    {
+      "role": "explorer",
+      "model": "claude-haiku-4-5",
+      "cost": 0.1634,
+      "tool_calls": 67,
+      "tools": {
+        "find": 23,
+        "grep": 18,
+        "ls": 2,
+        "read": 24
+      },
+      "peak_context": 33884,
+      "end_context": 33884
+    },
+    {
+      "role": "explorer",
+      "model": "claude-haiku-4-5",
+      "cost": 0.1334,
+      "tool_calls": 46,
+      "tools": {
+        "ls": 16,
+        "read": 22,
+        "grep": 4,
+        "find": 4
+      },
+      "peak_context": 29816,
+      "end_context": 29816
+    },
+    {
+      "role": "subagent",
+      "model": "claude-opus-5",
+      "cost": 4.6015,
+      "tool_calls": 96,
+      "tools": {
+        "read": 28,
+        "Explorer": 1,
+        "bash": 23,
+        "edit": 20,
+        "write": 24
+      },
+      "peak_context": 116955,
+      "end_context": 116955
+    },
+    {
+      "role": "explorer",
+      "model": "claude-haiku-4-5",
+      "cost": 0.1039,
+      "tool_calls": 51,
+      "tools": {
+        "ls": 21,
+        "find": 6,
+        "grep": 4,
+        "read": 20
+      },
+      "peak_context": 19846,
+      "end_context": 19846
+    }
+  ],
+  "files_changed": 70,
+  "diff_lines": 5448,
+  "backend_pass": 352,
+  "backend_fail": 0,
+  "frontend_pass": 229,
+  "backend_exit": 0,
+  "frontend_exit": 0,
+  "typecheck_exit": 0,
+  "cap_warnings": 1,
+  "handoffs_parent": 1,
+  "handoffs_subagent": 0,
+  "handoffs_total": 1
+}

@@ -407,3 +407,120 @@ Prediction stated in advance, so it can be wrong: if the description works, trea
 Explorer calls per run**, and peak caller context drops by **more than the ~8k fixed offset** seen
 in round 2. If calls stay at 1, the tool's single-call pattern is a property of the agent, not of
 the wording, and no description will fix it.
+
+## Round 3 results
+
+Eight runs, paired, sequential. Two protocol repairs were needed mid-round, both applied to every
+subsequent run and both forcing discarded runs to be redone:
+
+1. **Control-arm leak.** `--exclude-tools Explorer` binds only the parent; subagents re-discover
+   extensions from the config dir (`subagent.ts` excludes only the `Agent` tool), so the first
+   `s1-control` run's subagents called Explorer 3×. Arms are now selected by
+   `PI_CODING_AGENT_DIR` (`mkagentdirs.sh` builds a control dir without `explorer.ts`); the two
+   leaked control runs were deleted and rerun. Round 1 and 2 are unaffected — they spawned no
+   subagents at all.
+2. **Shared credentials.** The per-arm config dirs initially copied `auth.json`; OAuth refresh
+   rotates the token, so the copy went stale and killed two runs at 1 s. `auth.json` is now a
+   symlink to the live file.
+
+Also, in this regime `parent_peak_context` is useless: **every run peaks at 161–165k**, which is
+the context-cap extension's threshold. The tasks saturate the window in both arms. The metrics that
+still discriminate are `caller_peak_context_sum` (context across parent + subagents) and
+`handoffs_total` (forced cap swaps, i.e. sessions thrown away and replaced by a summary,
+extracted by `handoffs.py`). Round 2 had **zero** handoffs in all 12 runs; round 3 has them in 7 of 8.
+
+| task | arm | cost $ | wall s | caller ctx sum | handoffs | Expl. parent/sub | subagents | parent tools | files | diff lines |
+|---|---|---|---|---|---|---|---|---|---|---|
+| s1 | control | 36.22 | 4675 | 731703 | 3 | 0 / 0 | 5 | 293 | 117 | 6276 |
+| s1 | treatment | 18.54 | 3313 | 270329 | 2 | 4 / 1 | 1 | 192 | 105 | 5469 |
+| s2 | control | 31.86 | 4812 | 590769 | 2 | 0 / 0 | 4 | 264 | 86 | 4422 |
+| s2 | treatment | 15.82 | 2378 | 384290 | 1 | 2 / 2 | 3 | 124 | 75 | 3954 |
+| s3 | control | 18.64 | 2731 | 453351 | 2 | 0 / 0 | 2 | 73 | 90 | 5683 |
+| s3 | treatment | 20.98 | 3790 | 508013 | 1 | 2 / 3 | 3 | 104 | 70 | 5448 |
+| s4 | control | 16.61 | 4158 | 376809 | 1 | 0 / 0 | 3 | 171 | 62 | 3734 |
+| s4 | treatment | 24.21 | 3639 | 354668 | 2 | 7 / 1 | 3 | 300 | 165 | 10221 |
+| **mean** | control | **25.83** | **4094** | **538158** | **2.0** | 0 | 3.5 | 200 | | |
+| **mean** | treatment | **19.89** | **3280** | **379325** | **1.5** | 3.75 / 1.75 | 2.5 | 180 | | |
+
+Mean paired deltas: cost **−10.2%** (per task: −49, −50, +13, +46), wall **−13.3%**
+(−29, −51, +39, −12), caller context sum **−23.0%** (−63, −35, +12, −6), forced handoffs
+**−8.3%** (−33, −50, −50, +100), subagents **−13.8%**. Every run left both suites green and the
+type check clean.
+
+**The description change worked as intended, mechanically.** Treatment parents called Explorer
+**2–7 times** per run (round 1 and 2: exactly once, always), and subagents called it 1–3 times more.
+So the single-call pattern *is* fixable by wording.
+
+**But the outcome split down the middle.** s1 and s2 are large wins (cost halved, wall −29%/−51%,
+control needed 4–5 subagents where treatment needed 1–3). s3 and s4 go the other way (+13% and +46%
+cost). s4 is the clearest failure: 7 Explorer calls, and the agent then built a second task's
+feature on top of its own (165 files, 10221 diff lines vs the control's 62/3734).
+
+### Round 3 judging (Q4)
+
+Both orderings, blinded. The s4 packet (~500 kB of diff) tripped the *judge's* own context cap and
+had to be re-judged with a cap-free judge config (`agentdir-judge`), same prompt and blinding.
+
+| task | control c+q | treatment c+q | pref (control first) | pref (treatment first) |
+|---|---|---|---|---|
+| s1 | 17 / 15 | 14 / 16 | control | treatment |
+| s2 | 18 / 17 | 15 / 16 | control | control |
+| s3 | 17 / 18 | 16 / 16 | control | control |
+| s4 | 12 / 13 | 15 / 17 | treatment | treatment |
+
+**Control preferred in 5 of 8**, mean total **15.88 vs 15.62** — much closer than rounds 1–2, and
+the one task treatment clearly won (s4) is the one where it did *more* than asked: the judge, in
+both orderings, preferred the fuller slice despite calling out its scope creep.
+
+## Round 2b — was it the wording, or the tasks?
+
+Round 3 changed two things at once (description **and** task size), so it cannot attribute the win.
+Round 2b isolates the wording: the **round-2 tasks, unchanged**, rerun with the round-3 description.
+Treatment only — round-2 controls are reusable, since they never had Explorer and spawned no
+subagents. Six runs, `r2b-*`.
+
+| metric (mean over r1–r6) | control | description v1 (one call) | description v2 (repeated use) |
+|---|---|---|---|
+| cost $ | 1.23 | **1.08** | 1.40 |
+| peak parent context | 43371 | **38417** | 44603 |
+| wall s | **248** | 278 | 350 |
+| Explorer calls (parent) | 0 | 1.0 | 1.3 |
+
+**On small tasks the new description is worse than the old one on every measure**, and worse than
+having no Explorer at all on context and time. It also barely raised the call count (1.0 → 1.3):
+what makes agents call Explorer repeatedly is *task size*, not wording — on a small task there is
+nothing left to ask about after the first call, so the extra prompting only adds latency.
+
+# Final verdict (rounds 1–3)
+
+1. **Used? Yes, and the frequency is controllable.** One call per run with description v1 (9/9 runs,
+   rounds 1–2); 2–7 calls with v2 on large tasks. Wording sets the *ceiling*, task size sets the
+   *demand*.
+2. **Caller context: the one consistent benefit, and it depends on the regime.** Small tasks with
+   v1: −14.3% peak parent context, a fixed ~7–8.5k per call. Large tasks with v2: −23% context
+   across all callers and fewer forced cap swaps (2.0 → 1.5 per run), because Explorer substitutes
+   for whole subagents (3.5 → 2.5). Large tasks with v1 were never measured; small tasks with v2 are
+   *worse* than v1 (44.6k vs 38.4k).
+3. **Cost: regime-dependent, high variance.** −11% (round 1), −13% (round 2), −10% (round 3, from
+   −50% to +46% per task). Nothing here is reliable enough to plan around.
+4. **Speed: worse on small tasks (+12%, +22%, and v2 +41%), better on the two biggest wins**
+   (−29%, −51%) where Explorer replaced subagent fan-out. Mean round 3: −13%.
+5. **Quality: consistently slightly worse, and the gap narrows as tasks grow.** Control preferred
+   in 5/6 (round 1), 8/12 (round 2), 5/8 (round 3); mean scores 16.5/14.5, 16.75/15.83,
+   15.88/15.62. Same failure mode throughout: pointers create false confidence in coverage.
+6. **Subagents do use Explorer when they have it** (1–3 calls per run in round 3) — and the control
+   arm proves it is not optional to control for: excluding a tool from the parent does not exclude
+   it from its children.
+
+**Overall, corrected view: Explorer is a context tool whose value scales with how much exploration
+the task actually demands, and the description controls how often it fires — but tuning the
+description for big tasks makes it worse for small ones.** The honest recommendation is not "on" or
+"off" but *matched*: description v1 (one opening call) is the better default for ordinary work;
+v2-style repeated use only pays on tasks large enough to saturate context, where it can replace
+subagent fan-out outright.
+
+Caveats: 13 paired tasks over 3 rounds, 2 repos, no repetitions, one model pair — no significance
+claims. Round 3's n=4 has two large wins and two losses. I designed the round-3 tasks after seeing
+round-2 failure modes, which is a real overfitting risk; round 2b is the check on that, and it
+failed in the direction that matters (v2 does not generalise downward). Judge and worker share a
+model family; the judge preferred the more complete solution even when it exceeded scope.

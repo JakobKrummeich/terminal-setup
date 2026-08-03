@@ -1,0 +1,10 @@
+ .../app/participant/__tests__/participant.test.tsx | 33 +++++++++-
+ .../__tests__/useParticipantHome.test.ts           | 72 ++++++++++++++++++++
+ frontend/src/app/participant/page.tsx              | 12 +++-
+ .../participant/phases/join/JoinPhase.module.css   | 51 ++++++++++++++
+ .../src/app/participant/phases/join/JoinPhase.tsx  | 40 +++++++++++
+ .../phases/join/__tests__/JoinPhase.test.tsx       | 44 +++++++++++++
+ .../phases/join/__tests__/useJoinPhase.test.ts     | 77 ++++++++++++++++++++++
+ .../app/participant/phases/join/useJoinPhase.ts    | 38 +++++++++++
+ frontend/src/app/participant/useParticipantHome.ts | 28 ++++++++
+ 9 files changed, 390 insertions(+), 5 deletions(-)

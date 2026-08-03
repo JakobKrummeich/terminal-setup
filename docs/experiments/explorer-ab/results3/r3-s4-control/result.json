@@ -1,0 +1,92 @@
+{
+  "run_id": "r3-s4-control",
+  "arm": "control",
+  "task": "s4",
+  "wall_s": 4158.8,
+  "pi_exit": 0,
+  "cost_usd": 16.6054,
+  "cost_explorers": 0,
+  "parent_peak_context": 161402,
+  "parent_end_context": 76877,
+  "parent_tool_calls": 171,
+  "caller_peak_context_sum": 376809,
+  "explorer_calls_parent": 0,
+  "explorer_calls_subagent": 0,
+  "agent_calls": 3,
+  "subagents": 3,
+  "explorer_sessions": 0,
+  "explorer_tool_calls": 0,
+  "sessions": [
+    {
+      "role": "parent",
+      "model": "claude-opus-5",
+      "cost": 10.4643,
+      "tool_calls": 171,
+      "tools": {
+        "bash": 107,
+        "read": 8,
+        "write": 19,
+        "edit": 33,
+        "Agent": 3,
+        "context_handoff": 1
+      },
+      "peak_context": 161402,
+      "end_context": 76877
+    },
+    {
+      "role": "subagent",
+      "model": "claude-opus-5",
+      "cost": 1.5757,
+      "tool_calls": 48,
+      "tools": {
+        "read": 12,
+        "bash": 21,
+        "write": 10,
+        "edit": 5
+      },
+      "peak_context": 60334,
+      "end_context": 60334
+    },
+    {
+      "role": "subagent",
+      "model": "claude-opus-5",
+      "cost": 2.361,
+      "tool_calls": 47,
+      "tools": {
+        "read": 17,
+        "bash": 25,
+        "grep": 1,
+        "timer": 4
+      },
+      "peak_context": 85507,
+      "end_context": 85507
+    },
+    {
+      "role": "subagent",
+      "model": "claude-opus-5",
+      "cost": 2.2044,
+      "tool_calls": 62,
+      "tools": {
+        "read": 12,
+        "bash": 35,
+        "ls": 3,
+        "edit": 10,
+        "write": 2
+      },
+      "peak_context": 69566,
+      "end_context": 69566
+    }
+  ],
+  "files_changed": 62,
+  "diff_lines": 3734,
+  "backend_pass": 321,
+  "backend_fail": 0,
+  "frontend_pass": 183,
+  "backend_exit": 0,
+  "frontend_exit": 0,
+  "typecheck_exit": 0,
+  "cap_warnings": 1,
+  "handoffs_parent": 1,
+  "handoffs_subagent": 0,
+  "handoffs_total": 1
+}
