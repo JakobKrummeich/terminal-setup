@@ -1,0 +1,12 @@
+ backend/Adapters.Tests/FacilitatorHubTests.cs      |  59 +++++++-
+ backend/Adapters.Web/FacilitatorHub.cs             |  21 +++
+ .../FacilitatorQuizIntentTests.cs                  | 163 +++++++++++++++++++++
+ .../Intents/FacilitatorIntentHandler.cs            |  36 +++++
+ .../Application/Intents/PoseNextQuestionCommand.cs |   5 +
+ backend/Application/Intents/RevealAnswerCommand.cs |   5 +
+ .../Application/Intents/ShowLearningTextCommand.cs |   5 +
+ backend/Domain.Tests/QuizProgressTests.cs          |  81 ++++++++++
+ backend/Domain.Tests/SessionQuizControlTests.cs    |  64 ++++++++
+ backend/Domain/QuizProgress.cs                     |  50 +++++++
+ backend/Domain/Session.cs                          |  38 +++++
+ 11 files changed, 525 insertions(+), 2 deletions(-)

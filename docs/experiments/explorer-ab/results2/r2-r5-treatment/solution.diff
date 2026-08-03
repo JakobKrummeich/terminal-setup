@@ -1,0 +1,350 @@
+diff --git a/frontend/src/app/facilitator/ParticipantRoster.module.css b/frontend/src/app/facilitator/ParticipantRoster.module.css
+new file mode 100644
+index 0000000..da32c1e
+--- /dev/null
++++ b/frontend/src/app/facilitator/ParticipantRoster.module.css
+@@ -0,0 +1,52 @@
++.panel {
++  display: flex;
++  flex: 1;
++  flex-direction: column;
++  gap: var(--space-gap);
++  min-width: 0;
++  padding: var(--space-gutter);
++  border: var(--border-hairline) solid var(--color-border);
++  border-radius: var(--radius-md);
++  background: var(--color-surface);
++  font-family: var(--font-sans);
++}
++
++.heading {
++  display: flex;
++  gap: var(--space-gap);
++  align-items: center;
++  color: var(--color-text);
++  font-size: var(--text-body);
++  font-weight: var(--weight-bold);
++  line-height: var(--leading-tight);
++}
++
++.count {
++  padding: 0 var(--space-gap);
++  border-radius: var(--radius-full);
++  background: var(--color-primary-soft);
++  color: var(--color-primary-strong);
++  font-size: var(--text-small);
++}
++
++.empty {
++  color: var(--color-text-muted);
++  font-size: var(--text-small);
++}
++
++.list {
++  display: flex;
++  flex-direction: column;
++  gap: var(--space-tight);
++  margin: 0;
++  padding: 0;
++  list-style: none;
++}
++
++.participant {
++  min-width: 0;
++  color: var(--color-text);
++  font-size: var(--text-small);
++  line-height: var(--leading-tight);
++  overflow-wrap: anywhere;
++}
+diff --git a/frontend/src/app/facilitator/ParticipantRoster.tsx b/frontend/src/app/facilitator/ParticipantRoster.tsx
+new file mode 100644
+index 0000000..2512bb7
+--- /dev/null
++++ b/frontend/src/app/facilitator/ParticipantRoster.tsx
+@@ -0,0 +1,30 @@
++"use client";
++
++import styles from "./ParticipantRoster.module.css";
++import { useParticipantRoster } from "./useParticipantRoster";
++
++export function ParticipantRoster() {
++  const { participantCount, participantIds } = useParticipantRoster();
++
++  return (
++    <section className={styles.panel} aria-label="Participants">
++      <h2 className={styles.heading}>
++        Participants
++        <span className={styles.count} data-testid="participant-count">
++          {participantCount}
++        </span>
++      </h2>
++      {participantIds.length === 0 ? (
++        <p className={styles.empty}>No participants have joined yet.</p>
++      ) : (
++        <ul className={styles.list}>
++          {participantIds.map((participantId) => (
++            <li key={participantId} className={styles.participant}>
++              {participantId}
++            </li>
++          ))}
++        </ul>
++      )}
++    </section>
++  );
++}
+diff --git a/frontend/src/app/facilitator/__tests__/ParticipantRoster.test.tsx b/frontend/src/app/facilitator/__tests__/ParticipantRoster.test.tsx
+new file mode 100644
+index 0000000..9f34f5a
+--- /dev/null
++++ b/frontend/src/app/facilitator/__tests__/ParticipantRoster.test.tsx
+@@ -0,0 +1,52 @@
++import { render, screen } from "@testing-library/react";
++import { ParticipantRoster } from "../ParticipantRoster";
++import { useParticipantRoster } from "../useParticipantRoster";
++
++jest.mock("../useParticipantRoster", () => ({
++  useParticipantRoster: jest.fn(),
++}));
++
++const roster = useParticipantRoster as jest.MockedFunction<
++  typeof useParticipantRoster
++>;
++
++describe("participant roster panel", () => {
++  it("names its empty state before anyone joins", () => {
++    roster.mockReturnValue({ participantCount: 0, participantIds: [] });
++
++    render(<ParticipantRoster />);
++
++    screen.getByText("No participants have joined yet.");
++    expect(screen.getByTestId("participant-count")).toHaveTextContent("0");
++    expect(screen.queryByRole("list")).not.toBeInTheDocument();
++  });
++
++  it("lists the joined participants with their count", () => {
++    roster.mockReturnValue({
++      participantCount: 2,
++      participantIds: ["ada", "grace"],
++    });
++
++    render(<ParticipantRoster />);
++
++    expect(screen.getByTestId("participant-count")).toHaveTextContent("2");
++    expect(
++      screen.getAllByRole("listitem").map((item) => item.textContent),
++    ).toEqual(["ada", "grace"]);
++    expect(
++      screen.queryByText("No participants have joined yet."),
++    ).not.toBeInTheDocument();
++  });
++
++  it("renders a long identifier in full", () => {
++    const longIdentifier = "participant-".repeat(12);
++    roster.mockReturnValue({
++      participantCount: 1,
++      participantIds: [longIdentifier],
++    });
++
++    render(<ParticipantRoster />);
++
++    screen.getByText(longIdentifier);
++  });
++});
+diff --git a/frontend/src/app/facilitator/__tests__/facilitator.test.tsx b/frontend/src/app/facilitator/__tests__/facilitator.test.tsx
+index 69e6010..225df80 100644
+--- a/frontend/src/app/facilitator/__tests__/facilitator.test.tsx
++++ b/frontend/src/app/facilitator/__tests__/facilitator.test.tsx
+@@ -66,11 +66,16 @@ describe("facilitator screen group", () => {
+       workshopState.next({
+         revision: 4,
+         phase: Phase.GroupWork,
++        roster: { participantIds: ["ada", "grace"], participantCount: 2 },
+       } as FacilitatorWorkshopState);
+     });
+ 
+     expect(screen.getByTestId("phase")).toHaveTextContent("Phase 6");
+     screen.getByRole("button", { name: "Advance phase" });
++    expect(screen.getByTestId("participant-count")).toHaveTextContent("2");
++    expect(
++      screen.getAllByRole("listitem").map((item) => item.textContent),
++    ).toEqual(["ada", "grace"]);
+   });
+ 
+   it("offers the open session form when the link carries no session", async () => {
+diff --git a/frontend/src/app/facilitator/__tests__/useParticipantRoster.test.ts b/frontend/src/app/facilitator/__tests__/useParticipantRoster.test.ts
+new file mode 100644
+index 0000000..04d22a6
+--- /dev/null
++++ b/frontend/src/app/facilitator/__tests__/useParticipantRoster.test.ts
+@@ -0,0 +1,93 @@
++import { renderHook, act } from "@testing-library/react";
++import { EMPTY, NEVER, Subject } from "rxjs";
++import { Phase } from "../../../domain/phases";
++import type { FacilitatorWorkshopState } from "../../../domain/workshopState";
++import { useFacilitatorDependencies } from "../dependencies";
++import { useParticipantRoster } from "../useParticipantRoster";
++
++jest.mock("../dependencies", () => ({
++  useFacilitatorDependencies: jest.fn(),
++}));
++
++const dependencies = useFacilitatorDependencies as jest.MockedFunction<
++  typeof useFacilitatorDependencies
++>;
++
++function withWorkshopState(workshopState: Subject<FacilitatorWorkshopState>) {
++  dependencies.mockReturnValue({
++    sessionState: { workshopState, connectionState: NEVER },
++    lifecycle: { advancePhase: () => EMPTY },
++  });
++}
++
++function joinState(participantIds: string[]): FacilitatorWorkshopState {
++  return {
++    revision: participantIds.length,
++    phase: Phase.Join,
++    roster: { participantIds, participantCount: participantIds.length },
++  };
++}
++
++describe("participant roster logic", () => {
++  it("reports an empty roster before the first pushed state", () => {
++    withWorkshopState(new Subject<FacilitatorWorkshopState>());
++
++    const { result } = renderHook(() => useParticipantRoster());
++
++    expect(result.current).toEqual({
++      participantCount: 0,
++      participantIds: [],
++    });
++  });
++
++  it("takes the roster from the pushed state", () => {
++    const workshopState = new Subject<FacilitatorWorkshopState>();
++    withWorkshopState(workshopState);
++    const { result } = renderHook(() => useParticipantRoster());
++
++    act(() => workshopState.next(joinState(["ada", "grace"])));
++
++    expect(result.current).toEqual({
++      participantCount: 2,
++      participantIds: ["ada", "grace"],
++    });
++  });
++
++  it("follows every later push", () => {
++    const workshopState = new Subject<FacilitatorWorkshopState>();
++    withWorkshopState(workshopState);
++    const { result } = renderHook(() => useParticipantRoster());
++
++    act(() => workshopState.next(joinState(["ada"])));
++    act(() => workshopState.next(joinState(["ada", "grace", "alan"])));
++
++    expect(result.current.participantIds).toEqual(["ada", "grace", "alan"]);
++    expect(result.current.participantCount).toBe(3);
++  });
++
++  it("keeps the count pushed by the server even when it exceeds the names", () => {
++    const workshopState = new Subject<FacilitatorWorkshopState>();
++    withWorkshopState(workshopState);
++    const { result } = renderHook(() => useParticipantRoster());
++
++    act(() =>
++      workshopState.next({
++        revision: 9,
++        phase: Phase.Join,
++        roster: { participantIds: ["ada"], participantCount: 4 },
++      }),
++    );
++
++    expect(result.current.participantCount).toBe(4);
++  });
++
++  it("stops listening when the screen is left", () => {
++    const workshopState = new Subject<FacilitatorWorkshopState>();
++    withWorkshopState(workshopState);
++    const { unmount } = renderHook(() => useParticipantRoster());
++
++    unmount();
++
++    expect(workshopState.observed).toBe(false);
++  });
++});
+diff --git a/frontend/src/app/facilitator/page.module.css b/frontend/src/app/facilitator/page.module.css
+index 095c03d..3019242 100644
+--- a/frontend/src/app/facilitator/page.module.css
++++ b/frontend/src/app/facilitator/page.module.css
+@@ -6,6 +6,12 @@
+   padding: var(--space-gutter);
+ }
+ 
++.controls {
++  display: flex;
++  gap: var(--space-gutter);
++  align-items: flex-start;
++}
++
+ .heading {
+   color: var(--color-text);
+   font-size: var(--text-heading);
+diff --git a/frontend/src/app/facilitator/page.tsx b/frontend/src/app/facilitator/page.tsx
+index 815e5c6..c6acef4 100644
+--- a/frontend/src/app/facilitator/page.tsx
++++ b/frontend/src/app/facilitator/page.tsx
+@@ -2,6 +2,7 @@
+ 
+ import { SessionStatusBanner } from "../SessionStatusBanner";
+ import { AdvancePhaseButton } from "./AdvancePhaseButton";
++import { ParticipantRoster } from "./ParticipantRoster";
+ import { useFacilitatorDependencies } from "./dependencies";
+ import styles from "./page.module.css";
+ 
+@@ -12,7 +13,10 @@ export default function FacilitatorHome() {
+     <main className={styles.page}>
+       <h1 className={styles.heading}>Facilitator</h1>
+       <SessionStatusBanner sessionState={sessionState} />
+-      <AdvancePhaseButton />
++      <div className={styles.controls}>
++        <AdvancePhaseButton />
++        <ParticipantRoster />
++      </div>
+     </main>
+   );
+ }
+diff --git a/frontend/src/app/facilitator/useParticipantRoster.ts b/frontend/src/app/facilitator/useParticipantRoster.ts
+new file mode 100644
+index 0000000..0762d8b
+--- /dev/null
++++ b/frontend/src/app/facilitator/useParticipantRoster.ts
+@@ -0,0 +1,31 @@
++"use client";
++
++import { useEffect, useState } from "react";
++import { useFacilitatorDependencies } from "./dependencies";
++
++export interface ParticipantRosterResult {
++  participantCount: number;
++  participantIds: string[];
++}
++
++const emptyRoster: ParticipantRosterResult = {
++  participantCount: 0,
++  participantIds: [],
++};
++
++export function useParticipantRoster(): ParticipantRosterResult {
++  const { sessionState } = useFacilitatorDependencies();
++  const [roster, setRoster] = useState<ParticipantRosterResult>(emptyRoster);
++
++  useEffect(() => {
++    const subscription = sessionState.workshopState.subscribe((state) =>
++      setRoster(state.roster),
++    );
++
++    return () => {
++      subscription.unsubscribe();
++    };
++  }, [sessionState]);
++
++  return roster;
++}

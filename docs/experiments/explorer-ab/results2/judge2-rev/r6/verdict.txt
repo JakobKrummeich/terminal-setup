@@ -1,0 +1,7 @@
+solution-1 correctness: 9
+solution-1 quality: 9
+solution-2 correctness: 9
+solution-2 quality: 7
+preference: solution-1
+
+reasoning: Backend diffs are byte-identical except test style: both add `SessionName` to the abstract record and all nine variants, a `SessionName(session)` helper, and per-phase coverage. Solution-2's `MemberData`/`TheoryData` over `Enum.GetValues<Phase>()` is auto-extending but breaks the file's established `InlineData`-per-phase pattern that solution-1 mirrors; both are defensible, so backend is a wash. Frontend decides it: `frontend/FE-IMPLEMENTATION-RULES.md` mandates `useComponent.ts` named after the component, returning a result object, plus a thorough `__tests__/useComponent.test.ts` hook test alongside a superficial component test. Solution-1 delivers exactly that — `usePresenterHome` with a `PresenterHomeResult` interface (matching `useSessionStatusBanner`/`SessionStatusBannerResult`) and a real `renderHook` test covering null-until-first-state, latest-value, and unsubscribe-on-unmount. Solution-2 names the hook `useSessionName`, returns a bare `string | null`, and ships no hook test at all, so its unsubscribe path is untested — a stated-rule miss (hence 170 vs 172 tests). Solution-2's one edge: keeping a muted "Presenter" role line under the new heading, which is a nicer screen than solution-1 silently dropping the role label, but that does not offset the missing hook test and off-convention hook shape. Zod schema change and fallback string are identical in both.

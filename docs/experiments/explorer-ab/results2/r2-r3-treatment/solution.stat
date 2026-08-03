@@ -1,0 +1,3 @@
+ backend/Adapters.Web/SessionCreationRateLimitPolicy.cs |  7 +++++++
+ backend/Host.Tests/SessionCreationRateLimitTests.cs    | 14 ++++++++++++++
+ 2 files changed, 21 insertions(+)

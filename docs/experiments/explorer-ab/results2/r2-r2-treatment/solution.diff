@@ -1,0 +1,112 @@
+diff --git a/backend/Domain.Tests/SessionJoinTests.cs b/backend/Domain.Tests/SessionJoinTests.cs
+index 49e46d7..8aa3d2e 100644
+--- a/backend/Domain.Tests/SessionJoinTests.cs
++++ b/backend/Domain.Tests/SessionJoinTests.cs
+@@ -117,6 +117,68 @@ public class SessionJoinTests
+         GroupNamed(session, "owl").Members.ShouldBe([Ben]);
+     }
+ 
++    [Fact]
++    public void A_session_below_its_capacity_still_accepts_a_new_participant()
++    {
++        var session = SessionWithRoster(ParticipantsNumbered(29));
++
++        session.Join(Latecomer, Randomness.Fixed(0));
++
++        session.Roster.Participants.Count.ShouldBe(30);
++    }
++
++    [Fact]
++    public void A_full_session_refuses_a_new_participant()
++    {
++        var session = SessionWithRoster(ParticipantsNumbered(30));
++
++        var violation = Should.Throw<InvariantViolationException>(() =>
++            session.Join(Latecomer, Randomness.Fixed(0))
++        );
++
++        violation.Message.ShouldContain("30");
++        session.Roster.Participants.Count.ShouldBe(30);
++    }
++
++    [Fact]
++    public void A_participant_of_a_full_session_still_resumes_their_existing_place()
++    {
++        var participants = ParticipantsNumbered(30);
++        var session = SessionWithRoster(participants);
++
++        var joined = session.Join(participants[^1], Randomness.Fixed(0));
++
++        joined.ShouldBeFalse();
++        session.Roster.Participants.Count.ShouldBe(30);
++    }
++
++    private static IReadOnlyList<ParticipantId> ParticipantsNumbered(int count)
++    {
++        return Enumerable
++            .Range(1, count)
++            .Select(number => new ParticipantId(
++                Guid.Parse($"00000000-0000-0000-0000-{number:000000000000}")
++            ))
++            .ToList();
++    }
++
++    private static Session SessionWithRoster(IReadOnlyList<ParticipantId> participants)
++    {
++        return Session.Restore(
++            new SessionIdentity(Guid.NewGuid()),
++            TestSessions.Facilitator,
++            TestSessions.Name,
++            Roster.Restore(participants),
++            PhaseProgress.Restore(Phase.Join),
++            QuizProgress.Restore(null, false, false),
++            SelectionRound.Restore([], []),
++            new FormationRecord(),
++            PresentationWalk.Restore(null, null, 0),
++            VotingRounds.Restore(false, 0, []),
++            revision: 0
++        );
++    }
++
+     private static Group GroupNamed(Session session, string name)
+     {
+         return session.Formation.Groups.Single(group => group.Name == name);
+diff --git a/backend/Domain/Session.cs b/backend/Domain/Session.cs
+index ea9b3f7..7622ceb 100644
+--- a/backend/Domain/Session.cs
++++ b/backend/Domain/Session.cs
+@@ -3,6 +3,7 @@ namespace ValuesWorkshop.Domain;
+ public sealed class Session
+ {
+     private const int MaximumNameLength = 120;
++    private const int MaximumParticipants = 30;
+ 
+     public SessionIdentity Identity { get; }
+     public FacilitatorSubject Facilitator { get; }
+@@ -56,6 +57,13 @@ public sealed class Session
+             return false;
+         }
+ 
++        if (Roster.Participants.Count >= MaximumParticipants)
++        {
++            throw new InvariantViolationException(
++                $"A session is full at {MaximumParticipants} participants (I4)."
++            );
++        }
++
+         Roster.Add(participantId);
+ 
+         if (Formation.IsFormed)
+diff --git a/design/domain-model.md b/design/domain-model.md
+index bed38a6..4939854 100644
+--- a/design/domain-model.md
++++ b/design/domain-model.md
+@@ -313,7 +313,7 @@ can refuse a command violating it.
+ | I1 | Phases move forward only, in the fixed order 1→9; no skipping, no going back. | Session |
+ | I2 | Only the facilitator advances phases and operates sub-controls (question, reveal, learning text, presenting group, close voting, tiebreak). | Session |
+ | I3 | Opening a session requires the facilitator passphrase. | Session |
+-| I4 | A participant belongs to the roster before acting; joining is open in every phase, and a returning person resumes their existing place, never a second one. | Session |
++| I4 | A participant belongs to the roster before acting; joining is open in every phase, and a returning person resumes their existing place, never a second one. A roster holds at most 30 participants; once full, a first-time join is refused while returning people still resume. | Session |
+ | I5 | One quiz answer per participant per question; unchangeable once cast. | Session |
+ | I6 | A value selection has exactly ten distinct catalog values and is submitted at most once. | Session |
+ | I7 | Top values = the ten most-selected, widened to include all values tied at tenth place. | Session |

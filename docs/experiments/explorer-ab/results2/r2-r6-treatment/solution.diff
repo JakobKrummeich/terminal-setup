@@ -1,0 +1,467 @@
+diff --git a/backend/Application.Tests/PresenterWorkshopStateMapperTests.cs b/backend/Application.Tests/PresenterWorkshopStateMapperTests.cs
+index aa0ee54..1fdc3d4 100644
+--- a/backend/Application.Tests/PresenterWorkshopStateMapperTests.cs
++++ b/backend/Application.Tests/PresenterWorkshopStateMapperTests.cs
+@@ -6,15 +6,33 @@ namespace ValuesWorkshop.Application.Tests;
+ public class PresenterWorkshopStateMapperTests
+ {
+     [Fact]
+-    public void Envelope_carries_revision_phase_and_participant_count()
++    public void Envelope_carries_revision_phase_session_name_and_participant_count()
+     {
+         var state = Map(SessionFixtures.InPhase(Phase.Join), revision: 4);
+ 
+         state.Revision.ShouldBe(4);
+         state.Phase.ShouldBe(Phase.Join);
++        state.SessionName.ShouldBe(TestSessions.Name.Value);
+         state.ParticipantCount.ShouldBe(3);
+     }
+ 
++    [Theory]
++    [InlineData(Phase.Join)]
++    [InlineData(Phase.Quiz)]
++    [InlineData(Phase.ValueSelection)]
++    [InlineData(Phase.SelectionResults)]
++    [InlineData(Phase.GroupFormation)]
++    [InlineData(Phase.GroupWork)]
++    [InlineData(Phase.ValuePresentation)]
++    [InlineData(Phase.FinalVoting)]
++    [InlineData(Phase.FinalPresentation)]
++    public void Every_phase_names_the_workshop_the_screen_belongs_to(Phase phase)
++    {
++        var state = Map(SessionFixtures.InPhase(phase));
++
++        state.SessionName.ShouldBe(TestSessions.Name.Value);
++    }
++
+     [Theory]
+     [InlineData(Phase.Join, typeof(PresenterJoinState))]
+     [InlineData(Phase.Quiz, typeof(PresenterQuizState))]
+diff --git a/backend/Application/State/PresenterWorkshopState.cs b/backend/Application/State/PresenterWorkshopState.cs
+index 016fad7..d369588 100644
+--- a/backend/Application/State/PresenterWorkshopState.cs
++++ b/backend/Application/State/PresenterWorkshopState.cs
+@@ -13,21 +13,29 @@ namespace ValuesWorkshop.Application.State;
+ [JsonDerivedType(typeof(PresenterValuePresentationState), (int)Phase.ValuePresentation)]
+ [JsonDerivedType(typeof(PresenterFinalVotingState), (int)Phase.FinalVoting)]
+ [JsonDerivedType(typeof(PresenterFinalPresentationState), (int)Phase.FinalPresentation)]
+-public abstract record PresenterWorkshopState(long Revision, int ParticipantCount)
++public abstract record PresenterWorkshopState(
++    long Revision,
++    string SessionName,
++    int ParticipantCount
++)
+ {
+     [JsonIgnore]
+     public abstract Phase Phase { get; }
+ }
+ 
+-public sealed record PresenterJoinState(long Revision, int ParticipantCount)
+-    : PresenterWorkshopState(Revision, ParticipantCount)
++public sealed record PresenterJoinState(long Revision, string SessionName, int ParticipantCount)
++    : PresenterWorkshopState(Revision, SessionName, ParticipantCount)
+ {
+     [JsonIgnore]
+     public override Phase Phase => Phase.Join;
+ }
+ 
+-public sealed record PresenterQuizState(long Revision, int ParticipantCount, QuizView Quiz)
+-    : PresenterWorkshopState(Revision, ParticipantCount)
++public sealed record PresenterQuizState(
++    long Revision,
++    string SessionName,
++    int ParticipantCount,
++    QuizView Quiz
++) : PresenterWorkshopState(Revision, SessionName, ParticipantCount)
+ {
+     [JsonIgnore]
+     public override Phase Phase => Phase.Quiz;
+@@ -35,9 +43,10 @@ public sealed record PresenterQuizState(long Revision, int ParticipantCount, Qui
+ 
+ public sealed record PresenterValueSelectionState(
+     long Revision,
++    string SessionName,
+     int ParticipantCount,
+     SelectionProgressView Selection
+-) : PresenterWorkshopState(Revision, ParticipantCount)
++) : PresenterWorkshopState(Revision, SessionName, ParticipantCount)
+ {
+     [JsonIgnore]
+     public override Phase Phase => Phase.ValueSelection;
+@@ -45,9 +54,10 @@ public sealed record PresenterValueSelectionState(
+ 
+ public sealed record PresenterSelectionResultsState(
+     long Revision,
++    string SessionName,
+     int ParticipantCount,
+     SelectionProgressView Selection
+-) : PresenterWorkshopState(Revision, ParticipantCount)
++) : PresenterWorkshopState(Revision, SessionName, ParticipantCount)
+ {
+     [JsonIgnore]
+     public override Phase Phase => Phase.SelectionResults;
+@@ -55,10 +65,11 @@ public sealed record PresenterSelectionResultsState(
+ 
+ public sealed record PresenterGroupFormationState(
+     long Revision,
++    string SessionName,
+     int ParticipantCount,
+     SelectionProgressView Selection,
+     IReadOnlyList<PresenterGroupView> Groups
+-) : PresenterWorkshopState(Revision, ParticipantCount)
++) : PresenterWorkshopState(Revision, SessionName, ParticipantCount)
+ {
+     [JsonIgnore]
+     public override Phase Phase => Phase.GroupFormation;
+@@ -66,9 +77,10 @@ public sealed record PresenterGroupFormationState(
+ 
+ public sealed record PresenterGroupWorkState(
+     long Revision,
++    string SessionName,
+     int ParticipantCount,
+     IReadOnlyList<PresenterGroupView> Groups
+-) : PresenterWorkshopState(Revision, ParticipantCount)
++) : PresenterWorkshopState(Revision, SessionName, ParticipantCount)
+ {
+     [JsonIgnore]
+     public override Phase Phase => Phase.GroupWork;
+@@ -76,10 +88,11 @@ public sealed record PresenterGroupWorkState(
+ 
+ public sealed record PresenterValuePresentationState(
+     long Revision,
++    string SessionName,
+     int ParticipantCount,
+     IReadOnlyList<PresenterGroupView> Groups,
+     PresenterPresentationView Presentation
+-) : PresenterWorkshopState(Revision, ParticipantCount)
++) : PresenterWorkshopState(Revision, SessionName, ParticipantCount)
+ {
+     [JsonIgnore]
+     public override Phase Phase => Phase.ValuePresentation;
+@@ -87,9 +100,10 @@ public sealed record PresenterValuePresentationState(
+ 
+ public sealed record PresenterFinalVotingState(
+     long Revision,
++    string SessionName,
+     int ParticipantCount,
+     PresenterVotingView Voting
+-) : PresenterWorkshopState(Revision, ParticipantCount)
++) : PresenterWorkshopState(Revision, SessionName, ParticipantCount)
+ {
+     [JsonIgnore]
+     public override Phase Phase => Phase.FinalVoting;
+@@ -97,9 +111,10 @@ public sealed record PresenterFinalVotingState(
+ 
+ public sealed record PresenterFinalPresentationState(
+     long Revision,
++    string SessionName,
+     int ParticipantCount,
+     ConclusionView Conclusion
+-) : PresenterWorkshopState(Revision, ParticipantCount)
++) : PresenterWorkshopState(Revision, SessionName, ParticipantCount)
+ {
+     [JsonIgnore]
+     public override Phase Phase => Phase.FinalPresentation;
+diff --git a/backend/Application/State/PresenterWorkshopStateMapper.cs b/backend/Application/State/PresenterWorkshopStateMapper.cs
+index f19d1c2..e3b76c6 100644
+--- a/backend/Application/State/PresenterWorkshopStateMapper.cs
++++ b/backend/Application/State/PresenterWorkshopStateMapper.cs
+@@ -10,33 +10,47 @@ public static class PresenterWorkshopStateMapper
+     > StateOfPhase = new Dictionary<Phase, Func<Session, long, PresenterWorkshopState>>
+     {
+         [Phase.Join] = (session, revision) =>
+-            new PresenterJoinState(revision, ParticipantCount(session)),
++            new PresenterJoinState(revision, SessionName(session), ParticipantCount(session)),
+         [Phase.Quiz] = (session, revision) =>
+-            new PresenterQuizState(revision, ParticipantCount(session), SessionViews.Quiz(session)),
++            new PresenterQuizState(
++                revision,
++                SessionName(session),
++                ParticipantCount(session),
++                SessionViews.Quiz(session)
++            ),
+         [Phase.ValueSelection] = (session, revision) =>
+             new PresenterValueSelectionState(
+                 revision,
++                SessionName(session),
+                 ParticipantCount(session),
+                 SessionViews.SelectionProgress(session)
+             ),
+         [Phase.SelectionResults] = (session, revision) =>
+             new PresenterSelectionResultsState(
+                 revision,
++                SessionName(session),
+                 ParticipantCount(session),
+                 SessionViews.SelectionProgress(session)
+             ),
+         [Phase.GroupFormation] = (session, revision) =>
+             new PresenterGroupFormationState(
+                 revision,
++                SessionName(session),
+                 ParticipantCount(session),
+                 SessionViews.SelectionProgress(session),
+                 Groups(session)
+             ),
+         [Phase.GroupWork] = (session, revision) =>
+-            new PresenterGroupWorkState(revision, ParticipantCount(session), Groups(session)),
++            new PresenterGroupWorkState(
++                revision,
++                SessionName(session),
++                ParticipantCount(session),
++                Groups(session)
++            ),
+         [Phase.ValuePresentation] = (session, revision) =>
+             new PresenterValuePresentationState(
+                 revision,
++                SessionName(session),
+                 ParticipantCount(session),
+                 Groups(session),
+                 new PresenterPresentationView(SessionViews.PresentedValueId(session))
+@@ -44,12 +58,14 @@ public static class PresenterWorkshopStateMapper
+         [Phase.FinalVoting] = (session, revision) =>
+             new PresenterFinalVotingState(
+                 revision,
++                SessionName(session),
+                 ParticipantCount(session),
+                 new PresenterVotingView(session.Voting.RoundOpen)
+             ),
+         [Phase.FinalPresentation] = (session, revision) =>
+             new PresenterFinalPresentationState(
+                 revision,
++                SessionName(session),
+                 ParticipantCount(session),
+                 SessionViews.Conclusion(session)
+             ),
+@@ -60,6 +76,11 @@ public static class PresenterWorkshopStateMapper
+         return StateOfPhase[session.PhaseProgress.CurrentPhase](session, revision);
+     }
+ 
++    private static string SessionName(Session session)
++    {
++        return session.Name.Value;
++    }
++
+     private static int ParticipantCount(Session session)
+     {
+         return session.Roster.Participants.Count;
+diff --git a/frontend/src/app/presenter/__tests__/presenter.test.tsx b/frontend/src/app/presenter/__tests__/presenter.test.tsx
+index a45bd75..02e69d0 100644
+--- a/frontend/src/app/presenter/__tests__/presenter.test.tsx
++++ b/frontend/src/app/presenter/__tests__/presenter.test.tsx
+@@ -60,4 +60,29 @@ describe("presenter screen group", () => {
+     expect(screen.getByTestId("phase")).toHaveTextContent("Phase 1");
+     expect(screen.getByTestId("connection")).toHaveTextContent("reconnecting");
+   });
++
++  it("names the workshop it belongs to once the first state arrives", async () => {
++    await act(async () => {
++      render(
++        <PresenterLayout>
++          <PresenterHome />
++        </PresenterLayout>,
++      );
++    });
++
++    expect(screen.getByTestId("sessionName")).toHaveTextContent("Workshop");
++
++    act(() => {
++      workshopState.next({
++        revision: 3,
++        phase: Phase.Join,
++        sessionName: "Monday workshop",
++        participantCount: 0,
++      } as PresenterWorkshopState);
++    });
++
++    expect(screen.getByTestId("sessionName")).toHaveTextContent(
++      "Monday workshop",
++    );
++  });
+ });
+diff --git a/frontend/src/app/presenter/__tests__/usePresenterHome.test.ts b/frontend/src/app/presenter/__tests__/usePresenterHome.test.ts
+new file mode 100644
+index 0000000..1662f60
+--- /dev/null
++++ b/frontend/src/app/presenter/__tests__/usePresenterHome.test.ts
+@@ -0,0 +1,51 @@
++import { renderHook, act } from "@testing-library/react";
++import { NEVER, Subject } from "rxjs";
++import { Phase } from "../../../domain/phases";
++import type { PresenterWorkshopState } from "../../../domain/workshopState";
++import { usePresenterHome } from "../usePresenterHome";
++
++function fakePort() {
++  const workshopState = new Subject<PresenterWorkshopState>();
++
++  return {
++    port: { workshopState, connectionState: NEVER },
++    workshopState,
++  };
++}
++
++function joinState(sessionName: string): PresenterWorkshopState {
++  return {
++    revision: 1,
++    phase: Phase.Join,
++    sessionName,
++    participantCount: 0,
++  };
++}
++
++describe("presenter home logic", () => {
++  it("has no session name until the first state arrives", () => {
++    const { port } = fakePort();
++
++    const { result } = renderHook(() => usePresenterHome(port));
++
++    expect(result.current.sessionName).toBeNull();
++  });
++
++  it("follows the session name of the latest workshop state", () => {
++    const { port, workshopState } = fakePort();
++    const { result } = renderHook(() => usePresenterHome(port));
++
++    act(() => workshopState.next(joinState("Monday workshop")));
++
++    expect(result.current.sessionName).toBe("Monday workshop");
++  });
++
++  it("stops listening when the screen is left", () => {
++    const { port, workshopState } = fakePort();
++    const { unmount } = renderHook(() => usePresenterHome(port));
++
++    unmount();
++
++    expect(workshopState.observed).toBe(false);
++  });
++});
+diff --git a/frontend/src/app/presenter/page.module.css b/frontend/src/app/presenter/page.module.css
+index 877f6c6..1034986 100644
+--- a/frontend/src/app/presenter/page.module.css
++++ b/frontend/src/app/presenter/page.module.css
+@@ -10,7 +10,7 @@
+ }
+ 
+ .heading {
+-  color: var(--color-text-muted);
++  color: var(--color-text);
+   font-size: var(--text-heading);
+   font-weight: var(--weight-bold);
+   line-height: var(--leading-tight);
+diff --git a/frontend/src/app/presenter/page.tsx b/frontend/src/app/presenter/page.tsx
+index 28b40a4..d25b3d3 100644
+--- a/frontend/src/app/presenter/page.tsx
++++ b/frontend/src/app/presenter/page.tsx
+@@ -2,14 +2,18 @@
+ 
+ import { SessionStatusBanner } from "../SessionStatusBanner";
+ import { usePresenterDependencies } from "./dependencies";
++import { usePresenterHome } from "./usePresenterHome";
+ import styles from "./page.module.css";
+ 
+ export default function PresenterHome() {
+   const { sessionState } = usePresenterDependencies();
++  const { sessionName } = usePresenterHome(sessionState);
+ 
+   return (
+     <main className={styles.page}>
+-      <h1 className={styles.heading}>Presenter</h1>
++      <h1 className={styles.heading} data-testid="sessionName">
++        {sessionName ?? "Workshop"}
++      </h1>
+       <SessionStatusBanner sessionState={sessionState} />
+     </main>
+   );
+diff --git a/frontend/src/app/presenter/usePresenterHome.ts b/frontend/src/app/presenter/usePresenterHome.ts
+new file mode 100644
+index 0000000..ef3f101
+--- /dev/null
++++ b/frontend/src/app/presenter/usePresenterHome.ts
+@@ -0,0 +1,26 @@
++"use client";
++
++import { useEffect, useState } from "react";
++import type { PresenterSessionStatePort } from "../../domain/ports/presenter/sessionStatePort";
++
++export interface PresenterHomeResult {
++  sessionName: string | null;
++}
++
++export function usePresenterHome(
++  sessionState: PresenterSessionStatePort,
++): PresenterHomeResult {
++  const [sessionName, setSessionName] = useState<string | null>(null);
++
++  useEffect(() => {
++    const subscription = sessionState.workshopState.subscribe((state) =>
++      setSessionName(state.sessionName),
++    );
++
++    return () => {
++      subscription.unsubscribe();
++    };
++  }, [sessionState]);
++
++  return { sessionName };
++}
+diff --git a/frontend/src/domain/__tests__/workshopState.test.ts b/frontend/src/domain/__tests__/workshopState.test.ts
+index 30c5e53..745b614 100644
+--- a/frontend/src/domain/__tests__/workshopState.test.ts
++++ b/frontend/src/domain/__tests__/workshopState.test.ts
+@@ -160,6 +160,7 @@ describe("presenter workshop state schema", () => {
+     const state = presenterWorkshopStateSchema.parse({
+       revision: 44,
+       phase: 8,
++      sessionName: "Monday workshop",
+       participantCount: 8,
+       voting: { isRoundOpen: true },
+     });
+@@ -168,12 +169,24 @@ describe("presenter workshop state schema", () => {
+       throw new Error("expected a final voting state");
+     }
+     expect(state.voting.isRoundOpen).toBe(true);
++    expect(state.sessionName).toBe("Monday workshop");
++  });
++
++  it("rejects a state without a session name", () => {
++    const result = presenterWorkshopStateSchema.safeParse({
++      revision: 44,
++      phase: 1,
++      participantCount: 8,
++    });
++
++    expect(result.success).toBe(false);
+   });
+ 
+   it("rejects a group that reports members instead of an anonymous count", () => {
+     const result = presenterWorkshopStateSchema.safeParse({
+       revision: 44,
+       phase: 6,
++      sessionName: "Monday workshop",
+       participantCount: 8,
+       groups: [
+         {
+@@ -192,6 +205,7 @@ describe("presenter workshop state schema", () => {
+     const result = presenterWorkshopStateSchema.safeParse({
+       revision: -1,
+       phase: 1,
++      sessionName: "Monday workshop",
+       participantCount: 0,
+     });
+ 
+diff --git a/frontend/src/domain/workshopState.ts b/frontend/src/domain/workshopState.ts
+index 8c77fe1..2e7818f 100644
+--- a/frontend/src/domain/workshopState.ts
++++ b/frontend/src/domain/workshopState.ts
+@@ -96,7 +96,10 @@ const facilitatorEnvelope = {
+   roster: rosterViewSchema,
+ };
+ 
+-const presenterEnvelope = participantEnvelope;
++const presenterEnvelope = {
++  ...participantEnvelope,
++  sessionName: z.string(),
++};
+ 
+ export const participantWorkshopStateSchema = z.discriminatedUnion("phase", [
+   z.object({ phase: z.literal(Phase.Join), ...participantEnvelope }),

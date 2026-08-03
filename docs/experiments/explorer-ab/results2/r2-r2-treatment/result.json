@@ -1,0 +1,57 @@
+{
+  "run_id": "r2-r2-treatment",
+  "arm": "treatment",
+  "task": "r2",
+  "wall_s": 210.9,
+  "pi_exit": 0,
+  "cost_usd": 0.4822,
+  "cost_explorers": 0.1278,
+  "parent_peak_context": 20273,
+  "parent_end_context": 20273,
+  "parent_tool_calls": 14,
+  "caller_peak_context_sum": 20273,
+  "explorer_calls_parent": 1,
+  "explorer_calls_subagent": 0,
+  "agent_calls": 0,
+  "subagents": 0,
+  "explorer_sessions": 1,
+  "explorer_tool_calls": 36,
+  "sessions": [
+    {
+      "role": "parent",
+      "model": "claude-opus-5",
+      "cost": 0.3544,
+      "tool_calls": 14,
+      "tools": {
+        "Explorer": 1,
+        "read": 4,
+        "bash": 6,
+        "edit": 3
+      },
+      "peak_context": 20273,
+      "end_context": 20273
+    },
+    {
+      "role": "explorer",
+      "model": "claude-haiku-4-5",
+      "cost": 0.1278,
+      "tool_calls": 36,
+      "tools": {
+        "ls": 4,
+        "find": 10,
+        "read": 15,
+        "grep": 7
+      },
+      "peak_context": 21714,
+      "end_context": 21714
+    }
+  ],
+  "files_changed": 3,
+  "diff_lines": 72,
+  "backend_pass": 275,
+  "backend_fail": 0,
+  "frontend_pass": 167,
+  "backend_exit": 0,
+  "frontend_exit": 0,
+  "typecheck_exit": 0
+}

@@ -1,6 +1,6 @@
 # Experiment: does the Explorer tool earn its keep?
 
-Status: **complete** (2026-08-02). Verdict at the bottom.
+Status: **complete** (round 1: 2026-08-02, round 2: 2026-08-03). Final verdict at the bottom.
  Protocol below is fixed before results are collected. Results and the
 verdict live at the bottom; nothing above the results section is edited once a run has started.
 
@@ -211,7 +211,7 @@ none of these differences are statistically significant. The t3 outlier drives e
 average. Judge and worker are the same model family, and the judge shows position bias. This is
 evidence to act on, not proof.
 
-### What would be worth trying next (not done here)
+### What was worth trying next (round 2 does exactly this)
 
 - Harder, larger-repo tasks where the control arm's own exploration is genuinely expensive; this
   repo (207 files) may simply be small enough that grepping directly is optimal.
@@ -220,3 +220,150 @@ evidence to act on, not proof.
   cost/latency ledger unfavourable.
 - Measuring parent context tokens as the primary outcome rather than cost: treatment did reduce
   mean parent context (76k vs 81k), the one metric that moved in the intended direction outside t3.
+
+---
+
+# Round 2 — bigger repo, context as the primary outcome
+
+Round 1 answered its four questions but left the interesting one open: the tool is *supposed* to
+buy the caller **context headroom**, and round 1 measured cost. Round 2 keeps the design of round 1
+and changes four things, all fixed before any run:
+
+| | round 1 | round 2 |
+|---|---|---|
+| subject repo | `lightspeed`, 207 files, TypeScript | **frozen clone of `ValuesWorkshop`** (`/home/dev/.cache/vw-frozen`, pinned `3f898ba`), 406 files, C# backend + React/TS frontend |
+| tasks | 3 synthetic CLI features | **6 tasks (r1–r6)** taken from the repo's real backlog, spread over domain, HTTP, and frontend |
+| primary outcome | `cost_usd` | **`parent_peak_context`** (peak context tokens of the *caller's* session) |
+| extra question | — | **Q6: do subagents (`Agent`) use Explorer themselves?** |
+
+Everything else is unchanged: same models (opus-5 caller, haiku-4-5 explorer), same arms
+(`--exclude-tools Explorer` vs available), paired within task, sequential runs, fresh clone and
+private session dir per run, blinded judging.
+
+Measures added in `measure2.py`: `parent_peak_context`, `caller_peak_context_sum` (parent plus any
+subagent that itself acts as a caller), `explorer_calls_parent` vs `explorer_calls_subagent`,
+`subagents`, `cost_explorers`, and per-session context peaks. Verification per run: `dotnet test`
+(baseline 272 passing), `pnpm test` (baseline 167), `pnpm typecheck`.
+
+Tasks (full briefs in `explorer-ab/tasks2/`): r1 facilitator quiz step controls; r2 roster cap with
+invariant rejection; r3 `Retry-After` hint on rate-limited session creation; r4 participant lobby
+screen; r5 facilitator roster panel; r6 session name through presenter state.
+
+One protocol deviation, applied uniformly and after the fact: `run2.sh` captured the solution as
+`git diff --cached`, which is empty when the agent commits its work (one run did). All 12 diffs
+were recomputed against the frozen base commit by `explorer-ab/fixdiffs.sh` before judging. This
+touches only how the diff is *read*, not how any run was produced.
+
+## Round 2 results
+
+12 runs, paired, sequential. Raw data: `/tmp/explorer-ab/r2-*/result.json`, copied to
+`explorer-ab/results2/`. All 12 runs finished green (backend and frontend suites passing,
+typecheck clean in every run).
+
+| task | arm | cost $ | wall s | **parent peak ctx** | parent tool calls | Explorer calls | subagents | files | diff lines |
+|---|---|---|---|---|---|---|---|---|---|
+| r1 | control | 1.63 | 335 | 53939 | 39 | 0 | 0 | 10 | 516 |
+| r1 | treatment | 1.59 | 335 | 54944 | 32 | 1 | 0 | 11 | 527 |
+| r2 | control | 0.53 | 117 | 28550 | 21 | 0 | 0 | 3 | 60 |
+| r2 | treatment | 0.48 | 211 | 20273 | 14 | 1 | 0 | 3 | 72 |
+| r3 | control | 0.57 | 166 | 25521 | 18 | 0 | 0 | 2 | 39 |
+| r3 | treatment | 0.40 | 162 | 18762 | 14 | 1 | 0 | 2 | 21 |
+| r4 | control | 2.08 | 403 | 59453 | 72 | 0 | 0 | 13 | 511 |
+| r4 | treatment | 1.43 | 322 | 50960 | 37 | 1 | 0 | 9 | 378 |
+| r5 | control | 1.00 | 171 | 39972 | 42 | 0 | 0 | 8 | 286 |
+| r5 | treatment | 0.82 | 239 | 32438 | 24 | 1 | 0 | 8 | 275 |
+| r6 | control | 1.58 | 296 | 52792 | 52 | 0 | 0 | 9 | 170 |
+| r6 | treatment | 1.73 | 398 | 53127 | 51 | 1 | 0 | 10 | 215 |
+| **mean** | control | **1.23** | **248** | **43371** | **40.7** | 0 | 0 | | |
+| **mean** | treatment | **1.08** | **278** | **38417** | **28.7** | 1 | 0 | | |
+
+Mean paired deltas (treatment vs control, per task then averaged):
+
+| metric | mean Δ | per task |
+|---|---|---|
+| parent peak context | **−14.3%** | r1 +1.9, r2 −29.0, r3 −26.5, r4 −14.3, r5 −18.8, r6 +0.6 |
+| cost | **−13.2%** | r1 −2.4, r2 −8.3, r3 −28.7, r4 −31.4, r5 −17.7, r6 +9.6 |
+| wall clock | **+21.7%** | r1 −0.2, r2 +79.6, r3 −2.5, r4 −20.3, r5 +39.3, r6 +34.4 |
+| parent tool calls | **−27.8%** | r1 −17.9, r2 −33.3, r3 −22.2, r4 −48.6, r5 −42.9, r6 −1.9 |
+| diff lines | −4.6% | r1 +2.1, r2 +20.0, r3 −46.2, r4 −26.0, r5 −3.8, r6 +26.5 |
+
+Explorer's own footprint per call: **$0.05–$0.14** (5–27% of the run's spend, mean ~12%),
+18–55 internal tool calls, 15k–31k of *its own* context — context the caller never pays for.
+
+**Q6 — subagents: no data, and that is the finding.** `Agent` was called **zero** times in all 12
+runs, in both arms. The workload (single, well-scoped feature tasks) never triggered delegation, so
+`explorer_calls_subagent` is 0 everywhere. Whether a subagent would use Explorer is untested; what
+is tested is that on this workload subagents do not appear at all.
+
+## Round 2 judging (Q4)
+
+Every task pair judged **twice**, once in each ordering (`judge2` = control first, `judge2-rev` =
+treatment first), blinded, unblinded only after all 12 scores were recorded.
+Raw verdicts: `explorer-ab/results2/judge2*/`.
+
+| task | control c+q | treatment c+q | pref (control first) | pref (treatment first) |
+|---|---|---|---|---|
+| r1 | 16 / 16 | 17 / 17 | treatment | treatment |
+| r2 | 17 / 17 | 14 / 15 | control | control |
+| r3 | 18 / 17 | 14 / 15 | control | control |
+| r4 | 17 / 17 | 15 / 15 | control | control |
+| r5 | 17 / 18 | 15 / 17 | control | control |
+| r6 | 15 / 16 | 18 / 18 | treatment | treatment |
+
+**Control preferred in 8 of 12 judgments** (4 of 6 tasks). Mean total score: **control 16.75,
+treatment 15.83**. The judge picked `solution-1` in 6 of 12 — **no position bias this round** — and
+gave the *same* preference in both orderings for all six tasks, so these preferences are stable.
+
+Where treatment lost, the judge's stated reasons repeat round 1's pattern: naming that drifts from
+the repo's design documents, and missing adapter/integration tests in the layer the task named —
+i.e. conventions the control arm found by reading more of the codebase itself. Where treatment won
+(r1, r6) it matched the design docs' ubiquitous language *better*, which is exactly what a good
+pointer report should produce.
+
+# Final verdict (both rounds)
+
+1. **Is Explorer used? Yes, reliably, and exactly once.** 9 of 9 treatment runs across both rounds
+   called it, always as the opening move, never twice. Two repos, nine tasks, one call each. The
+   description reliably earns the first call and never the second.
+2. **Does it lower the caller's context usage? Yes — this is the real effect.** Round 2:
+   **−14.3% mean peak parent context** (43.4k → 38.4k), reduction in 4 of 6 tasks, up to −29%, and
+   never more than +2% worse. Round 1 saw the same direction (81k → 76k). The mechanism is visible
+   in the tool counts: the parent makes **−27.8% fewer tool calls** and the explorer absorbs 15k–31k
+   of context in a session the caller never pays for. If context headroom is the constraint —
+   long sessions, compaction pressure — Explorer buys real room.
+3. **Cost: a small saving, not the point.** Round 2 −13.2% mean, round 1 −11% (outlier-driven).
+   Consistent direction across both rounds, but the effect is modest and one task went the other
+   way in each round. Prompt caching makes the caller's own reading cheap (cacheRead $0.50/M), so
+   cost understates the context benefit; treat cost as neutral-to-slightly-positive.
+4. **Speed: no, consistently worse.** Round 2 **+21.7%** mean wall clock, round 1 +12%. An Explorer
+   call is a blocking round trip on a slower path, and one call rarely removes enough downstream
+   work to repay the latency. This is the price of the context saving, and it is real.
+5. **Quality: slightly worse, consistently.** Control preferred in **13 of 18 blinded judgments**
+   across both rounds (5/6 in round 1, 8/12 in round 2); mean score 16.75 vs 15.83 in round 2,
+   16.5 vs 14.5 in round 1. Round 2 removes the round-1 position-bias worry: no positional skew,
+   and identical preferences in both orderings. The recurring failure mode is the same in both
+   rounds — pointers give false confidence in coverage, the agent stops exploring, and it misses
+   conventions (design-doc naming, existing test layers) that the control arm found by reading more.
+6. **Do subagents use their own Explorer? Unknown — they never appeared.** Zero `Agent` calls in
+   all 12 round-2 runs. On single-feature tasks the caller does everything itself, so the nested
+   case is untested by this experiment.
+
+**Overall: Explorer is a context tool, not a speed or quality tool.** It reliably trades ~20% more
+wall-clock time and a small quality risk for ~14% less caller context and ~13% less cost. Keep it
+enabled when context is the binding constraint (long sessions, large repos, work that will be
+compacted); it is not worth it for short, latency-sensitive tasks — and the single-call pattern
+means it never becomes a *way of working*, only an opening move.
+
+Caveats, stated plainly: 9 paired tasks across 2 repos, one model pair, no repetitions — no
+statistical significance is claimed. Judge and worker are the same model family. Round-2 wall-clock
+figures include shared-proxy load variance. The one deviation (post-hoc diff recomputation) is
+documented above and was applied identically to both arms.
+
+### If someone wants to push this further
+
+- Make the tool *earn repeated use*: the single opening call is what makes the latency ledger bad.
+  A description demanding a call before opening any unread file, then re-measure — with context as
+  the primary outcome, not cost.
+- Fix the quality leak directly: have the explorer report *conventions it saw* (design docs, test
+  layers), not only file/line pointers. Both rounds' losses trace to missed conventions.
+- Test the nested case deliberately with a task large enough to force `Agent` delegation.

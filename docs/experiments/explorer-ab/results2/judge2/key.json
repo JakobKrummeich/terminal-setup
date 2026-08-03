@@ -1,0 +1,26 @@
+{
+  "r1": {
+    "solution-1": "control",
+    "solution-2": "treatment"
+  },
+  "r2": {
+    "solution-1": "control",
+    "solution-2": "treatment"
+  },
+  "r3": {
+    "solution-1": "control",
+    "solution-2": "treatment"
+  },
+  "r4": {
+    "solution-1": "control",
+    "solution-2": "treatment"
+  },
+  "r5": {
+    "solution-1": "control",
+    "solution-2": "treatment"
+  },
+  "r6": {
+    "solution-1": "control",
+    "solution-2": "treatment"
+  }
+}

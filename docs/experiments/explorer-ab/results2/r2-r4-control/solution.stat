@@ -1,0 +1,15 @@
+ frontend/src/app/__tests__/useSessionState.test.ts | 82 ++++++++++++++++++++
+ .../app/participant/__tests__/participant.test.tsx | 45 ++++++++++-
+ .../__tests__/useParticipantHome.test.tsx          | 65 ++++++++++++++++
+ frontend/src/app/participant/page.tsx              | 12 ++-
+ frontend/src/app/participant/phases/join/.gitkeep  |  0
+ .../participant/phases/join/JoinLobby.module.css   | 31 ++++++++
+ .../src/app/participant/phases/join/JoinLobby.tsx  | 28 +++++++
+ .../phases/join/__tests__/JoinLobby.test.tsx       | 49 ++++++++++++
+ .../phases/join/__tests__/useJoinLobby.test.tsx    | 89 ++++++++++++++++++++++
+ .../app/participant/phases/join/useJoinLobby.ts    | 31 ++++++++
+ frontend/src/app/participant/useParticipantHome.ts | 18 +++++
+ frontend/src/app/useSessionState.ts                | 34 +++++++++
+ frontend/src/app/useSessionStatusBanner.ts         | 26 +------
+ frontend/src/domain/ports/sessionStatePort.ts      |  1 +
+ 14 files changed, 484 insertions(+), 27 deletions(-)

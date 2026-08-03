@@ -1,0 +1,11 @@
+ .../PresenterWorkshopStateMapperTests.cs           | 20 ++++++++-
+ .../Application/State/PresenterWorkshopState.cs    | 39 ++++++++++++-----
+ .../State/PresenterWorkshopStateMapper.cs          | 27 ++++++++++--
+ .../src/app/presenter/__tests__/presenter.test.tsx | 25 +++++++++++
+ .../presenter/__tests__/usePresenterHome.test.ts   | 51 ++++++++++++++++++++++
+ frontend/src/app/presenter/page.module.css         |  2 +-
+ frontend/src/app/presenter/page.tsx                |  6 ++-
+ frontend/src/app/presenter/usePresenterHome.ts     | 26 +++++++++++
+ .../src/domain/__tests__/workshopState.test.ts     | 14 ++++++
+ frontend/src/domain/workshopState.ts               |  5 ++-
+ 10 files changed, 196 insertions(+), 19 deletions(-)

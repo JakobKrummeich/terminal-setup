@@ -1,0 +1,42 @@
+{
+  "run_id": "r2-r2-control",
+  "arm": "control",
+  "task": "r2",
+  "wall_s": 117.4,
+  "pi_exit": 0,
+  "cost_usd": 0.5258,
+  "cost_explorers": 0,
+  "parent_peak_context": 28550,
+  "parent_end_context": 28550,
+  "parent_tool_calls": 21,
+  "caller_peak_context_sum": 28550,
+  "explorer_calls_parent": 0,
+  "explorer_calls_subagent": 0,
+  "agent_calls": 0,
+  "subagents": 0,
+  "explorer_sessions": 0,
+  "explorer_tool_calls": 0,
+  "sessions": [
+    {
+      "role": "parent",
+      "model": "claude-opus-5",
+      "cost": 0.5258,
+      "tool_calls": 21,
+      "tools": {
+        "bash": 16,
+        "read": 1,
+        "edit": 4
+      },
+      "peak_context": 28550,
+      "end_context": 28550
+    }
+  ],
+  "files_changed": 3,
+  "diff_lines": 60,
+  "backend_pass": 275,
+  "backend_fail": 0,
+  "frontend_pass": 167,
+  "backend_exit": 0,
+  "frontend_exit": 0,
+  "typecheck_exit": 0
+}
