@@ -14,6 +14,8 @@ byte-exact.
 
 ```
 pi/extensions/    pi TUI extensions (symlinked as ~/.pi/agent/extensions)
+pi/extensions/test/  extension tests: real AgentSession + scripted fake LLM
+                  (`./pi/extensions/test/run.sh`)
 pi/skills/        agent skills (each dir symlinked into ~/.pi/agent/skills/;
                   per-skill links so non-repo skills can coexist there)
 pi/settings.json  reference copy (copied on fresh install, never symlinked --
@@ -176,7 +178,7 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | `markdown-no-padding.ts` | strip paddingX=1 from rendered markdown (copy-safety); patches pi-tui internals — re-verify after `pi update` |
 | `rtk.ts` / `rtk-tools.ts` | route tool calls through rtk token filter |
 | `subagent.ts` | `Agent` tool: delegate a task to a child agent session, capped at one layer deep. Press **F2** to watch the running child live in the normal TUI style, `Esc` to step back out (override the key with `PI_SUBAGENT_WATCH_KEY`) |
-| `timer.ts` | one-shot wakeup timer tool for long background tasks |
+| `timer.ts` | one-shot wakeup timer tool for long background tasks. Expiry is injected with `deliverAs: "steer"` so it lands at the next turn boundary; `"followUp"` only lands when the whole run ends, which stacked stale wake-ups during long runs (regression-tested) |
 | `wsstate.ts` | report pi agent busy/idle to WezTerm workspace status via OSC 1337 |
 
 ### Subagents (`subagent.ts`)
@@ -228,6 +230,25 @@ and reads only the files that matter. Design notes in `docs/ideas/explorer-subag
 - Runs show as `explorer#<id>` and share the **F2** watch view with agents.
 - Note: `anthropicAPIProxy` needs a pricing entry for the explorer model or its dashboard misprices
   the traffic (added for `claude-haiku-4-5`); pi's own cost line comes from pi-ai's catalog.
+
+## Tests
+
+```bash
+./pi/extensions/test/run.sh          # all extension tests
+./pi/extensions/test/run.sh --test-name-pattern=timer
+```
+
+`node --test` with type-stripping (node >= 22), no build step. Tests drive a real
+pi `AgentSession` with `session.agent.streamFunction` replaced by a scripted fake
+LLM (`test/harness.ts`) — no network, no API key, real agent loop and real
+steering/follow-up queues. The runner creates a gitignored `test/node_modules`
+symlink farm into the installed pi, because Node's ESM resolver ignores
+`NODE_PATH`.
+
+`test/` is NOT loaded as an extension: pi discovers `extensions/*.ts` plus
+subdirs that have `index.ts`/`index.js` or a `package.json` with a `pi` field
+(one level, no recursion) — same reason `lib/` is inert. Never add any of those
+three files to `test/` or `lib/`.
 
 ## Known issues
 
