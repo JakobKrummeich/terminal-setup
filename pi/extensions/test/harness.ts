@@ -1,0 +1,181 @@
+/**
+ * Test harness: runs a real pi AgentSession with a scripted (fake) LLM.
+ *
+ * No network, no API key: `session.agent.streamFunction` is replaced with a
+ * generator that returns pre-scripted assistant messages, so tool calls,
+ * turn boundaries and queue behaviour are exercised by the real pi internals
+ * (agent-loop, steering/follow-up queues) while staying deterministic.
+ */
+
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { getModel } from "@earendil-works/pi-ai/compat";
+import {
+	createAgentSession,
+	DefaultResourceLoader,
+	ModelRuntime,
+	SessionManager,
+	SettingsManager,
+} from "@earendil-works/pi-coding-agent";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+/** One scripted assistant response: either a tool call or a final text answer. */
+export type ScriptedStep =
+	| { kind: "tool"; id: string; name: string; args: Record<string, unknown> }
+	| { kind: "text"; text: string };
+
+export const toolStep = (id: string, name: string, args: Record<string, unknown>): ScriptedStep => ({
+	kind: "tool",
+	id,
+	name,
+	args,
+});
+
+export const textStep = (text: string): ScriptedStep => ({ kind: "text", text });
+
+export interface TestSessionOptions {
+	/** Absolute paths of extensions under test. */
+	extensionPaths: string[];
+	/** Assistant responses, one per LLM call. Exhausted script ends the run. */
+	script: ScriptedStep[];
+	/** Tool names to enable (extension tools must be listed explicitly). */
+	tools?: string[];
+	/** Simulated LLM latency per call. */
+	llmDelayMs?: number;
+}
+
+export interface QueueSnapshot {
+	atMs: number;
+	steering: string[];
+	followUp: string[];
+}
+
+export interface TestSession {
+	session: any;
+	/** Text of every user message actually delivered to the agent, in order. */
+	deliveredUserMessages: { atMs: number; text: string }[];
+	/** Every queue_update emitted by the session. */
+	queueSnapshots: QueueSnapshot[];
+	/** Timestamps of turn boundaries. */
+	turnEnds: number[];
+	/** Milliseconds since the session was created. */
+	now(): number;
+	dispose(): void;
+}
+
+export async function createTestSession(options: TestSessionOptions): Promise<TestSession> {
+	const dir = mkdtempSync(path.join(tmpdir(), "pi-ext-test-"));
+	const agentDir = path.join(dir, "agent");
+
+	const modelRuntime = await ModelRuntime.create({
+		authPath: path.join(dir, "auth.json"),
+		modelsPath: path.join(dir, "models.json"),
+	});
+	modelRuntime.setRuntimeApiKey("anthropic", "test-key-not-used");
+	const model = getModel("anthropic", "claude-sonnet-4-5");
+	if (!model) throw new Error("test model not found");
+
+	const resourceLoader = new DefaultResourceLoader({
+		cwd: dir,
+		agentDir,
+		additionalExtensionPaths: options.extensionPaths,
+		noSkills: true,
+		noPromptTemplates: true,
+		noThemes: true,
+	} as any);
+	await resourceLoader.reload();
+	const loaded = resourceLoader.getExtensions();
+	if (loaded.errors.length > 0) {
+		throw new Error(`extension load errors: ${JSON.stringify(loaded.errors)}`);
+	}
+
+	const { session } = await createAgentSession({
+		cwd: dir,
+		agentDir,
+		model,
+		thinkingLevel: "off",
+		modelRuntime,
+		resourceLoader,
+		tools: options.tools ?? [],
+		sessionManager: SessionManager.inMemory(dir),
+		settingsManager: SettingsManager.inMemory({
+			compaction: { enabled: false },
+			retry: { enabled: false },
+		} as any),
+	});
+
+	const startedAt = Date.now();
+	const now = () => Date.now() - startedAt;
+
+	let step = 0;
+	const llmDelayMs = options.llmDelayMs ?? 50;
+	session.agent.streamFunction = ((m: any) => {
+		const stream = createAssistantMessageEventStream();
+		void (async () => {
+			const scripted: ScriptedStep = options.script[step++] ?? textStep("(script exhausted)");
+			const output: any = {
+				role: "assistant",
+				content: [],
+				api: m.api,
+				provider: m.provider,
+				model: m.id,
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "pending",
+				timestamp: Date.now(),
+			};
+			stream.push({ type: "start", partial: output });
+			await sleep(llmDelayMs);
+			if (scripted.kind === "tool") {
+				output.content = [
+					{ type: "toolCall", id: scripted.id, name: scripted.name, arguments: scripted.args },
+				];
+				output.stopReason = "toolUse";
+			} else {
+				output.content = [{ type: "text", text: scripted.text }];
+				output.stopReason = "stop";
+			}
+			stream.push({ type: "done", reason: output.stopReason, message: output });
+			stream.end();
+		})();
+		return stream;
+	}) as any;
+
+	const deliveredUserMessages: { atMs: number; text: string }[] = [];
+	const queueSnapshots: QueueSnapshot[] = [];
+	const turnEnds: number[] = [];
+
+	session.subscribe((event: any) => {
+		if (event.type === "message_start" && event.message.role === "user") {
+			const text = (event.message.content ?? [])
+				.filter((c: any) => c.type === "text")
+				.map((c: any) => c.text)
+				.join("\n");
+			deliveredUserMessages.push({ atMs: now(), text });
+		} else if (event.type === "queue_update") {
+			queueSnapshots.push({ atMs: now(), steering: [...event.steering], followUp: [...event.followUp] });
+		} else if (event.type === "turn_end") {
+			turnEnds.push(now());
+		}
+	});
+
+	return {
+		session,
+		deliveredUserMessages,
+		queueSnapshots,
+		turnEnds,
+		now,
+		dispose: () => session.dispose(),
+	};
+}
+
+export function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}

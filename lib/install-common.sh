@@ -73,6 +73,17 @@ install_pi() {
     else
         echo "SKIPPED: ~/.pi/agent/settings.json exists (merge manually if needed; repo copy is reference)"
     fi
+
+    # Explorer model: owned by the user, never symlinked. Ships unset on purpose —
+    # no guessed model id, so a wrong one cannot fail late.
+    if [ ! -f ~/.pi/agent/explorer-model.json ]; then
+        mkdir -p ~/.pi/agent
+        cp "$REPO/pi/explorer-model.json" ~/.pi/agent/explorer-model.json
+        echo "COPIED: pi explorer-model.json (unset)"
+        echo "TODO: run /explorer-model in pi to pick the Explorer model (a cheap, fast one, e.g. claude-haiku-4-5)"
+    else
+        echo "SKIPPED: ~/.pi/agent/explorer-model.json exists"
+    fi
 }
 
 install_pi_azure_response_retry_patch() {

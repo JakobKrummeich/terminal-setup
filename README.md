@@ -14,6 +14,8 @@ byte-exact.
 
 ```
 pi/extensions/    pi TUI extensions (symlinked as ~/.pi/agent/extensions)
+pi/extensions/test/  extension tests: real AgentSession + scripted fake LLM
+                  (`./pi/extensions/test/run.sh`)
 pi/skills/        agent skills (each dir symlinked into ~/.pi/agent/skills/;
                   per-skill links so non-repo skills can coexist there)
 pi/settings.json  reference copy (copied on fresh install, never symlinked --
@@ -172,11 +174,13 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | `context-cap.ts` | auto token-cap handoff: at 160k the agent writes a handoff file (`~/.pi/agent/context-cap/<sessionId>-<seq>.md`), then a persistent swap-marker entry is appended and a `context` handler slices the LLM context at it — the next LLM call sees only the handoff (session ≠ context: full history + forensic swap metadata stay in the session file); 200k hard backstop with stale-file fallback |
 | `custom-footer.ts` | cumulative token/cost footer |
 | `dump-system-prompt.ts` | debug: dump active system prompt |
+| `explorer.ts` | `Explorer` tool: cheap read-only child agent that reports *where to look* (paths + line ranges). Available to every agent, including subagents. Model picked with `/explorer-model` |
+| `lib/child-session.ts` | shared child-session plumbing for `subagent.ts` and `explorer.ts` (not an extension: pi's loader only scans top-level `*.ts`) |
 | `handoff.ts` | session handoff summaries |
 | `markdown-no-padding.ts` | strip paddingX=1 from rendered markdown (copy-safety); patches pi-tui internals — re-verify after `pi update` |
 | `rtk.ts` / `rtk-tools.ts` | route tool calls through rtk token filter |
 | `subagent.ts` | `Agent` tool: delegate a task to a child agent session, capped at one layer deep. Press **F2** to watch the running child live in the normal TUI style, `Esc` to step back out (override the key with `PI_SUBAGENT_WATCH_KEY`) |
-| `timer.ts` | one-shot wakeup timer tool for long background tasks |
+| `timer.ts` | one-shot wakeup timer tool for long background tasks. Expiry is injected with `deliverAs: "steer"` so it lands at the next turn boundary; `"followUp"` only lands when the whole run ends, which stacked stale wake-ups during long runs (regression-tested) |
 | `wsstate.ts` | report pi agent busy/idle to WezTerm workspace status via OSC 1337 |
 
 ### Subagents (`subagent.ts`)
@@ -185,17 +189,68 @@ The main agent delegates via the `Agent` tool and keeps the overview; the child 
 ordinary pi session in the same cwd with the same system prompt, AGENTS.md, extensions
 and skills — it is not told it is a subagent. The one difference is that it has no `Agent`
 tool itself: every child is built with `excludeTools: ["Agent"]`, which is what caps
-nesting at one layer (structural, not a counter — nothing to configure).
+nesting at one layer (structural, not a counter — nothing to configure). It does keep
+`Explorer` (see below): exploration stays available at every depth, delegation does not.
 
 - Runs in the foreground: the main agent waits, and the tool row shows live child status
   (`agent#<id> · <description> · turn N · running grep`).
 - **F2** opens the child's live conversation, `Esc` returns. The child keeps running either
   way. The key is one constant in the file plus the `PI_SUBAGENT_WATCH_KEY` env override.
+- The watch view uses pi's own message and tool components, so a child's `bash`, `edit` etc.
+  look exactly like they do in the main session. It scrolls with `↑`/`↓`, `PgUp`/`PgDn`,
+  `Home`/`End` (keyboard only — pi never enables mouse tracking), follows the tail until you
+  scroll away, and `Ctrl+O` expands tool output. Being an overlay, it leaves no residue in
+  the main transcript on `Esc`.
 - Child sessions are persisted (named `agent#<id>`), so a finished run can be reopened from
   the session picker and audited.
 - A child that needs a decision just asks; the main agent answers by calling `Agent` again
   with `resume_id`, continuing the same session. It stands in for the human.
 - No background runs, no parallelism, no agent types, no turn limits — deliberately.
+
+### Explorer (`explorer.ts`)
+
+A second child-session tool, sharing all plumbing with `subagent.ts` via `lib/child-session.ts`.
+It answers "where do I look" on a cheap model so the caller spends flagship tokens on thinking
+and reads only the files that matter. Design notes in `docs/ideas/explorer-subagent.md`.
+
+- **Every agent has it, at every depth.** Children are built with `excludeTools: ["Agent"]` only,
+  so a subagent can still explore; an explorer excludes `Agent`, `Explorer`, `edit`, `write`,
+  `bash` and `timer`, so it can neither delegate nor change anything.
+- **Reports pointers, not answers**: `path:line-range — why`, no pasted code. The contract lives in
+  the prompt; the reply is never validated or reshaped (models drift, callers cope).
+- **Model is configuration, not code.** `/explorer-model` opens a selector over authenticated models
+  and writes `~/.pi/agent/explorer-model.json` (copied once from `pi/explorer-model.json`, never
+  symlinked — same reference-copy rule as `settings.json`). `/explorer-model anthropic/claude-haiku-4-5`
+  sets it directly.
+- **Ships unset on purpose** — no guessed model id. Until you pick one, pi warns at session start and
+  every `Explorer` call returns an error telling the agent to have you run `/explorer-model`. It
+  **never** falls back to the parent model: that would silently pay flagship prices.
+- Resolution is local only (`registry.find` + `hasConfiguredAuth`, snapshot reads) — a misconfigured
+  explorer costs zero tokens to discover.
+- No turn caps, no output budgets, no mid-flight aborts: the cheap model *is* the cost control, and
+  it inherits `context-cap.ts` like any other child.
+- Runs show as `explorer#<id>` and share the **F2** watch view with agents.
+- Note: `anthropicAPIProxy` needs a pricing entry for the explorer model or its dashboard misprices
+  the traffic (added for `claude-haiku-4-5`); pi's own cost line comes from pi-ai's catalog.
+
+## Tests
+
+```bash
+./pi/extensions/test/run.sh          # all extension tests
+./pi/extensions/test/run.sh --test-name-pattern=timer
+```
+
+`node --test` with type-stripping (node >= 22), no build step. Tests drive a real
+pi `AgentSession` with `session.agent.streamFunction` replaced by a scripted fake
+LLM (`test/harness.ts`) — no network, no API key, real agent loop and real
+steering/follow-up queues. The runner creates a gitignored `test/node_modules`
+symlink farm into the installed pi, because Node's ESM resolver ignores
+`NODE_PATH`.
+
+`test/` is NOT loaded as an extension: pi discovers `extensions/*.ts` plus
+subdirs that have `index.ts`/`index.js` or a `package.json` with a `pi` field
+(one level, no recursion) — same reason `lib/` is inert. Never add any of those
+three files to `test/` or `lib/`.
 
 ## Known issues
 
@@ -224,7 +279,25 @@ nesting at one layer (structural, not a counter — nothing to configure).
   -> wezterm user-var-changed -> padding fits N centered 75-col columns
   (zoom = 1 column). Known transient: brief jumbled frame on split/zoom --
   tmux re-lays before wezterm widens; inherent to dual layout engines. Accepted.
-- WezTerm workspace status through tmux requires OSC passthrough. Direct
-  WezTerm->WSL/container chains are simplest; nested `podman exec` behind tmux
-  needs the emitting process to know tmux is in front (`TMUX` set) so it wraps
-  OSC in tmux DCS passthrough.
+- WezTerm workspace status through tmux requires OSC passthrough, and tmux
+  drops it silently in three cases — each leaves the marker latched on the last
+  value that got out (usually `busy`, emitted by the shell preexec of `ssh` /
+  `tmux attach` / `pi`, since nothing ever re-syncs):
+  1. `allow-passthrough` unset — **tmux's default is `off`** (3.3+). A host that
+     only ran `install-pi.sh` has no `tmux/tmux.conf` link, so every wrapped
+     `wsstate` from inside tmux is eaten and the workspace shows busy forever.
+     `tmux show -g allow-passthrough` to check; `tmux set -g allow-passthrough
+     all` applies live, no server restart.
+  2. Pane not visible — with `on`, tmux passes through only for the current
+     window of an attached session, so an agent cooking in a background tmux
+     window never reports. Use `all` (repo tmux.conf still ships the safer `on`;
+     `all` widens the escape-injection surface to invisible panes, worth it on
+     a machine whose output you trust).
+  3. Client detached — nothing is buffered or replayed. On reattach the WezTerm
+     pane is new and has no user var, so the workspace reads *idle* even if the
+     agent is mid-turn, until pi's next state change. No re-emit hook exists
+     (tmux's `client-attached` only drives panecols).
+  Independently: nested `podman exec` behind tmux needs the emitting process to
+  know tmux is in front (`TMUX` set) so it wraps OSC in tmux DCS passthrough;
+  `podman exec` does not inherit `TMUX`, so the raw OSC gets swallowed. Direct
+  WezTerm->WSL/container chains avoid all of this.

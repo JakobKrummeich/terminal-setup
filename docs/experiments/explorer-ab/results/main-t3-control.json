@@ -1,0 +1,41 @@
+{
+  "run_id": "main-t3-control",
+  "arm": "control",
+  "task": "t3",
+  "wall_s": 416.9,
+  "pi_exit": 0,
+  "cost_usd": 2.7297,
+  "explorer_calls": 0,
+  "agent_calls": 0,
+  "parent_tool_calls": 62,
+  "all_tool_calls": 62,
+  "parent_tools": {
+    "ls": 1,
+    "bash": 34,
+    "grep": 1,
+    "read": 14,
+    "edit": 9,
+    "write": 3
+  },
+  "parent_context_tokens": 74833,
+  "session_files": 1,
+  "per_session": [
+    {
+      "file": "2026-08-02T22-26-30-542Z_019fc495-f80e-7f98-9357-898a66805fe8.jsonl",
+      "cost": 2.7297,
+      "tools": {
+        "ls": 1,
+        "bash": 34,
+        "grep": 1,
+        "read": 14,
+        "edit": 9,
+        "write": 3
+      }
+    }
+  ],
+  "files_changed": 10,
+  "diff_lines": 752,
+  "tests_pass": 1181,
+  "tests_fail": 0,
+  "test_exit": 0
+}

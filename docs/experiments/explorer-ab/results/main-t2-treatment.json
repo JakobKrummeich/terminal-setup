@@ -1,0 +1,51 @@
+{
+  "run_id": "main-t2-treatment",
+  "arm": "treatment",
+  "task": "t2",
+  "wall_s": 722.9,
+  "pi_exit": 0,
+  "cost_usd": 3.7028,
+  "explorer_calls": 1,
+  "agent_calls": 0,
+  "parent_tool_calls": 61,
+  "all_tool_calls": 104,
+  "parent_tools": {
+    "Explorer": 1,
+    "ls": 1,
+    "read": 14,
+    "bash": 24,
+    "write": 3,
+    "edit": 18
+  },
+  "parent_context_tokens": 95966,
+  "session_files": 2,
+  "per_session": [
+    {
+      "file": "2026-08-02T22-14-17-850Z_019fc48a-c9fa-7cfa-8ef0-69bb73084e2d.jsonl",
+      "cost": 3.586,
+      "tools": {
+        "Explorer": 1,
+        "ls": 1,
+        "read": 14,
+        "bash": 24,
+        "write": 3,
+        "edit": 18
+      }
+    },
+    {
+      "file": "2026-08-02T22-14-22-387Z_019fc48a-dbb3-79b6-8e8e-89be45c538c3.jsonl",
+      "cost": 0.1169,
+      "tools": {
+        "ls": 6,
+        "find": 9,
+        "read": 17,
+        "grep": 11
+      }
+    }
+  ],
+  "files_changed": 14,
+  "diff_lines": 963,
+  "tests_pass": 1180,
+  "tests_fail": 0,
+  "test_exit": 0
+}

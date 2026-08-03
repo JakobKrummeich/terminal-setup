@@ -159,6 +159,11 @@ config.enable_tab_bar = false
 config.window_decorations = 'TITLE | RESIZE'
 config.audible_bell = 'Disabled'
 
+-- ── Scrollback ─────────────────────────────────────────────────
+-- Default is 3500. TUIs that repaint in place (pi) burn history fast, and a
+-- full repaint emits ESC[3J, which erases saved lines outright.
+config.scrollback_lines = 50000
+
 -- ── Selection/clipboard ────────────────────────────────────────
 -- Word selection boundaries; wrapped lines rejoin automatically on copy.
 config.selection_word_boundary = ' \t\n{}[]()"\'`,;:'

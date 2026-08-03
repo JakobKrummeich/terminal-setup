@@ -6,6 +6,14 @@
  * This closes the "started task in background, ended turn, needs user poke" loop.
  *
  * One timer at a time; setting a new one replaces the old (stated in result).
+ *
+ * Delivery: `deliverAs: "steer"`, NOT "followUp". pi delivers follow-ups only
+ * once the whole run ends (agent has no more tool calls), so during a long run
+ * the wake-up never arrives — expiries pile up in the queue and are flushed as a
+ * stack of stale wake-ups at the end (see test/timer.test.ts). Steering messages
+ * are delivered at the next turn boundary (after the current tool calls, before
+ * the next LLM call), which is what "wake me when the time is up" means.
+ * When the agent is idle, deliverAs is ignored and the message starts a turn.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -49,7 +57,7 @@ export default function timerExtension(pi: ExtensionAPI) {
 		name: "timer",
 		label: "Timer",
 		description:
-			"For long tasks (build, tests, deploy, download): start task in background, set timer, end turn. Expiry injects message waking you to check result. One timer; new set replaces old.",
+			"For long tasks (build, tests, deploy, download): start task in background, set timer, end turn. On expiry a message wakes you at the next turn boundary to check the result. One timer; new set replaces old.",
 		parameters: timerParams,
 
 		async execute(_toolCallId, params) {
@@ -73,7 +81,7 @@ export default function timerExtension(pi: ExtensionAPI) {
 				active = undefined;
 				try {
 					pi.sendUserMessage(`Timer "${name}" expired. Continue your task.`, {
-						deliverAs: "followUp",
+						deliverAs: "steer",
 					});
 				} catch (e) {
 					console.warn("[timer] failed to deliver expiry message:", e);
