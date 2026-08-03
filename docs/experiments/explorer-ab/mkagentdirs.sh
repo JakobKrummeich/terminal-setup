@@ -8,7 +8,10 @@ for arm in control treatment; do
     rm -rf "$D"; mkdir -p "$D/extensions"
     for f in "$HOME"/.pi/agent/*; do
         b=$(basename "$f"); [ "$b" = extensions ] && continue
-        cp -a "$f" "$D/$b"
+        # auth.json must be SHARED, not copied: OAuth refresh rotates the refresh token, so a
+        # stale copy is invalidated as soon as another config dir refreshes (this killed two
+        # round-3 runs). Runs are sequential, so sharing is safe.
+        if [ "$b" = auth.json ]; then ln -s "$HOME/.pi/agent/auth.json" "$D/$b"; else cp -a "$f" "$D/$b"; fi
     done
     for ext in "$HOME"/.pi/agent/extensions/*.ts; do
         b=$(basename "$ext")
