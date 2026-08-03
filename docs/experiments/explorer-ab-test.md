@@ -367,3 +367,43 @@ documented above and was applied identically to both arms.
 - Fix the quality leak directly: have the explorer report *conventions it saw* (design docs, test
   layers), not only file/line pointers. Both rounds' losses trace to missed conventions.
 - Test the nested case deliberately with a task large enough to force `Agent` delegation.
+
+---
+
+# Round 3 — repeated use, and tasks big enough to feel context pressure
+
+Protocol fixed 2026-08-03, before any run. Round 2 showed the benefit is a **fixed ~7–8.5k tokens
+per Explorer call**, and the agent makes exactly one call, so the relative saving *shrinks* as tasks
+grow (corr(control peak context, Δcontext%) = **+0.81** over round 2's six tasks). Round 3 attacks
+both ends of that: make the tool ask to be used repeatedly, and use tasks large enough that context
+is a real constraint.
+
+Two changes from round 2, and nothing else:
+
+1. **`TOOL_DESCRIPTION` in `pi/extensions/explorer.ts` rewritten** (description only — no change to
+   the explorer's model, prompt, output format or behaviour) to demand repeated use: a standing
+   rule to ask before opening/grepping any unread part of the repo, an explicit "one call at the
+   start is not enough", one call per area touched, and a new "what are the conventions here" use
+   case. Previous text preserved in git history (`pi/extensions/explorer.ts` before this commit).
+2. **Four large vertical-slice tasks** (`tasks3/s1..s4.md`) instead of six small ones. Each spans
+   domain → application → persistence → hub → frontend → tests in the same repo (`vw-frozen`,
+   pinned `3f898ba`), each bundles 4–5 sub-features, none names a file path.
+   - **s1** quiz answering: load quiz config, participant answer intent with duplicate rejection,
+     live anonymous tallies, participant buttons, presenter tally view.
+   - **s2** value selection: load value catalogue, exactly-ten submission with full server-side
+     validation, lock-in across restart, facilitator progress count, participant picker.
+   - **s3** final voting: five-vote allocation intent, anonymity by construction, close-round and
+     tiebreak-round facilitator intents with the repeat-tie loop, exit guard, participant UI.
+   - **s4** group formation: sizing rule from the repo's planning material, names from config,
+     deterministic value deal-out, restart reproducibility, participant and facilitator views.
+
+Unchanged: models, arms (`--exclude-tools Explorer` vs available), pairing within task, sequential
+runs, fresh clone and private session dir per run, all measures from `measure2.py`, blinded judging
+in both orderings. Round 2's diff-capture bug is fixed in `run3.sh` (diff taken against the frozen
+base commit, so committed work is captured), and the per-run agent timeout is raised to 9000 s
+because the tasks are much larger.
+
+Prediction stated in advance, so it can be wrong: if the description works, treatment makes **≥3
+Explorer calls per run**, and peak caller context drops by **more than the ~8k fixed offset** seen
+in round 2. If calls stay at 1, the tool's single-call pattern is a property of the agent, not of
+the wording, and no description will fix it.

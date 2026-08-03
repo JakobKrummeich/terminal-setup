@@ -22,18 +22,25 @@ const CONFIG_COMMAND = "explorer-model";
 /** Tools an explorer must not have. Read-only, no delegation, nothing to wait on. */
 const EXCLUDED_TOOLS = [AGENT_TOOL, EXPLORER_TOOL, "edit", "write", "bash", "timer"];
 
-const TOOL_DESCRIPTION = `Find out WHERE to look in the codebase. Your default first move on any
-unfamiliar code, before you read files yourself.
+const TOOL_DESCRIPTION = `Find out WHERE to look in the codebase — every time, not once.
 
 The explorer is a cheap, fast, read-only agent. It searches for you and reports back the exact
 places you need to read — file paths with line ranges and one line on why each one matters. It
 does not answer your question and does not paste code; you read the pointers it returns and build
 your own understanding from the few files that actually matter.
 
+Standing rule, follow it literally: **before you open, grep or list any part of the repository you
+have not already read in this session, ask an explorer instead.** One call at the start of a task
+is not enough. A normal task needs several — one per area you touch (domain, API, UI, tests,
+config, docs), another whenever the work moves somewhere new, and another when a pointer turns out
+to be incomplete. If you catch yourself running a second or third search in an area you have not
+mapped, stop and ask an explorer for that area instead.
+
 Use it, without being asked, whenever you would otherwise start grepping around:
 - "where is X implemented / configured / tested"
 - "which files handle Y", "what calls Z", "where does this data come from"
 - "how does feature Y hang together" — across an unfamiliar area
+- "what are the conventions here" — how this repo names, structures and tests this kind of change
 - getting oriented in a repo, module or dependency you have not read yet
 
 Prefer it over exploring yourself: your context is expensive and fills with dead ends, its is
