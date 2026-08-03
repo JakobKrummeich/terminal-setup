@@ -75,6 +75,15 @@ install_pi() {
     fi
 }
 
+install_pi_azure_response_retry_patch() {
+    # Temporary fail-closed workaround for Pi 0.83.0 Azure Responses failed SSE events.
+    if ! command -v pi >/dev/null; then
+        echo "SKIPPED: Pi Azure retry patch (pi is not installed)"
+        return 0
+    fi
+    node "$REPO/pi/patches/pi-0.83.0-azure-response-failed-retry.cjs"
+}
+
 install_wezterm() {
     # ── wezterm ─────────────────────────────────────────────────────
     link wezterm/wezterm.lua ~/.config/wezterm/wezterm.lua

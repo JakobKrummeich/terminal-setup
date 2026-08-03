@@ -7,6 +7,7 @@ REPO="$(cd "$(dirname "$0")" && pwd)"
 . "$REPO/lib/install-common.sh"
 
 install_pi
+install_pi_azure_response_retry_patch
 install_rtk
 install_shell_wsstate
 
