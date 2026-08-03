@@ -29,6 +29,13 @@ printf 'node_modules\nfrontend/node_modules\n' >> "$RUN_DIR/repo/.git/info/exclu
 
 PROMPT="$(cat "$HERE/tasks3/$TASK.md")"
 FLAGS=(--model anthropic/claude-opus-5 -p)
+# --exclude-tools and -e only bind the parent: subagents re-discover extensions from the config
+# dir (subagent.ts excludes just the Agent tool), which leaked Explorer into the control arm of
+# the first s1 run. Arm is therefore selected by config dir: agentdir-control has every extension
+# except explorer.ts, agentdir-treatment has all of them. Both dirs are built by mkagentdirs.sh
+# and are otherwise byte-identical copies of the live config.
+export PI_CODING_AGENT_DIR="$ROOT/agentdir-$ARM"
+[ -d "$PI_CODING_AGENT_DIR/extensions" ] || { echo "ABORT: missing $PI_CODING_AGENT_DIR" >&2; exit 1; }
 [ "$ARM" = "control" ] && FLAGS+=(--exclude-tools Explorer)
 
 export PI_CODING_AGENT_SESSION_DIR="$RUN_DIR/sessions"
