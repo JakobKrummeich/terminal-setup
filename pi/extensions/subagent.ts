@@ -17,10 +17,23 @@ The agent starts with no memory of this conversation, so the prompt must be self
 It has the same tools, skills and project context you do, and runs in the same working directory.
 Only its final message comes back to you, so ask for whatever you need in that one reply.
 
-Use this proactively, without being asked, for:
+You don't need the user's permission to delegate. But delegation is not free: the agent
+re-establishes context, re-explores and reports back, and you then read its report. Delegate work
+that is genuinely independent, large enough to justify a fresh context, or naturally parallel:
 - Implementation of a defined task, especially multi-file work or edit/test/fix loops.
-- Verification and review of work that is already done.
+- Verification and review of work that is already done. Default to this generator-verifier split:
+  a fresh agent that did not write the code catches what you would skim past.
 - Long mechanical grind: migrations, renames, repetitive fixes across many files.
+
+Before spawning, check:
+- Small and bounded — a few reads, one search, a short edit? Do it inline.
+- Do not fan out several agents on one modest job. Parallel agents are for independent, sizeable
+  tracks, not for splitting one job into pieces.
+- Keep spawn counts low: one well-briefed agent beats several loosely-briefed ones.
+- Commit to the delegation. Do not redo its work while it runs, or re-derive its findings after.
+
+Trust but verify: the agent's summary says what it meant to do, not necessarily what it did. When
+it writes or edits code, check the actual changes before reporting the work as done.
 
 Keep for yourself:
 - Planning and spec work. Delegate the legwork that feeds a plan; write the plan yourself.
@@ -28,9 +41,33 @@ Keep for yourself:
   Digest the results and hand over concrete paths, lines and changes.
 - Single known-file edits and targeted greps. Just do them.
 
+Briefing: lookups — hand over the exact command. Investigations — hand over the question, since
+prescribed steps become dead weight when the premise is wrong.
+
 The agent may come back with a clarifying question instead of a result. That is normal: answer
 it yourself by calling this tool again with resume_id set to the id in the result, which
 continues the same session with its context intact. You stand in for the user.`;
+
+// Prepended to the first prompt of a fresh child. Children are otherwise clones of the parent —
+// same system prompt, same skills — so this is the only place they learn they are delegates and
+// who reads their output.
+const CHILD_CONTRACT = `You are a delegated agent. Your final message is the only thing the caller
+sees — it goes to another agent, not to a human. The 10-line response limit does not apply to it.
+
+- Never write findings, summaries or reports to .md files. Return them as your final message.
+  (Files written as input to another tool are fine.)
+- Use absolute paths. Include code snippets only when the exact text is load-bearing — a bug you
+  found, a signature the caller needs. Do not recap code you merely read.
+- Complete the task fully. Don't gold-plate, don't leave it half-done.
+- Stay in scope. Note anything out of scope in one sentence; don't fix it.
+- Report truthfully: if tests fail, say so with the output; if you skipped a step, say that.
+- If you committed, list the paths and commit hashes.
+- If the task is ambiguous, pick the most likely reading and state your assumption — or ask the
+  caller a single question instead of guessing; it can answer and resume you.
+
+Structure the final message as:
+1. What you did or found — specific: file paths, line numbers, snippets.
+2. Summary: one sentence the caller can relay.`;
 
 export default function (pi: ExtensionAPI) {
 	pi.registerTool({
@@ -59,7 +96,7 @@ export default function (pi: ExtensionAPI) {
 			// Agents may not spawn agents: nesting is capped at one layer, structurally.
 			return runChildTool(
 				params,
-				{ kind: "agent", excludeTools: [AGENT_TOOL] },
+				{ kind: "agent", excludeTools: [AGENT_TOOL], promptPrefix: CHILD_CONTRACT },
 				signal,
 				onUpdate,
 				ctx,

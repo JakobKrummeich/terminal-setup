@@ -445,7 +445,7 @@ export interface ChildToolParams {
 export interface RunChildOptions extends ChildSessionOptions {
 	/** Shown in ids, status and meta lines, e.g. "agent". */
 	kind: string;
-	/** Prepended to every prompt sent to the child (role and output contract). */
+	/** Prepended to a fresh child's first prompt (role and output contract), not to resumes. */
 	promptPrefix?: string;
 }
 
@@ -486,7 +486,11 @@ export async function runChildTool(
 		liveChildren.set(id, record);
 	}
 	record.running = true;
-	const prompt = options.promptPrefix ? `${options.promptPrefix}\n\n${params.prompt}` : params.prompt;
+	// Resumes keep the contract from the first turn; re-sending it would just burn tokens.
+	const prompt =
+		options.promptPrefix && !resumeId
+			? `${options.promptPrefix}\n\n${params.prompt}`
+			: params.prompt;
 	record.view.addUserMessage(prompt);
 	const watcher = watchChild(record, onUpdate);
 	const onAbort = () => void record.session.abort();
