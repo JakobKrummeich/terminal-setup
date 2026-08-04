@@ -14,10 +14,22 @@
  * are delivered at the next turn boundary (after the current tool calls, before
  * the next LLM call), which is what "wake me when the time is up" means.
  * When the agent is idle, deliverAs is ignored and the message starts a turn.
+ *
+ * Pending-work claims: an armed timer means "this session will do more work after
+ * the current run ends". A child session (Agent tool) must not be reported as
+ * finished in that window, so the timer claims pending work from `set` until the
+ * wake-up run has settled (see lib/pending-work.ts).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { claimPendingWork, releasePendingWork } from "./lib/pending-work.ts";
+
+const CLAIM = "timer";
+/** Safety margin on the armed claim; refreshed with a longer budget once it fires. */
+const ARMED_GRACE_MS = 60_000;
+/** Cap on how long the woken-up run may keep a caller waiting. */
+const WAKE_TIMEOUT_MS = 30 * 60_000;
 
 const timerParams = Type.Object({
 	action: Type.Union([Type.Literal("set"), Type.Literal("cancel")]),
@@ -41,16 +53,33 @@ function err(text: string) {
 
 export default function timerExtension(pi: ExtensionAPI) {
 	let active: ActiveTimer | undefined;
+	let sessionId: string | undefined;
+	/** Expiry delivered, wake-up run not settled yet — still pending work. */
+	let awaitingWake = false;
+
+	function release() {
+		if (sessionId) releasePendingWork(sessionId, CLAIM);
+	}
 
 	function clearActive(): ActiveTimer | undefined {
 		const prev = active;
 		if (prev) clearTimeout(prev.timeout);
 		active = undefined;
+		if (!awaitingWake) release();
 		return prev;
 	}
 
 	pi.on("session_shutdown", () => {
+		awaitingWake = false;
 		clearActive();
+	});
+
+	// The wake-up run has finished (or the expiry landed as steering in a run that
+	// has now ended): nothing is outstanding unless another timer was set meanwhile.
+	pi.on("agent_settled", () => {
+		if (!awaitingWake) return;
+		awaitingWake = false;
+		if (!active) release();
 	});
 
 	pi.registerTool({
@@ -60,7 +89,8 @@ export default function timerExtension(pi: ExtensionAPI) {
 			"For long tasks (build, tests, deploy, download): start task in background, set timer, end turn. On expiry a message wakes you at the next turn boundary to check the result. One timer; new set replaces old.",
 		parameters: timerParams,
 
-		async execute(_toolCallId, params) {
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			sessionId = ctx.sessionManager.getSessionId();
 			if (params.action === "cancel") {
 				const prev = clearActive();
 				if (!prev) return ok("No active timer.");
@@ -79,6 +109,8 @@ export default function timerExtension(pi: ExtensionAPI) {
 
 			const timeout = setTimeout(() => {
 				active = undefined;
+				awaitingWake = true;
+				if (sessionId) claimPendingWork(sessionId, CLAIM, WAKE_TIMEOUT_MS);
 				try {
 					pi.sendUserMessage(`Timer "${name}" expired. Continue your task.`, {
 						deliverAs: "steer",
@@ -90,6 +122,7 @@ export default function timerExtension(pi: ExtensionAPI) {
 			timeout.unref?.();
 
 			active = { name, timeout, expiresAt };
+			claimPendingWork(sessionId, CLAIM, params.seconds * 1000 + ARMED_GRACE_MS);
 
 			const fireTime = new Date(expiresAt).toLocaleTimeString();
 			const replacedNote = replaced

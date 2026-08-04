@@ -38,6 +38,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { claimPendingWork, releasePendingWork } from "./lib/pending-work.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -52,6 +53,12 @@ const MAX_RETRIES = 2;
 const CAP_DIR = path.join(os.homedir(), ".pi", "agent", "context-cap");
 const MARKER_TYPE = "context-cap-swap";
 const TOOL_NAME = "context_handoff";
+// A handoff outlives the run it was requested in: the swap message either steers the
+// current run or triggers a fresh one. A child session (Agent tool) must not be
+// reported as finished in between, so we claim pending work from the handoff write
+// until the post-swap run settles (see lib/pending-work.ts).
+const CLAIM = "context-handoff";
+const CLAIM_TIMEOUT_MS = 30 * 60_000;
 
 function envInt(name: string, fallback: number): number {
 	const raw = process.env[name];
@@ -185,6 +192,19 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 	let handoffWritten = false;
 	/** One-shot grace so the hard cap doesn't swap away the message carrying the tool call. */
 	let hardGraceUsed = false;
+	/** Swap message sent; the run it feeds has not settled yet. */
+	let swapInFlight = false;
+	let claimedSessionId: string | undefined;
+
+	function claim(ctx: ExtensionContext) {
+		claimedSessionId = sessionId(ctx);
+		claimPendingWork(claimedSessionId, CLAIM, CLAIM_TIMEOUT_MS);
+	}
+
+	function releaseClaim() {
+		if (claimedSessionId) releasePendingWork(claimedSessionId, CLAIM);
+		claimedSessionId = undefined;
+	}
 
 	function resetCycle() {
 		phase = "idle";
@@ -242,6 +262,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 				content = buildSummary(filePath, stale);
 			} catch (e) {
 				resetCycle();
+				releaseClaim(); // no swap will happen — don't hold a caller hostage
 				updateStatus(ctx, ctx.getContextUsage()?.tokens);
 				ctx.ui.notify(`context-cap: failed to read handoff file: ${e instanceof Error ? e.message : e}`, "error");
 				return;
@@ -270,6 +291,10 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		} else {
 			pi.sendMessage({ customType: MARKER_TYPE, content, display: true, details }, { deliverAs: "steer" });
 		}
+		// Both paths lead to another run (continuation or fresh turn): keep/refresh the
+		// claim until it settles. Hard-cap swaps take the claim here, having never had one.
+		swapInFlight = true;
+		claim(ctx);
 		// Provider-reported usage is stale (pre-swap) until the next response lands;
 		// show an explicit transient instead of a misleading high number.
 		ctx.ui.setStatus("context-cap", `swapped/${fmtTokens(SOFT_TRIGGER)}`);
@@ -348,6 +373,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 				};
 			}
 			handoffWritten = true;
+			claim(ctx);
 			return {
 				content: [
 					{
@@ -380,7 +406,16 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		resetCycle();
+		swapInFlight = false;
+		releaseClaim();
 		updateStatus(ctx, ctx.getContextUsage()?.tokens);
+	});
+
+	// The post-swap run has finished: the handoff cycle no longer keeps a caller waiting.
+	pi.on("agent_settled", () => {
+		if (!swapInFlight) return;
+		swapInFlight = false;
+		releaseClaim();
 	});
 
 	pi.on("message_end", (event, ctx) => {

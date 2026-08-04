@@ -23,6 +23,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Container, type KeyId, matchesKey, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import { renderFooterLines } from "../custom-footer.ts";
+import { hasPendingWork, pendingWorkReasons, waitForPendingWorkChange } from "./pending-work.ts";
 
 export const AGENT_TOOL = "Agent";
 const WATCH_KEY = (process.env.PI_SUBAGENT_WATCH_KEY ?? "f2") as KeyId;
@@ -47,6 +48,8 @@ export interface ChildRecord {
 	turns: number;
 	elapsedMs: number;
 	currentTool?: string;
+	/** Reasons the child is between runs but not finished (timer, context handoff). */
+	waitingFor?: string;
 	running: boolean;
 }
 
@@ -166,7 +169,7 @@ export class ChildView {
 function watchChild(
 	record: ChildRecord,
 	onUpdate: ((partial: ReturnType<typeof textResult>) => void) | undefined,
-): { text(): string; stop(): void } {
+): { text(): string; pushStatus(): void; stop(): void } {
 	const parts: string[] = [];
 	const pushStatus = () => onUpdate?.(textResult(statusLine(record), { id: record.id }));
 	const unsub = record.session.subscribe((event: AgentSessionEvent) => {
@@ -199,6 +202,7 @@ function watchChild(
 	});
 	pushStatus();
 	return {
+		pushStatus,
 		text: () => {
 			for (let i = parts.length - 1; i >= 0; i--) {
 				const part = parts[i]?.trim();
@@ -280,7 +284,11 @@ function labelFromPrompt(prompt: string): string {
 }
 
 function statusLine(record: ChildRecord): string {
-	const activity = record.currentTool ? `running ${record.currentTool}` : "thinking";
+	const activity = record.waitingFor
+		? `waiting for ${record.waitingFor}`
+		: record.currentTool
+			? `running ${record.currentTool}`
+			: "thinking";
 	return `${record.kind}#${record.id} · ${record.description} · turn ${record.turns + 1} · ${activity}`;
 }
 
@@ -449,8 +457,62 @@ export interface RunChildOptions extends ChildSessionOptions {
 	promptPrefix?: string;
 }
 
+// One child at a time. Parallel children share one worktree (they overwrite each
+// other's edits), one ChildView slot (only one is watchable) and one terminal, and
+// nothing in this plumbing has been verified under concurrency. Set synchronously
+// before the first await, so two tool calls in the same assistant message cannot
+// both pass the check.
+let childBusy = false;
+
+/**
+ * Wait until the child is really done, not merely between runs.
+ *
+ * `session.prompt()` resolves when the model stops calling tools — but `timer` and
+ * `context_handoff` restart the session from the outside, so that is not the end of
+ * the child's work. Extensions announce such restarts via pending-work claims
+ * (lib/pending-work.ts); we return only when the session is idle with no claim left.
+ * Claims are self-expiring, so a lost wake-up delays the result instead of hanging it.
+ */
+async function waitForChildDone(
+	record: ChildRecord,
+	signal: AbortSignal | undefined,
+	pushStatus: () => void,
+): Promise<void> {
+	const sessionId = record.session.sessionManager.getSessionId();
+	while (!signal?.aborted) {
+		await record.session.waitForIdle();
+		if (!hasPendingWork(sessionId)) return;
+		record.waitingFor = pendingWorkReasons(sessionId).join(", ");
+		pushStatus();
+		await waitForPendingWorkChange(sessionId, signal);
+		record.waitingFor = undefined;
+		pushStatus();
+	}
+}
+
 /** Shared execute() body for child-session tools. */
 export async function runChildTool(
+	params: ChildToolParams,
+	options: RunChildOptions,
+	signal: AbortSignal | undefined,
+	onUpdate: ((partial: ReturnType<typeof textResult>) => void) | undefined,
+	ctx: ExtensionContext,
+) {
+	if (childBusy) {
+		return textResult(
+			`Another ${options.kind} is already running. ${options.kind} calls are serialized — wait for the running one's result, then call again.`,
+			{ error: "child_busy" },
+		);
+	}
+	childBusy = true;
+	try {
+		return await runChildToolExclusive(params, options, signal, onUpdate, ctx);
+	} finally {
+		childBusy = false;
+	}
+}
+
+async function runChildToolExclusive(
 	params: ChildToolParams,
 	options: RunChildOptions,
 	signal: AbortSignal | undefined,
@@ -498,11 +560,13 @@ export async function runChildTool(
 	const startedAt = Date.now();
 	try {
 		await record.session.prompt(prompt);
+		await waitForChildDone(record, signal, watcher.pushStatus);
 	} finally {
 		record.elapsedMs += Date.now() - startedAt;
 		watcher.stop();
 		record.running = false;
 		record.currentTool = undefined;
+		record.waitingFor = undefined;
 		signal?.removeEventListener("abort", onAbort);
 	}
 	const text = watcher.text();
