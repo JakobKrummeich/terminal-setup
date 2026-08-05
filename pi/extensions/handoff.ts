@@ -1,11 +1,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const HANDOFF_PROMPT = `Give me a follow-up prompt for the next session. It should contain:
+const HANDOFF_PROMPT = `Write a handoff as assistant message for the next agent who continues your work. Plain markdown, ~30 lines total:
 - A brief summary of this session and current status
 - Key file paths that were worked on
 - Information you found surprising or where you struggled
-- Information that you think help the next session
-- Aim for ~30 lines total`;
+- Information that you think help the next agent`;
+
+const HANDOFF_PREAMBLE =
+	"You are continuing work from a previous session. The agent before you left you this information:";
 
 export default function handoffExtension(pi: ExtensionAPI) {
 	// Resolve when agent finishes after handoff prompt
@@ -66,7 +68,7 @@ export default function handoffExtension(pi: ExtensionAPI) {
 					await newCtx.sendMessage(
 						{
 							customType: "handoff-summary",
-							content: summaryText,
+							content: `${HANDOFF_PREAMBLE}\n\n${summaryText.trim()}`,
 							display: true,
 						},
 						{ triggerTurn: false },
