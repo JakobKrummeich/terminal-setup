@@ -11,7 +11,7 @@ export interface FooterData {
 	modelId?: string;
 	reasoning: boolean;
 	thinkingLevel: string;
-	statuses: Map<string, string>;
+	statuses: ReadonlyMap<string, string>;
 }
 
 export function renderFooterLines(width: number, theme: Theme, data: FooterData): string[] {

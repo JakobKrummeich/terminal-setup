@@ -20,10 +20,12 @@ import {
 	ToolExecutionComponent,
 	UserMessageComponent,
 	type ExtensionContext,
+	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import { Container, type KeyId, matchesKey, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import { renderFooterLines } from "../custom-footer.ts";
-import { hasPendingWork, pendingWorkReasons, waitForPendingWorkChange } from "./pending-work.ts";
+import { cancelPendingWork } from "./pending-work.ts";
+import { waitForSessionQuiet } from "./session-quiet.ts";
 
 export const AGENT_TOOL = "Agent";
 const WATCH_KEY = (process.env.PI_SUBAGENT_WATCH_KEY ?? "f2") as KeyId;
@@ -324,8 +326,12 @@ async function createChildSession(
 	return session;
 }
 
-export function textResult(text: string, details: Record<string, unknown>) {
-	return { content: [{ type: "text" as const, text }] as TextContent[], details };
+export function textResult(text: string, details: Record<string, unknown>, isError = false) {
+	return {
+		content: [{ type: "text" as const, text }] as TextContent[],
+		details,
+		...(isError && { isError: true }),
+	};
 }
 
 function gitBranch(cwd: string): string | null {
@@ -463,15 +469,18 @@ export interface RunChildOptions extends ChildSessionOptions {
 // before the first await, so two tool calls in the same assistant message cannot
 // both pass the check.
 let childBusy = false;
+// Session of the child the current tool call ran, for the busy latch below.
+let settlingSession: AgentSession | undefined;
 
 /**
  * Wait until the child is really done, not merely between runs.
  *
- * `session.prompt()` resolves when the model stops calling tools — but `timer` and
- * `context_handoff` restart the session from the outside, so that is not the end of
- * the child's work. Extensions announce such restarts via pending-work claims
- * (lib/pending-work.ts); we return only when the session is idle with no claim left.
- * Claims are self-expiring, so a lost wake-up delays the result instead of hanging it.
+ * `session.prompt()` resolves when the model stops calling tools — but `timer`
+ * restarts the session from the outside via the wake-up message. Extensions
+ * announce such restarts as pending-work claims (lib/pending-work.ts); the child
+ * is done only when it is idle with an empty queue and no claim left
+ * (lib/session-quiet.ts). Claims are self-expiring, so a lost wake-up delays the
+ * result instead of hanging it.
  */
 async function waitForChildDone(
 	record: ChildRecord,
@@ -479,15 +488,10 @@ async function waitForChildDone(
 	pushStatus: () => void,
 ): Promise<void> {
 	const sessionId = record.session.sessionManager.getSessionId();
-	while (!signal?.aborted) {
-		await record.session.waitForIdle();
-		if (!hasPendingWork(sessionId)) return;
-		record.waitingFor = pendingWorkReasons(sessionId).join(", ");
+	await waitForSessionQuiet(record.session, sessionId, signal, (reasons) => {
+		record.waitingFor = reasons.length > 0 ? reasons.join(", ") : undefined;
 		pushStatus();
-		await waitForPendingWorkChange(sessionId, signal);
-		record.waitingFor = undefined;
-		pushStatus();
-	}
+	});
 }
 
 /** Shared execute() body for child-session tools. */
@@ -502,13 +506,30 @@ export async function runChildTool(
 		return textResult(
 			`Another ${options.kind} is already running. ${options.kind} calls are serialized — wait for the running one's result, then call again.`,
 			{ error: "child_busy" },
+			true,
 		);
 	}
 	childBusy = true;
 	try {
 		return await runChildToolExclusive(params, options, signal, onUpdate, ctx);
 	} finally {
-		childBusy = false;
+		// Busy latch: if the child is still winding down (abort in flight), keep the
+		// flag until it is actually idle — a new child must not overlap it in the
+		// shared worktree. Released in the background; the result returns now.
+		const session = settlingSession;
+		settlingSession = undefined;
+		if (session && !session.isIdle) {
+			session.waitForIdle().then(
+				() => {
+					childBusy = false;
+				},
+				() => {
+					childBusy = false;
+				},
+			);
+		} else {
+			childBusy = false;
+		}
 	}
 }
 
@@ -527,6 +548,7 @@ async function runChildToolExclusive(
 			return textResult(
 				`No live ${options.kind} session with id "${resumeId}". It may have ended with the pi session. Start a fresh ${options.kind} with a self-contained prompt.`,
 				{ error: "unknown_resume_id" },
+				true,
 			);
 		}
 		record = existing;
@@ -547,6 +569,7 @@ async function runChildToolExclusive(
 		};
 		liveChildren.set(id, record);
 	}
+	settlingSession = record.session;
 	record.running = true;
 	// Resumes keep the contract from the first turn; re-sending it would just burn tokens.
 	const prompt =
@@ -568,6 +591,10 @@ async function runChildToolExclusive(
 		record.currentTool = undefined;
 		record.waitingFor = undefined;
 		signal?.removeEventListener("abort", onAbort);
+		// The tool call is over: nothing may keep working unsupervised in the shared
+		// worktree. No-op on a clean finish (no claims left); on abort or claim
+		// self-expiry this disarms the child's timer via the claim's cancel callback.
+		cancelPendingWork(record.session.sessionManager.getSessionId());
 	}
 	const text = watcher.text();
 	return textResult(
@@ -579,7 +606,7 @@ async function runChildToolExclusive(
 /** Shared renderResult() for child-session tools. */
 export function renderChildResult(
 	result: { content?: Array<{ type?: string; text?: string }>; details?: unknown },
-	theme: { fg: (key: string, text: string) => string },
+	theme: Pick<Theme, "fg">,
 	context: { lastComponent?: unknown },
 ) {
 	const text = (result.content ?? [])

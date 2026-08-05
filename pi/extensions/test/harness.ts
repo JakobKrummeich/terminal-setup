@@ -22,17 +22,27 @@ import path from "node:path";
 
 /** One scripted assistant response: either a tool call or a final text answer. */
 export type ScriptedStep =
-	| { kind: "tool"; id: string; name: string; args: Record<string, unknown> }
-	| { kind: "text"; text: string };
+	| { kind: "tool"; id: string; name: string; args: Record<string, unknown>; contextTokens?: number }
+	| { kind: "text"; text: string; contextTokens?: number };
 
-export const toolStep = (id: string, name: string, args: Record<string, unknown>): ScriptedStep => ({
+export const toolStep = (
+	id: string,
+	name: string,
+	args: Record<string, unknown>,
+	contextTokens?: number,
+): ScriptedStep => ({
 	kind: "tool",
 	id,
 	name,
 	args,
+	contextTokens,
 });
 
-export const textStep = (text: string): ScriptedStep => ({ kind: "text", text });
+export const textStep = (text: string, contextTokens?: number): ScriptedStep => ({
+	kind: "text",
+	text,
+	contextTokens,
+});
 
 export interface TestSessionOptions {
 	/** Absolute paths of extensions under test. */
@@ -125,7 +135,8 @@ export async function createTestSession(options: TestSessionOptions): Promise<Te
 					output: 1,
 					cacheRead: 0,
 					cacheWrite: 0,
-					totalTokens: 2,
+					// Drives ctx.getContextUsage().tokens (context-cap triggers).
+					totalTokens: scripted.contextTokens ?? 2,
 					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 				},
 				stopReason: "pending",

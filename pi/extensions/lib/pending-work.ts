@@ -1,10 +1,11 @@
 /**
  * Cross-extension "this session is not finished yet" registry.
  *
- * A pi run ends when the model stops calling tools. Two of our extensions break
- * that assumption by restarting a session from the outside:
- *   - `timer`: the expiry message wakes the agent after its run ended.
- *   - `context-cap`: `context_handoff` swaps the context and the agent continues.
+ * A pi run ends when the model stops calling tools. The `timer` extension breaks
+ * that assumption by restarting a session from the outside: the expiry message
+ * wakes the agent after its run ended. (context-cap's handoff continuations, by
+ * contrast, are drained inside the same `prompt()` call — see
+ * test/context-cap.test.ts — so they need no claim.)
  * In the top-level session this is invisible (the user just sees more turns). In a
  * child session driven by the Agent tool it is fatal: the tool call would resolve
  * at the first pause and everything the child does afterwards is lost to the caller.
@@ -20,10 +21,15 @@
  * shared between them; a global symbol is.
  *
  * Every claim carries a timeout: a lost wake-up must not hang the caller forever.
+ * A claim may also carry a cancel callback: when a caller stops supervising the
+ * session (abort, expiry fallback), `cancelPendingWork` invokes it so the claimed
+ * work is disarmed instead of running unsupervised later.
  */
 
 interface Claim {
 	timeout: NodeJS.Timeout;
+	/** Disarm the underlying work (e.g. clear the timer) — not just the claim. */
+	cancel?: () => void;
 }
 
 interface Registry {
@@ -51,7 +57,12 @@ function notify(sessionId: string): void {
  * Re-claiming the same reason refreshes the timeout. Auto-released after
  * `timeoutMs` so a lost wake-up degrades to "child returns" instead of a hang.
  */
-export function claimPendingWork(sessionId: string, reason: string, timeoutMs: number): void {
+export function claimPendingWork(
+	sessionId: string,
+	reason: string,
+	timeoutMs: number,
+	cancel?: () => void,
+): void {
 	let bySession = registry.claims.get(sessionId);
 	if (!bySession) {
 		bySession = new Map();
@@ -60,7 +71,27 @@ export function claimPendingWork(sessionId: string, reason: string, timeoutMs: n
 	clearTimeout(bySession.get(reason)?.timeout);
 	const timeout = setTimeout(() => releasePendingWork(sessionId, reason), timeoutMs);
 	timeout.unref?.();
-	bySession.set(reason, { timeout });
+	bySession.set(reason, { timeout, cancel });
+	notify(sessionId);
+}
+
+/**
+ * Disarm and drop every claim for `sessionId`. Called when the supervising caller
+ * walks away (abort, expiry fallback): each claim's cancel callback must stop the
+ * underlying scheduled work, so nothing runs unsupervised afterwards.
+ */
+export function cancelPendingWork(sessionId: string): void {
+	const bySession = registry.claims.get(sessionId);
+	if (!bySession || bySession.size === 0) return;
+	for (const claim of bySession.values()) {
+		clearTimeout(claim.timeout);
+		try {
+			claim.cancel?.();
+		} catch {
+			// A broken cancel callback must not break the bookkeeping.
+		}
+	}
+	registry.claims.delete(sessionId);
 	notify(sessionId);
 }
 

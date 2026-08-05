@@ -1,0 +1,31 @@
+{
+	// Typecheck config for the extensions under test. The bare imports used by
+	// the extensions only resolve through the node_modules symlink farm that
+	// run.sh builds next to this file, so run ./run.sh once first, then:
+	//   npx -y -p typescript tsc -p .
+	// The @mariozechner/* aliases exist because custom-footer.ts still imports
+	// the old package names, which pi's own loader remaps at runtime.
+	"compilerOptions": {
+		"noEmit": true,
+		"strict": true,
+		"target": "es2022",
+		"module": "nodenext",
+		"moduleResolution": "nodenext",
+		"allowImportingTsExtensions": true,
+		"skipLibCheck": true,
+		"types": ["node"],
+		"typeRoots": ["./node_modules/@types"],
+		
+		"paths": {
+			"@earendil-works/pi-coding-agent": ["./node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"],
+			"@earendil-works/pi-ai": ["./node_modules/@earendil-works/pi-ai/dist/index.d.ts"],
+			"@earendil-works/pi-ai/compat": ["./node_modules/@earendil-works/pi-ai/dist/compat.d.ts"],
+			"@earendil-works/pi-tui": ["./node_modules/@earendil-works/pi-tui/dist/index.d.ts"],
+			"@mariozechner/pi-coding-agent": ["./node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"],
+			"@mariozechner/pi-ai": ["./node_modules/@earendil-works/pi-ai/dist/index.d.ts"],
+			"@mariozechner/pi-tui": ["./node_modules/@earendil-works/pi-tui/dist/index.d.ts"],
+			"typebox": ["./node_modules/typebox/build/index.d.mts"]
+		}
+	},
+	"include": ["./*.ts", "../timer.ts", "../context-cap.ts", "../subagent.ts", "../lib/*.ts"]
+}

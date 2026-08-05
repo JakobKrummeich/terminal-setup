@@ -180,12 +180,13 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | `custom-footer.ts` | cumulative token/cost footer |
 | `dump-system-prompt.ts` | debug: dump active system prompt |
 | `lib/child-session.ts` | shared child-session plumbing for `subagent.ts` (not an extension: pi's loader only scans top-level `*.ts`) |
-| `lib/pending-work.ts` | cross-extension "this session is not finished yet" claims (globalThis-backed, because pi loads every extension file with its own jiti instance and `moduleCache: false`) |
+| `lib/pending-work.ts` | cross-extension "this session is not finished yet" claims (globalThis-backed, because pi loads every extension file with its own jiti instance and `moduleCache: false`). Claims can carry a `cancel` callback; `cancelPendingWork()` disarms and clears everything for a session. `timer.ts` is currently the only producer |
+| `lib/session-quiet.ts` | `waitForSessionQuiet()`: the definition of "child is done" — agent idle *and* no queued steer/follow-up messages (bounded grace) *and* no pending-work claims |
 | `handoff.ts` | session handoff summaries |
 | `markdown-no-padding.ts` | strip paddingX=1 from rendered markdown (copy-safety); patches pi-tui internals — re-verify after `pi update` |
 | `rtk.ts` / `rtk-tools.ts` | route tool calls through rtk token filter |
 | `subagent.ts` | `Agent` tool: delegate a task to a child agent session, capped at one layer deep. Press **F2** to watch the running child live in the normal TUI style, `Esc` to step back out (override the key with `PI_SUBAGENT_WATCH_KEY`) |
-| `timer.ts` | one-shot wakeup timer tool for long background tasks. Expiry is injected with `deliverAs: "steer"` so it lands at the next turn boundary; `"followUp"` only lands when the whole run ends, which stacked stale wake-ups during long runs (regression-tested). An armed timer claims pending work so a child session isn't reported as finished while it waits |
+| `timer.ts` | one-shot wakeup timer tool for long background tasks. Expiry is injected with `deliverAs: "steer"` so it lands at the next turn boundary; `"followUp"` only lands when the whole run ends, which stacked stale wake-ups during long runs (regression-tested). An armed timer claims pending work so a child session isn't reported as finished while it waits; the claim is released on evidence the wake-up run started (not on a guess), and a wake-up stranded by the settle race is re-sent (up to 3×) instead of lost |
 | `wsstate.ts` | report pi agent busy/idle to WezTerm workspace status via OSC 1337 |
 
 ### Subagents (`subagent.ts`)
@@ -211,13 +212,16 @@ nesting at one layer (structural, not a counter — nothing to configure).
   with `resume_id`, continuing the same session. It stands in for the human.
 - One child at a time: a second `Agent` call while one runs is rejected with an error result
   (`childBusy`, set synchronously before the first `await`, so two calls in one assistant
-  message can't both pass). Parallel children shared one worktree and one watch slot, and
-  nothing here was verified under concurrency.
-- Done ≠ "the run ended". `timer` and `context_handoff` restart a session from the outside,
-  which used to end the parent's tool call while the child was still working. Extensions now
-  claim pending work (`lib/pending-work.ts`) across such a gap and the `Agent` tool returns
-  only when the child is idle *and* unclaimed. Claims self-expire, so a lost wake-up delays
-  the result instead of hanging it.
+  message can't both pass). The latch is released only once the child is actually quiet
+  again — after an abort the child may still be draining, so release happens in the
+  background, not in the tool's `finally`. Parallel children shared one worktree and one
+  watch slot, and nothing here was verified under concurrency.
+- Done ≠ "the run ended". A `timer` wake-up restarts a session from the outside, which used
+  to end the parent's tool call while the child was still waiting. The `Agent` tool returns
+  only when the child is quiet (`lib/session-quiet.ts`): idle, empty message queue, and no
+  pending-work claims. Claims self-expire, so a lost wake-up delays the result instead of
+  hanging it. `context_handoff` needs no claim — its whole restart cycle runs inside the
+  child's `prompt()` call (regression-tested).
 - No background runs, no parallelism, no agent types, no turn limits — deliberately.
 
 ## Tests
@@ -225,6 +229,7 @@ nesting at one layer (structural, not a counter — nothing to configure).
 ```bash
 ./pi/extensions/test/run.sh          # all extension tests
 ./pi/extensions/test/run.sh --test-name-pattern=timer
+cd pi/extensions/test && npx -y -p typescript tsc -p .   # typecheck (run run.sh once first: it builds the node_modules symlink farm)
 ```
 
 `node --test` with type-stripping (node >= 22), no build step. Tests drive a real

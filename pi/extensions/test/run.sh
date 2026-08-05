@@ -21,6 +21,8 @@ fi
 mkdir -p node_modules/@earendil-works
 ln -sfn "$PI_ROOT" node_modules/@earendil-works/pi-coding-agent
 ln -sfn "$PI_DEPS/@earendil-works/pi-ai" node_modules/@earendil-works/pi-ai
+ln -sfn "$PI_DEPS/@earendil-works/pi-tui" node_modules/@earendil-works/pi-tui
 ln -sfn "$PI_DEPS/typebox" node_modules/typebox
+ln -sfn "$PI_DEPS/@types" node_modules/@types
 
 exec node --test --experimental-strip-types --no-warnings "$@" ./*.test.ts
