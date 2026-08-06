@@ -344,6 +344,47 @@ test("concurrent explorers do not cross-wire: each result carries its own child'
 	disposeChildren();
 });
 
+test("resuming a still-running explorer is rejected instead of double-prompting its session", async () => {
+	const ctx = await makeCtx(1500);
+	const options = parallelOptions(2);
+	const firstPromise = runChildTool(
+		{ prompt: "SLOW-TASK long haul", description: "slow haul" },
+		options,
+		undefined,
+		undefined,
+		ctx,
+	);
+	// The id lands in liveChildren only after the child session is created; poll for it.
+	let id: string | undefined;
+	for (let i = 0; i < 100 && !id; i++) {
+		id = [...liveChildren.values()].find((r) => r.running)?.id;
+		if (!id) await sleep(20);
+	}
+	assert.ok(id, "running child must appear in liveChildren");
+	const resumed = await runChildTool(
+		{ prompt: "follow-up too early", resume_id: id },
+		options,
+		undefined,
+		undefined,
+		ctx,
+	);
+	assert.equal((resumed.details as { error?: string }).error, "child_running");
+	assert.match(resultText(resumed), /still running/);
+	const first = await firstPromise;
+	assert.equal(isBusyError(first), false, "the running child must be unaffected");
+	assert.match(resultText(first), /slow child done/);
+	// The rejected resume released its slot: a fresh call proceeds.
+	const fresh = await runChildTool(
+		{ prompt: "fresh lookup", description: "fresh" },
+		options,
+		undefined,
+		undefined,
+		ctx,
+	);
+	assert.equal(isBusyError(fresh), false, "rejected resume must not leak a semaphore slot");
+	disposeChildren();
+});
+
 test("explorer child gets exactly the readonly allowlist", async () => {
 	const ctx = await makeCtx(0);
 	const result = await runChildTool(

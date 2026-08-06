@@ -624,6 +624,17 @@ async function runChildToolInSlot(
 			);
 		}
 		record = existing;
+		// With explorers running in parallel, two calls can pass the semaphore and
+		// resume the same child at once — session.prompt() on a busy session throws,
+		// and the loser's wind-down would mark the winner's record as not running and
+		// cancel its pending work. Also covers a session still draining after an abort.
+		if (record.running || !record.session.isIdle) {
+			return textResult(
+				`${options.kind} "${resumeId}" is still running. Wait for its result, then resume it.`,
+				{ error: "child_running" },
+				true,
+			);
+		}
 		if (params.description) record.description = params.description;
 	} else {
 		const id = randomUUID().slice(0, 8);
