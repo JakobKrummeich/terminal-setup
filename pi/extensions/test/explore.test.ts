@@ -1,0 +1,255 @@
+/**
+ * Explorer children: env-driven model/thinking resolution, the readonly tool
+ * allowlist, and the per-group busy latch. The latch tests run runChildTool for
+ * real — real createAgentSession, real session loop — with the model runtime's
+ * streamSimple replaced by a scripted stream, so busy semantics are exercised
+ * exactly as in production, minus the network.
+ */
+
+import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+// Children resolve their config dir and session dir from the environment; point both
+// at temp dirs so the tests never touch (or load extensions from) the live ~/.pi/agent.
+process.env.PI_CODING_AGENT_DIR = mkdtempSync(path.join(tmpdir(), "pi-explore-agentdir-"));
+process.env.PI_CODING_AGENT_SESSION_DIR = mkdtempSync(path.join(tmpdir(), "pi-explore-sessions-"));
+// No remote model-catalog refresh: its keep-alive TLS sockets outlive the tests and
+// hang the test process.
+process.env.PI_OFFLINE = "1";
+
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { getModel } from "@earendil-works/pi-ai/compat";
+import { ModelRuntime, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { EXPLORER_TOOLS, resolveExplorerConfig } from "../explore.ts";
+import { liveChildren, runChildTool } from "../lib/child-session.ts";
+import { sleep } from "./harness.ts";
+
+// --- resolveExplorerConfig (pure) ---
+
+const parentModel = getModel("anthropic", "claude-sonnet-4-5")!;
+const fastModel = getModel("anthropic", "claude-haiku-4-5")!;
+
+/** Registry stub: knows exactly one (provider, modelId) pair. */
+const registryWith = (provider: string, modelId: string) => ({
+	find: (p: string, m: string) => (p === provider && m === modelId ? fastModel : undefined),
+});
+
+test("resolveExplorerConfig: unset env → parent model, low thinking, no warnings", () => {
+	const config = resolveExplorerConfig({}, registryWith("x", "y"), parentModel);
+	assert.equal(config.model, parentModel);
+	assert.equal(config.thinkingLevel, "low");
+	assert.deepEqual(config.warnings, []);
+});
+
+test("resolveExplorerConfig: valid provider/modelId resolves", () => {
+	const config = resolveExplorerConfig(
+		{ PI_EXPLORER_MODEL: "anthropic/claude-haiku" },
+		registryWith("anthropic", "claude-haiku"),
+		parentModel,
+	);
+	assert.equal(config.model, fastModel);
+	assert.deepEqual(config.warnings, []);
+});
+
+test("resolveExplorerConfig: unknown model → parent model + warning", () => {
+	const config = resolveExplorerConfig(
+		{ PI_EXPLORER_MODEL: "nope/missing" },
+		registryWith("anthropic", "claude-haiku"),
+		parentModel,
+	);
+	assert.equal(config.model, parentModel);
+	assert.equal(config.warnings.length, 1);
+	assert.match(config.warnings[0], /PI_EXPLORER_MODEL "nope\/missing" not found/);
+	assert.ok(config.warnings[0].includes(parentModel.id), "warning names the fallback model");
+});
+
+test("resolveExplorerConfig: splits on the first slash only (model ids may contain slashes)", () => {
+	const config = resolveExplorerConfig(
+		{ PI_EXPLORER_MODEL: "openrouter/org/model-v1" },
+		registryWith("openrouter", "org/model-v1"),
+		parentModel,
+	);
+	assert.equal(config.model, fastModel);
+	assert.deepEqual(config.warnings, []);
+});
+
+test("resolveExplorerConfig: malformed spec (no slash) → parent model + warning", () => {
+	const config = resolveExplorerConfig({ PI_EXPLORER_MODEL: "justamodel" }, registryWith("x", "y"), parentModel);
+	assert.equal(config.model, parentModel);
+	assert.equal(config.warnings.length, 1);
+});
+
+test("resolveExplorerConfig: valid thinking level honored", () => {
+	const config = resolveExplorerConfig({ PI_EXPLORER_THINKING: "high" }, registryWith("x", "y"), parentModel);
+	assert.equal(config.thinkingLevel, "high");
+	assert.deepEqual(config.warnings, []);
+});
+
+test("resolveExplorerConfig: invalid thinking level → low + warning", () => {
+	const config = resolveExplorerConfig({ PI_EXPLORER_THINKING: "ultra" }, registryWith("x", "y"), parentModel);
+	assert.equal(config.thinkingLevel, "low");
+	assert.equal(config.warnings.length, 1);
+	assert.match(config.warnings[0], /PI_EXPLORER_THINKING "ultra"/);
+});
+
+// --- busy groups + explorer tool set (real runChildTool, scripted LLM) ---
+
+/**
+ * Fake ExtensionContext whose model runtime streams a scripted response instead of
+ * hitting the network. Prompts containing "SLOW-TASK" answer after `slowMs`; everything
+ * else answers fast — that keeps one child in-flight while another runs.
+ */
+async function makeCtx(slowMs: number): Promise<ExtensionContext> {
+	const dir = mkdtempSync(path.join(tmpdir(), "pi-explore-cwd-"));
+	const runtime = await ModelRuntime.create({
+		authPath: path.join(dir, "auth.json"),
+		modelsPath: path.join(dir, "models.json"),
+	});
+	runtime.setRuntimeApiKey("anthropic", "test-key-not-used");
+	(runtime as unknown as { streamSimple: unknown }).streamSimple = (m: any, context: any) => {
+		const stream = createAssistantMessageEventStream();
+		const slow = JSON.stringify(context?.messages ?? "").includes("SLOW-TASK");
+		void (async () => {
+			const output: any = {
+				role: "assistant",
+				content: [],
+				api: m.api,
+				provider: m.provider,
+				model: m.id,
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "pending",
+				timestamp: Date.now(),
+			};
+			stream.push({ type: "start", partial: output });
+			await sleep(slow ? slowMs : 30);
+			output.content = [{ type: "text", text: slow ? "slow child done" : "fast child done" }];
+			output.stopReason = "stop";
+			stream.push({ type: "done", reason: "stop", message: output });
+			stream.end();
+		})();
+		return stream;
+	};
+	return {
+		cwd: dir,
+		model: parentModel,
+		thinkingLevel: "off",
+		modelRegistry: { runtime, find: () => undefined, isUsingOAuth: () => false },
+	} as unknown as ExtensionContext;
+}
+
+const AGENT_OPTIONS = { kind: "agent", busyGroup: "agent", excludeTools: ["Agent"] };
+const EXPLORER_OPTIONS = {
+	kind: "explorer",
+	busyGroup: "explorer",
+	tools: [...EXPLORER_TOOLS],
+	excludeTools: [],
+};
+
+/** Child sessions hold open handles; drop them or the test process never exits. */
+function disposeChildren() {
+	for (const record of liveChildren.values()) record.session.dispose();
+	liveChildren.clear();
+}
+
+const resultText = (result: { content: Array<{ text?: string }> }) => result.content[0]?.text ?? "";
+const isBusyError = (result: { details?: unknown }) =>
+	(result.details as { error?: string } | undefined)?.error === "child_busy";
+
+test("busy groups are independent: an explorer runs while an agent child runs, and vice versa", async () => {
+	const ctx = await makeCtx(1500);
+	const agentPromise = runChildTool(
+		{ prompt: "SLOW-TASK keep working", description: "slow agent" },
+		AGENT_OPTIONS,
+		undefined,
+		undefined,
+		ctx,
+	);
+	// Agent group is latched synchronously; a second agent call must be rejected …
+	const secondAgent = await runChildTool(
+		{ prompt: "another agent task", description: "queued agent" },
+		AGENT_OPTIONS,
+		undefined,
+		undefined,
+		ctx,
+	);
+	assert.equal(isBusyError(secondAgent), true, "same group must serialize");
+	assert.match(resultText(secondAgent), /agent is already running/);
+	// … but an explorer lives in its own group and must run to completion.
+	const explorer = await runChildTool(
+		{ prompt: "quick lookup", description: "lookup" },
+		EXPLORER_OPTIONS,
+		undefined,
+		undefined,
+		ctx,
+	);
+	assert.equal(isBusyError(explorer), false, "explorer must not see the agent latch");
+	assert.match(resultText(explorer), /fast child done/);
+	const agent = await agentPromise;
+	assert.equal(isBusyError(agent), false);
+	assert.match(resultText(agent), /slow child done/);
+	disposeChildren();
+});
+
+test("two explorers serialize; a slow explorer does not block an agent child", async () => {
+	const ctx = await makeCtx(1500);
+	const firstPromise = runChildTool(
+		{ prompt: "SLOW-TASK explore everything", description: "slow explorer" },
+		EXPLORER_OPTIONS,
+		undefined,
+		undefined,
+		ctx,
+	);
+	const second = await runChildTool(
+		{ prompt: "another lookup", description: "queued explorer" },
+		EXPLORER_OPTIONS,
+		undefined,
+		undefined,
+		ctx,
+	);
+	assert.equal(isBusyError(second), true, "explorers must serialize within their group");
+	assert.match(resultText(second), /explorer is already running/);
+	const agent = await runChildTool(
+		{ prompt: "agent task", description: "agent" },
+		AGENT_OPTIONS,
+		undefined,
+		undefined,
+		ctx,
+	);
+	assert.equal(isBusyError(agent), false, "agent must not see the explorer latch");
+	await firstPromise;
+	disposeChildren();
+});
+
+test("explorer child gets exactly the readonly allowlist", async () => {
+	const ctx = await makeCtx(0);
+	const result = await runChildTool(
+		{ prompt: "what tools do I have", description: "tool check" },
+		EXPLORER_OPTIONS,
+		undefined,
+		undefined,
+		ctx,
+	);
+	const meta = result.details as { id?: string };
+	assert.ok(meta.id, "result carries the child id");
+	const record = liveChildren.get(meta.id!);
+	assert.ok(record, "child record is live");
+	const active = record!.session.getActiveToolNames().sort();
+	// context_handoff is an extension tool; the temp agent dir has no extensions, so
+	// only the builtin part of the allowlist can materialize here. The wiring under
+	// test is that the allowlist reaches createAgentSession — mutating tools gone.
+	assert.deepEqual(active, ["find", "grep", "ls", "read"]);
+	for (const name of ["bash", "edit", "write", "Agent", "Explore"]) {
+		assert.ok(!active.includes(name), `${name} must not be active in an explorer`);
+	}
+	disposeChildren();
+});

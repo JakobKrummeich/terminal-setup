@@ -16,6 +16,8 @@ const TOOL_DESCRIPTION = `Delegate a task to a fresh agent session that works au
 The agent starts with no memory of this conversation, so the prompt must be self-contained.
 It has the same tools, skills and project context you do, and runs in the same working directory.
 Only its final message comes back to you, so ask for whatever you need in that one reply.
+For cheap readonly lookups, both you and the agents you spawn can use the Explore tool
+instead of burning context (yours or an Agent delegation) on them.
 
 Agents run one at a time: a second call while one is running is rejected, so never emit two Agent
 calls in the same message. Delegate one sizeable, self-contained track, wait for its result, then
@@ -101,7 +103,7 @@ export default function (pi: ExtensionAPI) {
 			// Agents may not spawn agents: nesting is capped at one layer, structurally.
 			return runChildTool(
 				params,
-				{ kind: "agent", excludeTools: [AGENT_TOOL], promptPrefix: CHILD_CONTRACT },
+				{ kind: "agent", busyGroup: "agent", excludeTools: [AGENT_TOOL], promptPrefix: CHILD_CONTRACT },
 				signal,
 				onUpdate,
 				ctx,

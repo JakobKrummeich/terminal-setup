@@ -7,6 +7,10 @@
  * (agent-loop, steering/follow-up queues) while staying deterministic.
  */
 
+// No remote model-catalog refresh: its keep-alive TLS sockets outlive the tests and
+// hang the test process. Must be set before ModelRuntime.create runs.
+process.env.PI_OFFLINE ??= "1";
+
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import {

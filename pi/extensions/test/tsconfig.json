@@ -27,5 +27,5 @@
 			"typebox": ["./node_modules/typebox/build/index.d.mts"]
 		}
 	},
-	"include": ["./*.ts", "../timer.ts", "../context-cap.ts", "../subagent.ts", "../lib/*.ts"]
+	"include": ["./*.ts", "../timer.ts", "../context-cap.ts", "../subagent.ts", "../explore.ts", "../lib/*.ts"]
 }

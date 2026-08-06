@@ -1,4 +1,4 @@
-// Shared plumbing for child-session tools (currently just Agent).
+// Shared plumbing for child-session tools (Agent, Explore).
 //
 // Not an extension: pi's loader only scans top-level *.ts in the extensions dir
 // (core/package-manager.js collectAutoExtensionEntries), so files under lib/ are
@@ -28,6 +28,7 @@ import { cancelPendingWork } from "./pending-work.ts";
 import { waitForSessionQuiet } from "./session-quiet.ts";
 
 export const AGENT_TOOL = "Agent";
+export const EXPLORE_TOOL = "Explore";
 const WATCH_KEY = (process.env.PI_SUBAGENT_WATCH_KEY ?? "f2") as KeyId;
 const EXPAND_KEY = (process.env.PI_SUBAGENT_EXPAND_KEY ?? "ctrl+o") as KeyId;
 const MOUSE_ON = "\u001b[?1000h\u001b[?1006h";
@@ -40,6 +41,9 @@ export { WATCH_KEY, EXPAND_KEY };
 
 /** A model as handed out by ExtensionContext.modelRegistry. */
 export type ChildModel = NonNullable<ExtensionContext["model"]>;
+
+/** Thinking level as the session runtime knows it (re-derived: the canonical type lives in pi-agent-core). */
+export type ChildThinkingLevel = NonNullable<ExtensionContext["thinkingLevel"]>;
 
 export interface ChildRecord {
 	id: string;
@@ -297,6 +301,10 @@ function statusLine(record: ChildRecord): string {
 export interface ChildSessionOptions {
 	/** Model for the child. Defaults to the parent's model. */
 	model?: ChildModel;
+	/** Thinking level for the child. Defaults to the parent's level. */
+	thinkingLevel?: ChildThinkingLevel;
+	/** Allowlist of tool names — only these are enabled. Omit for the full default set. */
+	tools?: string[];
 	/** Tools the child must not have. */
 	excludeTools: string[];
 }
@@ -315,7 +323,8 @@ async function createChildSession(
 			cwd,
 			agentDir,
 			model: options.model ?? ctx.model,
-			thinkingLevel: ctx.thinkingLevel,
+			thinkingLevel: options.thinkingLevel ?? ctx.thinkingLevel,
+			...(options.tools && { tools: options.tools }),
 			excludeTools: options.excludeTools,
 			sessionManager,
 			settingsManager,
@@ -459,18 +468,34 @@ export interface ChildToolParams {
 export interface RunChildOptions extends ChildSessionOptions {
 	/** Shown in ids, status and meta lines, e.g. "agent". */
 	kind: string;
+	/** Busy-latch group, e.g. "agent" or "explorer". One child at a time per group. */
+	busyGroup: string;
 	/** Prepended to a fresh child's first prompt (role and output contract), not to resumes. */
 	promptPrefix?: string;
 }
 
-// One child at a time. Parallel children share one worktree (they overwrite each
-// other's edits), one ChildView slot (only one is watchable) and one terminal, and
-// nothing in this plumbing has been verified under concurrency. Set synchronously
-// before the first await, so two tool calls in the same assistant message cannot
-// both pass the check.
-let childBusy = false;
-// Session of the child the current tool call ran, for the busy latch below.
-let settlingSession: AgentSession | undefined;
+// One child at a time per busy group. Parallel children within a group share one
+// worktree (they overwrite each other's edits), one ChildView slot (only one is
+// watchable) and one terminal, and nothing in this plumbing has been verified under
+// concurrency. Set synchronously before the first await, so two tool calls in the
+// same assistant message cannot both pass the check. Explorers are readonly, so they
+// get their own group: a subagent's Explore call runs inside a still-running Agent
+// tool call, and a single shared latch would reject it as busy.
+interface BusyGroup {
+	busy: boolean;
+	/** Session of the child the current tool call ran, for the busy latch wind-down. */
+	settling?: AgentSession;
+}
+const busyGroups = new Map<string, BusyGroup>();
+
+function busyGroup(name: string): BusyGroup {
+	let group = busyGroups.get(name);
+	if (!group) {
+		group = { busy: false };
+		busyGroups.set(name, group);
+	}
+	return group;
+}
 
 /**
  * Wait until the child is really done, not merely between runs.
@@ -502,33 +527,34 @@ export async function runChildTool(
 	onUpdate: ((partial: ReturnType<typeof textResult>) => void) | undefined,
 	ctx: ExtensionContext,
 ) {
-	if (childBusy) {
+	const group = busyGroup(options.busyGroup);
+	if (group.busy) {
 		return textResult(
 			`Another ${options.kind} is already running. ${options.kind} calls are serialized — wait for the running one's result, then call again.`,
 			{ error: "child_busy" },
 			true,
 		);
 	}
-	childBusy = true;
+	group.busy = true;
 	try {
 		return await runChildToolExclusive(params, options, signal, onUpdate, ctx);
 	} finally {
 		// Busy latch: if the child is still winding down (abort in flight), keep the
 		// flag until it is actually idle — a new child must not overlap it in the
 		// shared worktree. Released in the background; the result returns now.
-		const session = settlingSession;
-		settlingSession = undefined;
+		const session = group.settling;
+		group.settling = undefined;
 		if (session && !session.isIdle) {
 			session.waitForIdle().then(
 				() => {
-					childBusy = false;
+					group.busy = false;
 				},
 				() => {
-					childBusy = false;
+					group.busy = false;
 				},
 			);
 		} else {
-			childBusy = false;
+			group.busy = false;
 		}
 	}
 }
@@ -569,7 +595,7 @@ async function runChildToolExclusive(
 		};
 		liveChildren.set(id, record);
 	}
-	settlingSession = record.session;
+	busyGroup(options.busyGroup).settling = record.session;
 	record.running = true;
 	// Resumes keep the contract from the first turn; re-sending it would just burn tokens.
 	const prompt =
