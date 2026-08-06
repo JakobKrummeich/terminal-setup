@@ -71,8 +71,35 @@ export interface RunMeta {
 	durationMs: number;
 }
 
-export const liveChildren = new Map<string, ChildRecord>();
-const childSessionFlag = new AsyncLocalStorage<true>();
+/** Busy-latch slot for one group of children (see busyGroup() below). */
+interface BusyGroup {
+	busy: boolean;
+	/** Session of the child the current tool call ran, for the busy latch wind-down. */
+	settling?: AgentSession;
+}
+
+// State lives on globalThis, NOT in module scope: pi's extension loader creates a
+// fresh jiti instance with `moduleCache: false` per extension file, so subagent.ts
+// and explore.ts each import their own *copy* of this module (same reasoning as
+// lib/pending-work.ts). Module-level state would split into per-copy islands:
+// explorers would be invisible to the F2 watch (registered via subagent.ts's copy),
+// session_shutdown would clear only agent children, and inChildSession() would be
+// false inside an explorer child.
+interface SharedState {
+	liveChildren: Map<string, ChildRecord>;
+	busyGroups: Map<string, BusyGroup>;
+	childSessionFlag: AsyncLocalStorage<true>;
+}
+const STATE_KEY = Symbol.for("terminal-setup.child-session");
+const globals = globalThis as unknown as Record<symbol, SharedState | undefined>;
+const state: SharedState = (globals[STATE_KEY] ??= {
+	liveChildren: new Map(),
+	busyGroups: new Map(),
+	childSessionFlag: new AsyncLocalStorage<true>(),
+});
+
+export const liveChildren = state.liveChildren;
+const childSessionFlag = state.childSessionFlag;
 export const inChildSession = () => childSessionFlag.getStore() === true;
 const runInChildSession = <T>(fn: () => Promise<T>) => childSessionFlag.run(true, fn);
 
@@ -481,18 +508,11 @@ export interface RunChildOptions extends ChildSessionOptions {
 // same assistant message cannot both pass the check. Explorers are readonly, so they
 // get their own group: a subagent's Explore call runs inside a still-running Agent
 // tool call, and a single shared latch would reject it as busy.
-interface BusyGroup {
-	busy: boolean;
-	/** Session of the child the current tool call ran, for the busy latch wind-down. */
-	settling?: AgentSession;
-}
-const busyGroups = new Map<string, BusyGroup>();
-
 function busyGroup(name: string): BusyGroup {
-	let group = busyGroups.get(name);
+	let group = state.busyGroups.get(name);
 	if (!group) {
 		group = { busy: false };
-		busyGroups.set(name, group);
+		state.busyGroups.set(name, group);
 	}
 	return group;
 }

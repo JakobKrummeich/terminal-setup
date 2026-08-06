@@ -230,6 +230,40 @@ test("two explorers serialize; a slow explorer does not block an agent child", a
 	disposeChildren();
 });
 
+test("child-session state is shared across module copies (jiti moduleCache: false)", async () => {
+	// pi's loader gives every extension file its own jiti instance, so subagent.ts and
+	// explore.ts import independent copies of lib/child-session.ts. A distinct import URL
+	// reproduces that: same file, separate ESM module instance.
+	const copy2 = (await import("../lib/child-session.ts?copy2" as string)) as typeof import("../lib/child-session.ts");
+	assert.notEqual(copy2.runChildTool, runChildTool, "the trick must yield a distinct module instance");
+	assert.equal(copy2.liveChildren, liveChildren, "liveChildren must be one shared Map (F2 watch, shutdown clear)");
+	// The busy latch must be shared too: a child started through one copy must latch
+	// the group for the other (parent latches via subagent.ts, child checks via its own).
+	const ctx = await makeCtx(1500);
+	const firstPromise = runChildTool(
+		{ prompt: "SLOW-TASK explore", description: "slow explorer" },
+		EXPLORER_OPTIONS,
+		undefined,
+		undefined,
+		ctx,
+	);
+	const viaCopy2 = await copy2.runChildTool(
+		{ prompt: "lookup", description: "copy2 explorer" },
+		EXPLORER_OPTIONS,
+		undefined,
+		undefined,
+		ctx,
+	);
+	assert.equal(isBusyError(viaCopy2), true, "copy2 must see copy1's explorer latch");
+	// The record lands in liveChildren only after the child session is created — the
+	// latch is synchronous, the record is not — so poll briefly instead of racing it.
+	let target: ReturnType<typeof copy2.watchTarget>;
+	for (let i = 0; i < 100 && !(target = copy2.watchTarget())?.running; i++) await sleep(20);
+	assert.ok(target?.running, "copy2's watch must find copy1's running child");
+	await firstPromise;
+	disposeChildren();
+});
+
 test("explorer child gets exactly the readonly allowlist", async () => {
 	const ctx = await makeCtx(0);
 	const result = await runChildTool(
