@@ -3,9 +3,9 @@ import { Type } from "typebox";
 import {
 	AGENT_TOOL,
 	inChildSession,
-	liveChildren,
 	openChildView,
 	renderChildResult,
+	resetChildState,
 	runChildTool,
 	WATCH_KEY,
 	watchTarget,
@@ -130,6 +130,8 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", () => {
-		liveChildren.clear();
+		// Counters too, not just records: the busy latch is normally released by each
+		// tool call's finally, but a shutdown mid-call must not strand a slot forever.
+		resetChildState();
 	});
 }

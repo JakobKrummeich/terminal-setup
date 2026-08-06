@@ -92,20 +92,28 @@ interface SharedState {
 	liveChildren: Map<string, ChildRecord>;
 	busyGroups: Map<string, BusyGroup>;
 	childSessionFlag: AsyncLocalStorage<true>;
-	/** F2 watch cursor: index into the running children, advanced per watchTarget() call. */
-	watchCursor: number;
+	/** F2 watch cursor: id of the last watched child, advanced per watchTarget() call. */
+	watchCursor: string | undefined;
 }
-// ".v2" because the BusyGroup shape changed (boolean latch → counting semaphore): a
-// long-lived pi process may still hold the old-shaped object under the old symbol,
-// and old and new module copies must never share a mis-shaped state object.
-const STATE_KEY = Symbol.for("terminal-setup.child-session.v2");
+// Versioned key: whenever SharedState's shape changes, bump it. jiti re-imports this
+// module on every session bind (moduleCache: false), so in a long-lived pi process an
+// old code copy may still hold the previous shape under the previous symbol — old and
+// new copies must never share a mis-shaped state object.
+const STATE_KEY = Symbol.for("terminal-setup.child-session.v3");
 const globals = globalThis as unknown as Record<symbol, SharedState | undefined>;
 const state: SharedState = (globals[STATE_KEY] ??= {
 	liveChildren: new Map(),
 	busyGroups: new Map(),
 	childSessionFlag: new AsyncLocalStorage<true>(),
-	watchCursor: 0,
+	watchCursor: undefined,
 });
+
+/** Session teardown: drop child records and busy-latch counters (see subagent.ts). */
+export function resetChildState(): void {
+	state.liveChildren.clear();
+	state.busyGroups.clear();
+	state.watchCursor = undefined;
+}
 
 export const liveChildren = state.liveChildren;
 const childSessionFlag = state.childSessionFlag;
@@ -498,8 +506,12 @@ export function watchTarget(): ChildRecord | undefined {
 	const all = [...liveChildren.values()];
 	const running = all.filter((r) => r.running);
 	if (running.length === 0) return all.at(-1);
-	const target = running[state.watchCursor % running.length];
-	state.watchCursor = (state.watchCursor + 1) % running.length;
+	// Id-based cursor: children starting or finishing between presses shift indices,
+	// so an index cursor could skip an entry. Next running child after the last
+	// watched one; first if it is gone or was never set.
+	const last = running.findIndex((r) => r.id === state.watchCursor);
+	const target = running[(last + 1) % running.length];
+	state.watchCursor = target.id;
 	return target;
 }
 
