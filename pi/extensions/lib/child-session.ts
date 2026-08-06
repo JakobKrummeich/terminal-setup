@@ -71,11 +71,14 @@ export interface RunMeta {
 	durationMs: number;
 }
 
-/** Busy-latch slot for one group of children (see busyGroup() below). */
+/** Counting semaphore for one group of children (see busyGroup() below). */
 interface BusyGroup {
-	busy: boolean;
-	/** Session of the child the current tool call ran, for the busy latch wind-down. */
-	settling?: AgentSession;
+	/** Children currently holding a slot (running or still winding down). */
+	active: number;
+	/** Max concurrent children; refreshed on every runChildTool call. */
+	limit: number;
+	/** Sessions still winding down after their tool call returned; each keeps its slot. */
+	settling: Set<AgentSession>;
 }
 
 // State lives on globalThis, NOT in module scope: pi's extension loader creates a
@@ -89,13 +92,19 @@ interface SharedState {
 	liveChildren: Map<string, ChildRecord>;
 	busyGroups: Map<string, BusyGroup>;
 	childSessionFlag: AsyncLocalStorage<true>;
+	/** F2 watch cursor: index into the running children, advanced per watchTarget() call. */
+	watchCursor: number;
 }
-const STATE_KEY = Symbol.for("terminal-setup.child-session");
+// ".v2" because the BusyGroup shape changed (boolean latch → counting semaphore): a
+// long-lived pi process may still hold the old-shaped object under the old symbol,
+// and old and new module copies must never share a mis-shaped state object.
+const STATE_KEY = Symbol.for("terminal-setup.child-session.v2");
 const globals = globalThis as unknown as Record<symbol, SharedState | undefined>;
 const state: SharedState = (globals[STATE_KEY] ??= {
 	liveChildren: new Map(),
 	busyGroups: new Map(),
 	childSessionFlag: new AsyncLocalStorage<true>(),
+	watchCursor: 0,
 });
 
 export const liveChildren = state.liveChildren;
@@ -481,9 +490,17 @@ export async function openChildView(ctx: ExtensionContext, record: ChildRecord):
 	);
 }
 
+/**
+ * Pick the child the F2 watch should open. With several running children, repeated
+ * presses cycle through them (wrapping); with none running, fall back to the last child.
+ */
 export function watchTarget(): ChildRecord | undefined {
 	const all = [...liveChildren.values()];
-	return all.find((r) => r.running) ?? all.at(-1);
+	const running = all.filter((r) => r.running);
+	if (running.length === 0) return all.at(-1);
+	const target = running[state.watchCursor % running.length];
+	state.watchCursor = (state.watchCursor + 1) % running.length;
+	return target;
 }
 
 export interface ChildToolParams {
@@ -495,23 +512,27 @@ export interface ChildToolParams {
 export interface RunChildOptions extends ChildSessionOptions {
 	/** Shown in ids, status and meta lines, e.g. "agent". */
 	kind: string;
-	/** Busy-latch group, e.g. "agent" or "explorer". One child at a time per group. */
+	/** Semaphore group, e.g. "agent" or "explorer". At most `concurrency` children per group. */
 	busyGroup: string;
+	/** Max concurrent children in the group. Default 1 (strict serialization). */
+	concurrency?: number;
+	/** Full rejection text when the group is at its limit. Default: the serialized-calls message. */
+	busyMessage?: string;
 	/** Prepended to a fresh child's first prompt (role and output contract), not to resumes. */
 	promptPrefix?: string;
 }
 
-// One child at a time per busy group. Parallel children within a group share one
-// worktree (they overwrite each other's edits), one ChildView slot (only one is
-// watchable) and one terminal, and nothing in this plumbing has been verified under
-// concurrency. Set synchronously before the first await, so two tool calls in the
-// same assistant message cannot both pass the check. Explorers are readonly, so they
-// get their own group: a subagent's Explore call runs inside a still-running Agent
-// tool call, and a single shared latch would reject it as busy.
+// Counting semaphore per busy group. Agents stay at limit 1: parallel agents would
+// share one worktree (they overwrite each other's edits) and one terminal. Explorers
+// are readonly, so their group allows N concurrent children (PI_EXPLORER_PARALLEL,
+// resolved by explore.ts). The slot is taken synchronously before the first await, so
+// two tool calls in the same assistant message cannot both slip past a full semaphore.
+// Explorers get their own group also because a subagent's Explore call runs inside a
+// still-running Agent tool call, and a single shared latch would reject it as busy.
 function busyGroup(name: string): BusyGroup {
 	let group = state.busyGroups.get(name);
 	if (!group) {
-		group = { busy: false };
+		group = { active: 0, limit: 1, settling: new Set() };
 		state.busyGroups.set(name, group);
 	}
 	return group;
@@ -548,43 +569,48 @@ export async function runChildTool(
 	ctx: ExtensionContext,
 ) {
 	const group = busyGroup(options.busyGroup);
-	if (group.busy) {
+	group.limit = Math.max(1, Math.floor(options.concurrency ?? 1));
+	if (group.active >= group.limit) {
 		return textResult(
-			`Another ${options.kind} is already running. ${options.kind} calls are serialized — wait for the running one's result, then call again.`,
+			options.busyMessage ??
+				`Another ${options.kind} is already running. ${options.kind} calls are serialized — wait for the running one's result, then call again.`,
 			{ error: "child_busy" },
 			true,
 		);
 	}
-	group.busy = true;
+	group.active++;
+	// This call's own child session, captured for the wind-down below. Local per call —
+	// a shared slot on the group would cross-wire concurrent explorers.
+	let childSession: AgentSession | undefined;
 	try {
-		return await runChildToolExclusive(params, options, signal, onUpdate, ctx);
+		return await runChildToolInSlot(params, options, signal, onUpdate, ctx, (session) => {
+			childSession = session;
+		});
 	} finally {
-		// Busy latch: if the child is still winding down (abort in flight), keep the
-		// flag until it is actually idle — a new child must not overlap it in the
-		// shared worktree. Released in the background; the result returns now.
-		const session = group.settling;
-		group.settling = undefined;
+		// Semaphore wind-down: if the child is still draining (abort in flight), its
+		// slot stays occupied until it is actually idle — a new child must not overlap
+		// it. Released in the background; the result returns now.
+		const session = childSession;
 		if (session && !session.isIdle) {
-			session.waitForIdle().then(
-				() => {
-					group.busy = false;
-				},
-				() => {
-					group.busy = false;
-				},
-			);
+			group.settling.add(session);
+			const release = () => {
+				group.settling.delete(session);
+				group.active--;
+			};
+			session.waitForIdle().then(release, release);
 		} else {
-			group.busy = false;
+			group.active--;
 		}
 	}
 }
 
-async function runChildToolExclusive(
+async function runChildToolInSlot(
 	params: ChildToolParams,
 	options: RunChildOptions,
 	signal: AbortSignal | undefined,
 	onUpdate: ((partial: ReturnType<typeof textResult>) => void) | undefined,
 	ctx: ExtensionContext,
+	onSession: (session: AgentSession) => void,
 ) {
 	const resumeId = params.resume_id;
 	let record: ChildRecord;
@@ -615,7 +641,7 @@ async function runChildToolExclusive(
 		};
 		liveChildren.set(id, record);
 	}
-	busyGroup(options.busyGroup).settling = record.session;
+	onSession(record.session);
 	record.running = true;
 	// Resumes keep the contract from the first turn; re-sending it would just burn tokens.
 	const prompt =

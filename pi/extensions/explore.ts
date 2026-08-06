@@ -20,9 +20,13 @@ send it a task that needs command execution or mutation.
 
 It starts with no memory of this conversation, so the prompt must be self-contained. Only
 its final message comes back, so ask for everything you need in that one reply: paths,
-line numbers, the specific facts. Explore calls are serialized — never emit two in the
-same message. For follow-up questions, call again with resume_id set to the id in the
-result, which continues the same session with its context intact.`;
+line numbers, the specific facts.
+
+Up to N explorers run concurrently (configurable, default 3): emitting several Explore
+calls in ONE assistant message runs them in parallel — fan out for independent lookups
+instead of asking one explorer several unrelated questions. Calls beyond the limit are
+rejected; retry after one finishes. For follow-up questions, call again with resume_id
+set to the id in the result, which continues the same session with its context intact.`;
 
 // Prepended to the first prompt of a fresh explorer. Same idea as CHILD_CONTRACT in
 // subagent.ts, but for a readonly child whose report feeds another agent.
@@ -52,6 +56,18 @@ const THINKING_LEVELS: readonly ChildThinkingLevel[] = [
 	"xhigh",
 	"max",
 ];
+
+/**
+ * Max concurrent explorers from PI_EXPLORER_PARALLEL. Default 3; anything that is
+ * not an integer >= 1 (garbage, "0", negatives) falls back to 3. Read per call, not
+ * at module load, so the env can change under a running session (and under tests).
+ */
+export function resolveExplorerParallel(env: NodeJS.ProcessEnv): number {
+	const raw = env.PI_EXPLORER_PARALLEL;
+	if (!raw) return 3;
+	const parsed = Number(raw);
+	return Number.isInteger(parsed) && parsed >= 1 ? parsed : 3;
+}
 
 export interface ExplorerConfig {
 	model: ChildModel | undefined;
@@ -127,11 +143,14 @@ export default function (pi: ExtensionAPI) {
 		}),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const config = resolveExplorerConfig(process.env, ctx.modelRegistry, ctx.model);
+			const parallel = resolveExplorerParallel(process.env);
 			const result = await runChildTool(
 				params,
 				{
 					kind: "explorer",
 					busyGroup: "explorer",
+					concurrency: parallel,
+					busyMessage: `${parallel} explorers are already running — the limit (PI_EXPLORER_PARALLEL, default 3). Wait for one to finish, then call again.`,
 					tools: [...EXPLORER_TOOLS],
 					excludeTools: [],
 					model: config.model,

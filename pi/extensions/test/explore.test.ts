@@ -23,7 +23,7 @@ process.env.PI_OFFLINE = "1";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { ModelRuntime, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { EXPLORER_TOOLS, resolveExplorerConfig } from "../explore.ts";
+import { EXPLORER_TOOLS, resolveExplorerConfig, resolveExplorerParallel } from "../explore.ts";
 import { liveChildren, runChildTool } from "../lib/child-session.ts";
 import { sleep } from "./harness.ts";
 
@@ -93,6 +93,18 @@ test("resolveExplorerConfig: invalid thinking level → low + warning", () => {
 	assert.equal(config.thinkingLevel, "low");
 	assert.equal(config.warnings.length, 1);
 	assert.match(config.warnings[0], /PI_EXPLORER_THINKING "ultra"/);
+});
+
+// --- resolveExplorerParallel (pure) ---
+
+test("resolveExplorerParallel: unset → 3; valid values honored; junk and non-positive → 3", () => {
+	assert.equal(resolveExplorerParallel({}), 3);
+	assert.equal(resolveExplorerParallel({ PI_EXPLORER_PARALLEL: "5" }), 5);
+	assert.equal(resolveExplorerParallel({ PI_EXPLORER_PARALLEL: "1" }), 1);
+	assert.equal(resolveExplorerParallel({ PI_EXPLORER_PARALLEL: "0" }), 3);
+	assert.equal(resolveExplorerParallel({ PI_EXPLORER_PARALLEL: "-2" }), 3);
+	assert.equal(resolveExplorerParallel({ PI_EXPLORER_PARALLEL: "2.5" }), 3);
+	assert.equal(resolveExplorerParallel({ PI_EXPLORER_PARALLEL: "garbage" }), 3);
 });
 
 // --- busy groups + explorer tool set (real runChildTool, scripted LLM) ---
@@ -261,6 +273,74 @@ test("child-session state is shared across module copies (jiti moduleCache: fals
 	for (let i = 0; i < 100 && !(target = copy2.watchTarget())?.running; i++) await sleep(20);
 	assert.ok(target?.running, "copy2's watch must find copy1's running child");
 	await firstPromise;
+	disposeChildren();
+});
+
+/** Explorer options as explore.ts builds them for a concurrency-N run. */
+const parallelOptions = (limit: number) => ({
+	...EXPLORER_OPTIONS,
+	concurrency: limit,
+	busyMessage: `${limit} explorers are already running — the limit (PI_EXPLORER_PARALLEL, default 3). Wait for one to finish, then call again.`,
+});
+
+test("explorer semaphore: two run concurrently at limit 2, third is rejected, slot frees on finish", async () => {
+	const ctx = await makeCtx(1500);
+	const options = parallelOptions(2);
+	const first = runChildTool(
+		{ prompt: "SLOW-TASK one", description: "slow one" },
+		options,
+		undefined,
+		undefined,
+		ctx,
+	);
+	const second = runChildTool(
+		{ prompt: "SLOW-TASK two", description: "slow two" },
+		options,
+		undefined,
+		undefined,
+		ctx,
+	);
+	// Both slots are taken synchronously, so a third call — even in the same tick — is over the limit.
+	const third = await runChildTool(
+		{ prompt: "one too many", description: "third" },
+		options,
+		undefined,
+		undefined,
+		ctx,
+	);
+	assert.equal(isBusyError(third), true, "third explorer must be rejected at limit 2");
+	assert.match(resultText(third), /limit/);
+	assert.match(resultText(third), /PI_EXPLORER_PARALLEL/);
+	const [firstResult, secondResult] = await Promise.all([first, second]);
+	assert.equal(isBusyError(firstResult), false, "first of two concurrent explorers must run");
+	assert.equal(isBusyError(secondResult), false, "second of two concurrent explorers must run");
+	// Slots are free again: a follow-up call proceeds.
+	const fourth = await runChildTool(
+		{ prompt: "after the rush", description: "fourth" },
+		options,
+		undefined,
+		undefined,
+		ctx,
+	);
+	assert.equal(isBusyError(fourth), false, "slot must be released after a child finishes");
+	disposeChildren();
+});
+
+test("concurrent explorers do not cross-wire: each result carries its own child's id and text", async () => {
+	const ctx = await makeCtx(1000);
+	const options = parallelOptions(2);
+	const [slow, fast] = await Promise.all([
+		runChildTool({ prompt: "SLOW-TASK deep dive", description: "slow dive" }, options, undefined, undefined, ctx),
+		runChildTool({ prompt: "quick lookup", description: "quick look" }, options, undefined, undefined, ctx),
+	]);
+	assert.match(resultText(slow), /slow child done/);
+	assert.match(resultText(fast), /fast child done/);
+	const slowMeta = slow.details as { id?: string };
+	const fastMeta = fast.details as { id?: string };
+	assert.ok(slowMeta.id && fastMeta.id, "both results carry child ids");
+	assert.notEqual(slowMeta.id, fastMeta.id, "concurrent explorers must not share an id");
+	assert.equal(liveChildren.get(slowMeta.id!)?.description, "slow dive");
+	assert.equal(liveChildren.get(fastMeta.id!)?.description, "quick look");
 	disposeChildren();
 });
 
