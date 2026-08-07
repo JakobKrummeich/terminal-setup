@@ -7,7 +7,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -23,7 +23,13 @@ process.env.PI_OFFLINE = "1";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { ModelRuntime, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { EXPLORER_TOOLS, resolveExplorerConfig, resolveExplorerParallel } from "../explore.ts";
+import {
+	EXPLORER_TOOLS,
+	explorerModelsFile,
+	loadExplorerCandidates,
+	resolveExplorerConfig,
+	resolveExplorerParallel,
+} from "../explore.ts";
 import { liveChildren, runChildTool } from "../lib/child-session.ts";
 import { sleep } from "./harness.ts";
 
@@ -35,6 +41,11 @@ const fastModel = getModel("anthropic", "claude-haiku-4-5")!;
 /** Registry stub: knows exactly one (provider, modelId) pair. */
 const registryWith = (provider: string, modelId: string) => ({
 	find: (p: string, m: string) => (p === provider && m === modelId ? fastModel : undefined),
+});
+
+/** Registry stub: maps "provider/modelId" specs to models. */
+const registryOf = (models: Record<string, typeof fastModel>) => ({
+	find: (p: string, m: string) => models[`${p}/${m}`],
 });
 
 test("resolveExplorerConfig: unset env → parent model, low thinking, no warnings", () => {
@@ -54,16 +65,16 @@ test("resolveExplorerConfig: valid provider/modelId resolves", () => {
 	assert.deepEqual(config.warnings, []);
 });
 
-test("resolveExplorerConfig: unknown model → parent model + warning", () => {
+test("resolveExplorerConfig: unknown model → parent model + warnings", () => {
 	const config = resolveExplorerConfig(
 		{ PI_EXPLORER_MODEL: "nope/missing" },
 		registryWith("anthropic", "claude-haiku"),
 		parentModel,
 	);
 	assert.equal(config.model, parentModel);
-	assert.equal(config.warnings.length, 1);
+	assert.equal(config.warnings.length, 2);
 	assert.match(config.warnings[0], /PI_EXPLORER_MODEL "nope\/missing" not found/);
-	assert.ok(config.warnings[0].includes(parentModel.id), "warning names the fallback model");
+	assert.ok(config.warnings[1].includes(parentModel.id), "warning names the fallback model");
 });
 
 test("resolveExplorerConfig: splits on the first slash only (model ids may contain slashes)", () => {
@@ -76,10 +87,112 @@ test("resolveExplorerConfig: splits on the first slash only (model ids may conta
 	assert.deepEqual(config.warnings, []);
 });
 
-test("resolveExplorerConfig: malformed spec (no slash) → parent model + warning", () => {
+test("resolveExplorerConfig: malformed spec (no slash) → parent model + warnings", () => {
 	const config = resolveExplorerConfig({ PI_EXPLORER_MODEL: "justamodel" }, registryWith("x", "y"), parentModel);
 	assert.equal(config.model, parentModel);
-	assert.equal(config.warnings.length, 1);
+	assert.equal(config.warnings.length, 2);
+});
+
+// --- candidates list (explorer-models.json) ---
+
+test("resolveExplorerConfig: first candidate present in the registry wins", () => {
+	const registry = registryOf({ "anthropic/haiku": fastModel, "azure/gpt": parentModel });
+	const config = resolveExplorerConfig({}, registry, parentModel, ["anthropic/haiku", "azure/gpt"]);
+	assert.equal(config.model, fastModel);
+	assert.deepEqual(config.warnings, []);
+});
+
+test("resolveExplorerConfig: unknown candidates are skipped, later one matches (per-machine registries)", () => {
+	const registry = registryOf({ "azure/gpt": fastModel });
+	const config = resolveExplorerConfig({}, registry, parentModel, ["anthropic/haiku", "azure/gpt"]);
+	assert.equal(config.model, fastModel);
+	assert.deepEqual(config.warnings, []);
+});
+
+test("resolveExplorerConfig: PI_EXPLORER_MODEL overrides candidates", () => {
+	const registry = registryOf({ "env/pick": fastModel, "file/pick": parentModel });
+	const config = resolveExplorerConfig({ PI_EXPLORER_MODEL: "env/pick" }, registry, parentModel, ["file/pick"]);
+	assert.equal(config.model, fastModel);
+	assert.deepEqual(config.warnings, []);
+});
+
+test("resolveExplorerConfig: broken PI_EXPLORER_MODEL falls back to a matching candidate", () => {
+	const registry = registryOf({ "file/pick": fastModel });
+	const config = resolveExplorerConfig({ PI_EXPLORER_MODEL: "nope/missing" }, registry, parentModel, ["file/pick"]);
+	assert.equal(config.model, fastModel);
+	assert.equal(config.warnings.length, 1, "env warning only — the candidate resolved");
+	assert.match(config.warnings[0], /PI_EXPLORER_MODEL/);
+});
+
+test("resolveExplorerConfig: malformed candidate entries (empty, trailing slash) are skipped", () => {
+	const registry = registryOf({ "ok/model": fastModel });
+	const config = resolveExplorerConfig({}, registry, parentModel, ["", "noslash", "trailing/", "ok/model"]);
+	assert.equal(config.model, fastModel);
+	assert.deepEqual(config.warnings, []);
+});
+
+test("resolveExplorerConfig: no candidate matches → parent model + warnings", () => {
+	const config = resolveExplorerConfig({}, registryOf({}), parentModel, ["a/b", "c/d"]);
+	assert.equal(config.model, parentModel);
+	assert.equal(config.warnings.length, 2);
+	assert.match(config.warnings[0], /no explorer-models\.json candidate found \(a\/b, c\/d\)/);
+	assert.ok(config.warnings[1].includes(parentModel.id), "warning names the fallback model");
+});
+
+// --- loadExplorerCandidates (file parsing) ---
+
+const candidatesDir = mkdtempSync(path.join(tmpdir(), "pi-explore-candidates-"));
+const candidatesFile = (name: string, content: string) => {
+	const file = path.join(candidatesDir, name);
+	writeFileSync(file, content);
+	return file;
+};
+
+test("explorerModelsFile: honors PI_CODING_AGENT_DIR, falls back to ~/.pi/agent", () => {
+	assert.equal(explorerModelsFile({ PI_CODING_AGENT_DIR: "/tmp/agent" }), "/tmp/agent/extensions/explorer-models.json");
+	assert.ok(explorerModelsFile({}).endsWith("/.pi/agent/extensions/explorer-models.json"));
+});
+
+test("loadExplorerCandidates: missing file → empty list, no warnings (feature off)", () => {
+	const result = loadExplorerCandidates(path.join(candidatesDir, "does-not-exist.json"));
+	assert.deepEqual(result, { candidates: [], warnings: [] });
+});
+
+test("loadExplorerCandidates: valid file → candidates, no warnings", () => {
+	const file = candidatesFile("valid.json", '{ "candidates": ["anthropic/haiku", "azure/gpt"] }');
+	assert.deepEqual(loadExplorerCandidates(file), {
+		candidates: ["anthropic/haiku", "azure/gpt"],
+		warnings: [],
+	});
+});
+
+test("loadExplorerCandidates: empty candidates list (the committed default) → no warnings", () => {
+	const file = candidatesFile("empty.json", '{ "candidates": [] }');
+	assert.deepEqual(loadExplorerCandidates(file), { candidates: [], warnings: [] });
+});
+
+test("loadExplorerCandidates: JSON null is valid JSON but wrong shape → shape warning, not JSON warning", () => {
+	const file = candidatesFile("null.json", "null");
+	const result = loadExplorerCandidates(file);
+	assert.deepEqual(result.candidates, []);
+	assert.equal(result.warnings.length, 1);
+	assert.match(result.warnings[0], /expected \{ "candidates": string\[\] \}/);
+});
+
+test("loadExplorerCandidates: invalid JSON → ignored with warning", () => {
+	const file = candidatesFile("broken.json", "{ not json");
+	const result = loadExplorerCandidates(file);
+	assert.deepEqual(result.candidates, []);
+	assert.equal(result.warnings.length, 1);
+	assert.match(result.warnings[0], /not valid JSON/);
+});
+
+test("loadExplorerCandidates: wrong shape → ignored with warning", () => {
+	const file = candidatesFile("shape.json", '{ "candidates": [1, 2] }');
+	const result = loadExplorerCandidates(file);
+	assert.deepEqual(result.candidates, []);
+	assert.equal(result.warnings.length, 1);
+	assert.match(result.warnings[0], /expected \{ "candidates": string\[\] \}/);
 });
 
 test("resolveExplorerConfig: valid thinking level honored", () => {
