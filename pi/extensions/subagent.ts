@@ -71,8 +71,9 @@ sees — it goes to another agent, not to a human. The 10-line response limit do
 - Stay in scope. Note anything out of scope in one sentence; don't fix it.
 - Report truthfully: if tests fail, say so with the output; if you skipped a step, say that.
 - If you committed, list the paths and commit hashes.
-- If the task is ambiguous, pick the most likely reading and state your assumption — or ask the
-  caller a single question instead of guessing; it can answer and resume you.
+- Ambiguity you can settle from the repo, settle. Details that are cheap to revise: assume,
+  state the assumption. Scope, approach, or anything hard to undo: ask the caller one question
+  instead — never guess; it can answer and resume you.
 
 Structure the final message as:
 1. What you did or found — specific: file paths, line numbers, snippets.
