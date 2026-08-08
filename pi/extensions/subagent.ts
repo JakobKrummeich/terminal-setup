@@ -117,7 +117,7 @@ export default function (pi: ExtensionAPI) {
 	if (inChildSession()) return;
 
 	pi.registerShortcut(WATCH_KEY, {
-		description: "Watch the running agent",
+		description: "Watch agent sessions (running and finished; press again to cycle)",
 		handler: async (ctx) => {
 			if (!ctx.hasUI) return;
 			const record = watchTarget();

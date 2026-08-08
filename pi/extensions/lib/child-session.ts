@@ -26,6 +26,7 @@ import { Container, type KeyId, matchesKey, Spacer, Text, type TUI } from "@eare
 import { renderFooterLines } from "../custom-footer.ts";
 import { cancelPendingWork } from "./pending-work.ts";
 import { waitForSessionQuiet } from "./session-quiet.ts";
+import { CONTEXT_CAP_SOFT_TRIGGER as SOFT_TRIGGER } from "./env.ts";
 
 export const AGENT_TOOL = "Agent";
 export const EXPLORE_TOOL = "Explore";
@@ -35,7 +36,6 @@ const MOUSE_ON = "\u001b[?1000h\u001b[?1006h";
 const MOUSE_OFF = "\u001b[?1006l\u001b[?1000l";
 const SGR_MOUSE = /^\u001b\[<(\d+);\d+;\d+([Mm])$/;
 const WHEEL_LINES = 3;
-const SOFT_TRIGGER = Number(process.env.CONTEXT_CAP_SOFT ?? 160_000);
 
 export { WATCH_KEY, EXPAND_KEY };
 
@@ -89,6 +89,13 @@ interface BusyGroup {
 // session_shutdown would clear only agent children, and inChildSession() would be
 // false inside an explorer child.
 interface SharedState {
+	/**
+	 * All children of this pi session: running/settling entries plus at most
+	 * MAX_FINISHED_CHILDREN finished ones. Older finished children are evicted
+	 * when a fresh child spawns (memory cap: each record holds a full AgentSession
+	 * plus a rendered ChildView) and can no longer be resumed — callers then get
+	 * the "No live … session" error.
+	 */
 	liveChildren: Map<string, ChildRecord>;
 	busyGroups: Map<string, BusyGroup>;
 	childSessionFlag: AsyncLocalStorage<true>;
@@ -402,7 +409,7 @@ function gitBranch(cwd: string): string | null {
 	}
 }
 
-function childFooterData(ctx: ExtensionContext, record: ChildRecord) {
+function childFooterData(ctx: ExtensionContext, record: ChildRecord, branch: string | null) {
 	const session = record.session;
 	const usage = session.getContextUsage();
 	const tokens = usage?.tokens == null ? "?" : formatTokenCount(usage.tokens);
@@ -410,7 +417,7 @@ function childFooterData(ctx: ExtensionContext, record: ChildRecord) {
 		cost: session.getSessionStats().cost,
 		usingSubscription: session.model ? ctx.modelRegistry.isUsingOAuth(session.model) : false,
 		cwd: ctx.cwd,
-		branch: gitBranch(ctx.cwd),
+		branch,
 		sessionName: session.sessionName,
 		modelId: session.model?.id,
 		reasoning: session.model?.reasoning === true,
@@ -419,12 +426,19 @@ function childFooterData(ctx: ExtensionContext, record: ChildRecord) {
 	};
 }
 
-export async function openChildView(ctx: ExtensionContext, record: ChildRecord): Promise<void> {
+export async function openChildView(ctx: ExtensionContext, initial: ChildRecord): Promise<void> {
 	await ctx.ui.custom<void>(
 		(tui, theme, _keybindings, done) => {
+			// Swappable: WATCH_KEY inside the view cycles to the next child without
+			// closing and reopening the overlay.
+			let record = initial;
 			record.view.setRenderer(() => tui.requestRender());
+			// Resolved once per view open: childFooterData runs in render() on every frame,
+			// and gitBranch does up to 2 sync file reads. Branch changes mid-view are rare
+			// and the view is reopened often, so a per-open snapshot is fine.
+			const branch = gitBranch(ctx.cwd);
 			const childFooter = (width: number) =>
-				renderFooterLines(width, theme as never, childFooterData(ctx, record));
+				renderFooterLines(width, theme as never, childFooterData(ctx, record, branch));
 			process.stdout.write(MOUSE_ON);
 			let offset = 0;
 			let follow = true;
@@ -434,6 +448,14 @@ export async function openChildView(ctx: ExtensionContext, record: ChildRecord):
 				offset = Math.max(0, offset + delta);
 				tui.requestRender();
 			};
+			const switchTo = (next: ChildRecord) => {
+				if (next === record) return;
+				record.view.setRenderer(() => {});
+				record = next;
+				record.view.setRenderer(() => tui.requestRender());
+				follow = true; // fresh child: jump to the tail and follow it
+				tui.requestRender();
+			};
 			return {
 				dispose() {
 					process.stdout.write(MOUSE_OFF);
@@ -441,12 +463,15 @@ export async function openChildView(ctx: ExtensionContext, record: ChildRecord):
 				},
 				invalidate() {},
 				render(width: number): string[] {
+					const all = [...liveChildren.values()];
+					const idx = all.indexOf(record);
+					const pos = all.length > 1 && idx >= 0 ? ` (${idx + 1}/${all.length})` : "";
 					const header = record.running
-						? `▶ ${statusLine(record)}`
-						: `■ ${metaLine(collectMeta(record))} · ${record.description} · finished`;
+						? `▶ ${statusLine(record)}${pos}`
+						: `■ ${metaLine(collectMeta(record))} · ${record.description} · finished${pos}`;
 					const hint = `esc back · wheel/↑↓/pgup/pgdn scroll · end follow · ${EXPAND_KEY} expand${
-						follow ? "" : " · paused"
-					}`;
+						pos ? ` · ${WATCH_KEY} next agent${pos}` : ""
+					}${follow ? "" : " · paused"}`;
 					const footerLines = childFooter(width);
 					viewport = Math.max(1, tui.terminal.rows - 3 - footerLines.length);
 					const body = record.view.render(width);
@@ -481,6 +506,10 @@ export async function openChildView(ctx: ExtensionContext, record: ChildRecord):
 						follow = true;
 						tui.requestRender();
 					} else if (matchesKey(data, EXPAND_KEY)) record.view.toggleExpanded();
+					else if (matchesKey(data, WATCH_KEY)) {
+						const next = nextChild(record.id);
+						if (next) switchTo(next);
+					}
 				},
 			};
 		},
@@ -499,20 +528,57 @@ export async function openChildView(ctx: ExtensionContext, record: ChildRecord):
 }
 
 /**
- * Pick the child the F2 watch should open. With several running children, repeated
- * presses cycle through them (wrapping); with none running, fall back to the last child.
+ * Pick the child the F2 watch should open. Repeated presses cycle through ALL
+ * children — running and finished — in spawn order, wrapping. When the cursor is
+ * unset (or its child was evicted), start at the first running child if any, else
+ * the most recent child.
  */
 export function watchTarget(): ChildRecord | undefined {
 	const all = [...liveChildren.values()];
-	const running = all.filter((r) => r.running);
-	if (running.length === 0) return all.at(-1);
+	if (all.length === 0) return undefined;
 	// Id-based cursor: children starting or finishing between presses shift indices,
-	// so an index cursor could skip an entry. Next running child after the last
-	// watched one; first if it is gone or was never set.
-	const last = running.findIndex((r) => r.id === state.watchCursor);
-	const target = running[(last + 1) % running.length];
+	// so an index cursor could skip an entry.
+	const last = all.findIndex((r) => r.id === state.watchCursor);
+	const target = last >= 0 ? all[(last + 1) % all.length] : (all.find((r) => r.running) ?? all.at(-1)!);
 	state.watchCursor = target.id;
 	return target;
+}
+
+/**
+ * Child after `currentId` in spawn order (wrapping; first child if the id is
+ * gone). Moves the F2 cursor so the outer shortcut stays in step with in-view
+ * cycling.
+ */
+export function nextChild(currentId: string): ChildRecord | undefined {
+	const all = [...liveChildren.values()];
+	if (all.length === 0) return undefined;
+	const target = all[(all.findIndex((r) => r.id === currentId) + 1) % all.length];
+	state.watchCursor = target.id;
+	return target;
+}
+
+/** Finished children kept for resume; oldest beyond this are evicted on spawn. */
+const MAX_FINISHED_CHILDREN = 8;
+
+/**
+ * Evict the oldest finished children beyond MAX_FINISHED_CHILDREN. Running or
+ * settling children (not idle yet) are never evicted. Map iteration order is
+ * insertion order, so the first finished entries are the oldest.
+ */
+function evictFinishedChildren(): void {
+	let finished = 0;
+	for (const record of state.liveChildren.values()) {
+		if (!record.running && record.session.isIdle) finished++;
+	}
+	for (const [id, record] of state.liveChildren) {
+		if (finished <= MAX_FINISHED_CHILDREN) break;
+		if (record.running || !record.session.isIdle) continue;
+		state.liveChildren.delete(id);
+		finished--;
+		try {
+			record.session.dispose();
+		} catch {}
+	}
 }
 
 export interface ChildToolParams {
@@ -572,6 +638,14 @@ async function waitForChildDone(
 	});
 }
 
+/**
+ * Cap on how long a settling child may keep its semaphore slot. Same rationale
+ * as pending-work claims being self-expiring: if waitForIdle() never resolves
+ * (hung child), the slot would otherwise be stranded for the rest of the pi
+ * session — at limit 1 (Agent group) the tool would be permanently busy.
+ */
+const SETTLE_TIMEOUT_MS = 60_000;
+
 /** Shared execute() body for child-session tools. */
 export async function runChildTool(
 	params: ChildToolParams,
@@ -605,10 +679,18 @@ export async function runChildTool(
 		const session = childSession;
 		if (session && !session.isIdle) {
 			group.settling.add(session);
+			// Idempotent: fires from waitForIdle OR the self-expiry timeout, whichever
+			// comes first — never both (the slot must be released exactly once).
+			let released = false;
 			const release = () => {
+				if (released) return;
+				released = true;
+				clearTimeout(timeout);
 				group.settling.delete(session);
 				group.active--;
 			};
+			const timeout = setTimeout(release, SETTLE_TIMEOUT_MS);
+			timeout.unref?.(); // must not keep the process alive
 			session.waitForIdle().then(release, release);
 		} else {
 			group.active--;
@@ -649,6 +731,7 @@ async function runChildToolInSlot(
 		}
 		if (params.description) record.description = params.description;
 	} else {
+		evictFinishedChildren();
 		const id = randomUUID().slice(0, 8);
 		const session = await createChildSession(ctx, options);
 		session.setSessionName(`${options.kind}#${id}`);
@@ -671,7 +754,8 @@ async function runChildToolInSlot(
 		options.promptPrefix && !resumeId
 			? `${options.promptPrefix}\n\n${params.prompt}`
 			: params.prompt;
-	record.view.addUserMessage(prompt);
+	// The watch view shows only the task, not the boilerplate contract prefix.
+	record.view.addUserMessage(params.prompt);
 	const watcher = watchChild(record, onUpdate);
 	const onAbort = () => void record.session.abort();
 	signal?.addEventListener("abort", onAbort, { once: true });

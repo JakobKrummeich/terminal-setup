@@ -236,7 +236,9 @@ export default function (pi: ExtensionAPI) {
 				onUpdate,
 				ctx,
 			);
-			if (config.warnings.length > 0 && result.content[0]?.type === "text") {
+			// Error results (busy rejection, unknown resume_id) already carry their own
+			// message — gluing config warnings onto them is noise, so skip those.
+			if (config.warnings.length > 0 && !result.isError && result.content[0]?.type === "text") {
 				result.content[0].text = `${config.warnings.join("\n")}\n\n${result.content[0].text}`;
 			}
 			return result;

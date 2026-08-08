@@ -38,7 +38,11 @@ interface Registry {
 	listeners: Set<(sessionId: string) => void>;
 }
 
-const REGISTRY_KEY = Symbol.for("terminal-setup.pending-work");
+// Versioned key: whenever Registry's (or Claim's) shape changes, bump it. jiti
+// re-imports this module per extension file (moduleCache: false), so an old code
+// copy may still hold the previous shape under the previous symbol — old and new
+// copies must never share a mis-shaped state object.
+const REGISTRY_KEY = Symbol.for("terminal-setup.pending-work.v2");
 const globals = globalThis as unknown as Record<symbol, Registry | undefined>;
 const registry: Registry = (globals[REGISTRY_KEY] ??= { claims: new Map(), listeners: new Set() });
 

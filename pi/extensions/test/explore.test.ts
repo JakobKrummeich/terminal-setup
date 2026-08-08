@@ -22,7 +22,8 @@ process.env.PI_OFFLINE = "1";
 
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
-import { ModelRuntime, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { initTheme, ModelRuntime, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import * as exploreModule from "../explore.ts";
 import {
 	EXPLORER_TOOLS,
 	explorerModelsFile,
@@ -30,7 +31,14 @@ import {
 	resolveExplorerConfig,
 	resolveExplorerParallel,
 } from "../explore.ts";
-import { liveChildren, runChildTool } from "../lib/child-session.ts";
+import {
+	type ChildRecord,
+	liveChildren,
+	nextChild,
+	resetChildState,
+	runChildTool,
+	watchTarget,
+} from "../lib/child-session.ts";
 import { sleep } from "./harness.ts";
 
 // --- resolveExplorerConfig (pure) ---
@@ -286,6 +294,40 @@ function disposeChildren() {
 	liveChildren.clear();
 }
 
+// --- F2 watch cycling (pure: fake records, no sessions) ---
+
+const fakeRecord = (id: string, running: boolean) =>
+	({ id, running, session: { dispose() {} } }) as unknown as ChildRecord;
+
+test("watchTarget cycles ALL children in spawn order; unset cursor starts at first running", () => {
+	resetChildState();
+	for (const r of [fakeRecord("a", false), fakeRecord("b", true), fakeRecord("c", false)])
+		liveChildren.set(r.id, r);
+	assert.equal(watchTarget()?.id, "b", "unset cursor must start at the first running child");
+	assert.equal(watchTarget()?.id, "c", "finished children are part of the cycle");
+	assert.equal(watchTarget()?.id, "a", "cycle wraps in insertion order");
+	assert.equal(watchTarget()?.id, "b");
+	// Cursor's child evicted → restart at the first running child.
+	liveChildren.delete("b");
+	liveChildren.set("d", fakeRecord("d", true));
+	assert.equal(watchTarget()?.id, "d", "gone cursor must restart at a running child");
+	// nextChild (in-view cycling) advances from an explicit id and moves the shared cursor.
+	assert.equal(nextChild("a")?.id, "c");
+	assert.equal(watchTarget()?.id, "d", "outer F2 must continue from the in-view cursor");
+	resetChildState();
+});
+
+test("watchTarget with no running children falls back to the most recent, then cycles", () => {
+	resetChildState();
+	liveChildren.set("a", fakeRecord("a", false));
+	liveChildren.set("b", fakeRecord("b", false));
+	assert.equal(watchTarget()?.id, "b", "all finished → most recent child first");
+	assert.equal(watchTarget()?.id, "a", "then wraps through the rest");
+	assert.equal(watchTarget()?.id, "b");
+	assert.equal(nextChild("zzz-gone")?.id, "a", "unknown id falls back to the first child");
+	resetChildState();
+});
+
 const resultText = (result: { content: Array<{ text?: string }> }) => result.content[0]?.text ?? "";
 const isBusyError = (result: { details?: unknown }) =>
 	(result.details as { error?: string } | undefined)?.error === "child_busy";
@@ -352,6 +394,27 @@ test("two explorers serialize; a slow explorer does not block an agent child", a
 	);
 	assert.equal(isBusyError(agent), false, "agent must not see the explorer latch");
 	await firstPromise;
+	disposeChildren();
+});
+
+test("promptPrefix reaches the session but the watch view shows only the task", async () => {
+	const ctx = await makeCtx(50);
+	initTheme(undefined, false); // rendering components needs a theme; no watcher, or the process never exits
+	const result = await runChildTool(
+		{ prompt: "tiny task", description: "prefix check" },
+		{ ...EXPLORER_OPTIONS, promptPrefix: "SLOW-TASK CONTRACTMARKER" },
+		undefined,
+		undefined,
+		ctx,
+	);
+	// "SLOW-TASK" appears only in the prefix; the scripted stream answers
+	// "slow child done" only when it sees it — proof the prefix reached the model.
+	assert.match(resultText(result), /slow child done/);
+	const record = [...liveChildren.values()].find((r) => r.description === "prefix check");
+	assert.ok(record, "child record must exist");
+	const rendered = record.view.render(120).join("\n");
+	assert.match(rendered, /tiny task/, "view shows the task");
+	assert.doesNotMatch(rendered, /CONTRACTMARKER/, "view must not show the contract prefix");
 	disposeChildren();
 });
 
@@ -498,6 +561,54 @@ test("resuming a still-running explorer is rejected instead of double-prompting 
 	disposeChildren();
 });
 
+test("old finished children are evicted beyond the cap; running children survive", async () => {
+	const ctx = await makeCtx(8000);
+	const options = parallelOptions(2);
+	// The slow child is the oldest map entry — running children must never be evicted.
+	const slowPromise = runChildTool(
+		{ prompt: "SLOW-TASK stay busy", description: "long runner" },
+		options,
+		undefined,
+		undefined,
+		ctx,
+	);
+	const fastIds: string[] = [];
+	for (let i = 0; i < 11; i++) {
+		const result = await runChildTool(
+			{ prompt: `lookup ${i}`, description: `fast ${i}` },
+			options,
+			undefined,
+			undefined,
+			ctx,
+		);
+		assert.equal(isBusyError(result), false, `fast child ${i} must run`);
+		fastIds.push((result.details as { id: string }).id);
+	}
+	// The cap is 8 finished children, checked on each fresh spawn: spawning fast
+	// child 9 saw 9 finished (0..8) and evicted fastIds[0]; child 10 evicted fastIds[1].
+	assert.ok(!liveChildren.has(fastIds[0]), "oldest finished child must be evicted");
+	assert.ok(!liveChildren.has(fastIds[1]), "second-oldest finished child must be evicted");
+	for (const id of fastIds.slice(2)) {
+		assert.ok(liveChildren.has(id), `recent finished child ${id} must be kept`);
+	}
+	const running = [...liveChildren.values()].filter((r) => r.running);
+	assert.equal(running.length, 1, "the running child must survive eviction despite being oldest");
+	// Evicted ids fall back to the existing unknown-resume error.
+	const resumed = await runChildTool(
+		{ prompt: "follow-up", resume_id: fastIds[0] },
+		options,
+		undefined,
+		undefined,
+		ctx,
+	);
+	assert.equal((resumed.details as { error?: string }).error, "unknown_resume_id");
+	assert.match(resultText(resumed), /No live explorer session/);
+	const slow = await slowPromise;
+	assert.equal(isBusyError(slow), false, "the running child must be unaffected by evictions");
+	assert.match(resultText(slow), /slow child done/);
+	disposeChildren();
+});
+
 test("explorer child gets exactly the readonly allowlist", async () => {
 	const ctx = await makeCtx(0);
 	const result = await runChildTool(
@@ -520,4 +631,42 @@ test("explorer child gets exactly the readonly allowlist", async () => {
 		assert.ok(!active.includes(name), `${name} must not be active in an explorer`);
 	}
 	disposeChildren();
+});
+
+test("config warnings prepend to success results but not to error results", async () => {
+	const ctx = await makeCtx(0);
+	// makeCtx's registry finds nothing, so this spec guarantees a config warning.
+	process.env.PI_EXPLORER_MODEL = "nope/missing";
+	try {
+		let tool: any;
+		// This test dir is ESM ("type": "module") but ../explore.ts is checked as CJS,
+		// so tsc sees the default export behind an interop wrapper while node's ESM
+		// runtime hands it over directly. Unwrap whichever shape shows up.
+		type ExploreExtensionFn = (pi: { registerTool: (t: unknown) => void }) => void;
+		const d = (exploreModule as unknown as { default: ExploreExtensionFn | { default: ExploreExtensionFn } })
+			.default;
+		const exploreExtension = typeof d === "function" ? d : d.default;
+		exploreExtension({ registerTool: (t: unknown) => (tool = t) });
+		const errored = await tool.execute(
+			"call-1",
+			{ prompt: "follow-up", resume_id: "no-such-id" },
+			undefined,
+			undefined,
+			ctx,
+		);
+		assert.equal(errored.isError, true);
+		assert.ok(!resultText(errored).includes("[explorer]"), "error results must not carry config warnings");
+		const ok = await tool.execute(
+			"call-2",
+			{ prompt: "lookup", description: "warn check" },
+			undefined,
+			undefined,
+			ctx,
+		);
+		assert.match(resultText(ok), /^\[explorer\] PI_EXPLORER_MODEL "nope\/missing" not found/);
+		assert.match(resultText(ok), /fast child done/);
+	} finally {
+		delete process.env.PI_EXPLORER_MODEL;
+		disposeChildren();
+	}
 });

@@ -41,12 +41,13 @@ import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { CONTEXT_CAP_SOFT_TRIGGER, envInt } from "./lib/env.ts";
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-const SOFT_TRIGGER = envInt("CONTEXT_CAP_SOFT", 160_000);
+const SOFT_TRIGGER = CONTEXT_CAP_SOFT_TRIGGER;
 const HARD_TRIGGER = envInt("CONTEXT_CAP_HARD", 200_000);
 const MAX_RETRIES = 2;
 const CAP_DIR = path.join(os.homedir(), ".pi", "agent", "context-cap");
@@ -56,13 +57,6 @@ const TOOL_NAME = "context_handoff";
 // steered swap marker, followUp reminders, the post-swap turns — is drained inside
 // the same `_runAgentPrompt` loop, so a caller awaiting `session.prompt()` already
 // sees the whole cycle. Regression-tested in test/context-cap.test.ts.
-
-function envInt(name: string, fallback: number): number {
-	const raw = process.env[name];
-	if (!raw) return fallback;
-	const n = Number.parseInt(raw, 10);
-	return Number.isFinite(n) && n > 0 ? n : fallback;
-}
 
 // ---------------------------------------------------------------------------
 // Messages
