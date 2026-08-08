@@ -3,6 +3,8 @@ import { Type } from "typebox";
 import {
 	AGENT_TOOL,
 	inChildSession,
+	liveChildren,
+	openChildPicker,
 	openChildView,
 	renderChildResult,
 	resetChildState,
@@ -117,9 +119,14 @@ export default function (pi: ExtensionAPI) {
 	if (inChildSession()) return;
 
 	pi.registerShortcut(WATCH_KEY, {
-		description: "Watch agent sessions (running and finished; press again to cycle)",
+		description: "Watch agent sessions (picker when several; running and finished)",
 		handler: async (ctx) => {
 			if (!ctx.hasUI) return;
+			// Several children: open the picker dashboard; one child: jump straight in.
+			if (liveChildren.size > 1) {
+				await openChildPicker(ctx);
+				return;
+			}
 			const record = watchTarget();
 			if (!record) {
 				ctx.ui.notify("No agent has run yet in this session.", "info");

@@ -34,7 +34,9 @@ import {
 import {
 	type ChildRecord,
 	liveChildren,
+	movePickerSelection,
 	nextChild,
+	prevChild,
 	resetChildState,
 	runChildTool,
 	watchTarget,
@@ -326,6 +328,33 @@ test("watchTarget with no running children falls back to the most recent, then c
 	assert.equal(watchTarget()?.id, "b");
 	assert.equal(nextChild("zzz-gone")?.id, "a", "unknown id falls back to the first child");
 	resetChildState();
+});
+
+test("prevChild cycles backward in spawn order and moves the shared cursor", () => {
+	resetChildState();
+	for (const r of [fakeRecord("a", false), fakeRecord("b", true), fakeRecord("c", false)])
+		liveChildren.set(r.id, r);
+	assert.equal(prevChild("c")?.id, "b");
+	assert.equal(prevChild("b")?.id, "a");
+	assert.equal(prevChild("a")?.id, "c", "wraps from the first child to the last");
+	assert.equal(prevChild("zzz-gone")?.id, "c", "unknown (evicted) id falls back to the last child");
+	// prevChild moves the shared cursor: outer F2 continues from where ← left off.
+	prevChild("c"); // cursor → b
+	assert.equal(watchTarget()?.id, "c", "outer F2 must continue after the in-view cursor");
+	liveChildren.clear();
+	assert.equal(prevChild("a"), undefined, "no children → undefined");
+	resetChildState();
+});
+
+test("movePickerSelection wraps and clamps stale indices", () => {
+	assert.equal(movePickerSelection(0, 1, 3), 1);
+	assert.equal(movePickerSelection(2, 1, 3), 0, "down from the last row wraps to the first");
+	assert.equal(movePickerSelection(0, -1, 3), 2, "up from the first row wraps to the last");
+	// Eviction shrank the list: a stale index clamps before the move applies.
+	assert.equal(movePickerSelection(5, 1, 3), 0, "stale index clamps to last row, then wraps");
+	assert.equal(movePickerSelection(5, -1, 3), 1);
+	assert.equal(movePickerSelection(0, 1, 0), 0, "empty list stays at 0");
+	assert.equal(movePickerSelection(-4, -1, 3), 2, "negative index clamps to 0 first");
 });
 
 const resultText = (result: { content: Array<{ text?: string }> }) => result.content[0]?.text ?? "";

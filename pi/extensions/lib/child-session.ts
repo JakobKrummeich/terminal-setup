@@ -426,20 +426,60 @@ function childFooterData(ctx: ExtensionContext, record: ChildRecord, branch: str
 	};
 }
 
+/** One picker row (marker + live status / final meta). Selection styling is added by the caller. */
+function pickerRow(record: ChildRecord): string {
+	return record.running
+		? `▶ ${statusLine(record)}`
+		: `■ ${metaLine(collectMeta(record))} · ${record.description}`;
+}
+
+/**
+ * Wrapping selection move for the picker. Clamps a stale index first: eviction
+ * can shrink the list while the picker is open, leaving `index` past the end.
+ */
+export function movePickerSelection(index: number, delta: number, count: number): number {
+	if (count <= 0) return 0;
+	const clamped = Math.min(Math.max(index, 0), count - 1);
+	return (((clamped + delta) % count) + count) % count;
+}
+
 export async function openChildView(ctx: ExtensionContext, initial: ChildRecord): Promise<void> {
+	return watchOverlay(ctx, initial);
+}
+
+/** Dashboard of all children; enter/digits drill into a child view, esc from there returns here. */
+export async function openChildPicker(ctx: ExtensionContext): Promise<void> {
+	return watchOverlay(ctx, undefined);
+}
+
+async function watchOverlay(ctx: ExtensionContext, initial: ChildRecord | undefined): Promise<void> {
 	await ctx.ui.custom<void>(
 		(tui, theme, _keybindings, done) => {
-			// Swappable: WATCH_KEY inside the view cycles to the next child without
-			// closing and reopening the overlay.
-			let record = initial;
-			record.view.setRenderer(() => tui.requestRender());
+			// One overlay, two modes: "picker" (row per child) and "view" (one child's
+			// transcript). Mode switching inside a single ui.custom keeps esc-from-view
+			// returning to a still-live picker without re-opening the overlay.
+			const fromPicker = initial === undefined;
+			let mode: "picker" | "view" = fromPicker ? "picker" : "view";
+			// Open the picker on the last-watched child, not row 0 (fresh cursor → first row).
+			let selected = Math.max(
+				0,
+				[...liveChildren.values()].findIndex((r) => r.id === state.watchCursor),
+			);
+			// Swappable: WATCH_KEY/←/→ inside the view cycle children without closing
+			// and reopening the overlay. Undefined only while in picker mode.
+			let record: ChildRecord | undefined = initial;
+			record?.view.setRenderer(() => tui.requestRender());
 			// Resolved once per view open: childFooterData runs in render() on every frame,
 			// and gitBranch does up to 2 sync file reads. Branch changes mid-view are rare
 			// and the view is reopened often, so a per-open snapshot is fine.
 			const branch = gitBranch(ctx.cwd);
-			const childFooter = (width: number) =>
-				renderFooterLines(width, theme as never, childFooterData(ctx, record, branch));
+			const childFooter = (width: number, current: ChildRecord) =>
+				renderFooterLines(width, theme as never, childFooterData(ctx, current, branch));
 			process.stdout.write(MOUSE_ON);
+			// Picker rows must track running children (turn count, current tool) even
+			// when no view renderer is attached; a coarse tick beats subscribing to
+			// every child session just for a redraw.
+			const ticker = setInterval(() => tui.requestRender(), 1000);
 			let offset = 0;
 			let follow = true;
 			let viewport = 1;
@@ -450,66 +490,130 @@ export async function openChildView(ctx: ExtensionContext, initial: ChildRecord)
 			};
 			const switchTo = (next: ChildRecord) => {
 				if (next === record) return;
-				record.view.setRenderer(() => {});
+				record?.view.setRenderer(() => {});
 				record = next;
 				record.view.setRenderer(() => tui.requestRender());
 				follow = true; // fresh child: jump to the tail and follow it
 				tui.requestRender();
 			};
+			const enterView = (target: ChildRecord) => {
+				// Keep the outer F2 shortcut cycling from wherever the picker jumped to.
+				state.watchCursor = target.id;
+				mode = "view";
+				switchTo(target);
+				tui.requestRender();
+			};
+			const leaveView = () => {
+				// Esc from a picker-opened view goes back to the picker — unless eviction
+				// shrank the list to ≤1 child, where a picker would be pointless.
+				if (!fromPicker || liveChildren.size <= 1) {
+					done();
+					return;
+				}
+				const idx = [...liveChildren.values()].indexOf(record!);
+				if (idx >= 0) selected = idx;
+				record?.view.setRenderer(() => {});
+				record = undefined;
+				mode = "picker";
+				tui.requestRender();
+			};
+			const renderPicker = (): string[] => {
+				const all = [...liveChildren.values()];
+				if (all.length === 0) return ["No agent sessions.", "", "esc close"];
+				selected = Math.min(selected, all.length - 1); // eviction clamp
+				const rows = all.map((r, i) =>
+					i === selected
+						? (theme as Theme).fg("accent", `> ${pickerRow(r)}`)
+						: `  ${pickerRow(r)}`,
+				);
+				const hint = "↑↓ select · enter open · 1-9 jump · esc close";
+				return [`Agent sessions (${all.length})`, "", ...rows, "", hint].slice(0, tui.terminal.rows);
+			};
+			const renderView = (width: number): string[] => {
+				const current = record!;
+				const all = [...liveChildren.values()];
+				const idx = all.indexOf(current);
+				const pos = all.length > 1 && idx >= 0 ? ` (${idx + 1}/${all.length})` : "";
+				const header = current.running
+					? `▶ ${statusLine(current)}${pos}`
+					: `■ ${metaLine(collectMeta(current))} · ${current.description} · finished${pos}`;
+				const hint = `esc back · wheel/↑↓/pgup/pgdn scroll · end follow · ${EXPAND_KEY} expand${
+					pos ? ` · ←/→ agents · ${WATCH_KEY} next${pos}` : ""
+				}${follow ? "" : " · paused"}`;
+				const footerLines = childFooter(width, current);
+				viewport = Math.max(1, tui.terminal.rows - 3 - footerLines.length);
+				const body = current.view.render(width);
+				const maxOffset = Math.max(0, body.length - viewport);
+				if (follow) offset = maxOffset;
+				else if (offset >= maxOffset) {
+					offset = maxOffset;
+					follow = true;
+				}
+				const window = body.slice(offset, offset + viewport);
+				while (window.length < viewport) window.push("");
+				return [header, ...window, "", hint, ...footerLines].slice(0, tui.terminal.rows);
+			};
+			const handlePickerInput = (data: string) => {
+				const all = [...liveChildren.values()];
+				if (matchesKey(data, "escape")) done();
+				else if (matchesKey(data, "up")) {
+					selected = movePickerSelection(selected, -1, all.length);
+					tui.requestRender();
+				} else if (matchesKey(data, "down") || matchesKey(data, WATCH_KEY)) {
+					// WATCH_KEY too: tapping F2 repeatedly still walks through the children.
+					selected = movePickerSelection(selected, 1, all.length);
+					tui.requestRender();
+				} else if (matchesKey(data, "enter")) {
+					const target = all[Math.min(selected, all.length - 1)];
+					if (target) enterView(target);
+				} else if (data.length === 1 && data >= "1" && data <= "9") {
+					const target = all[Number(data) - 1];
+					if (target) enterView(target);
+				}
+			};
+			const handleViewInput = (data: string) => {
+				const current = record!;
+				const mouse = SGR_MOUSE.exec(data);
+				if (mouse) {
+					const button = Number(mouse[1]);
+					if (button === 64) scrollBy(-WHEEL_LINES);
+					else if (button === 65) scrollBy(WHEEL_LINES);
+					return;
+				}
+				if (matchesKey(data, "escape")) leaveView();
+				else if (matchesKey(data, "up")) scrollBy(-1);
+				else if (matchesKey(data, "down")) scrollBy(1);
+				else if (matchesKey(data, "pageUp")) scrollBy(-(viewport - 1));
+				else if (matchesKey(data, "pageDown")) scrollBy(viewport - 1);
+				else if (matchesKey(data, "home")) {
+					follow = false;
+					offset = 0;
+					tui.requestRender();
+				} else if (matchesKey(data, "end")) {
+					follow = true;
+					tui.requestRender();
+				} else if (matchesKey(data, EXPAND_KEY)) current.view.toggleExpanded();
+				else if (matchesKey(data, "left")) {
+					const prev = prevChild(current.id);
+					if (prev) switchTo(prev);
+				} else if (matchesKey(data, "right") || matchesKey(data, WATCH_KEY)) {
+					const next = nextChild(current.id);
+					if (next) switchTo(next);
+				}
+			};
 			return {
 				dispose() {
+					clearInterval(ticker);
 					process.stdout.write(MOUSE_OFF);
-					record.view.setRenderer(() => {});
+					record?.view.setRenderer(() => {});
 				},
 				invalidate() {},
 				render(width: number): string[] {
-					const all = [...liveChildren.values()];
-					const idx = all.indexOf(record);
-					const pos = all.length > 1 && idx >= 0 ? ` (${idx + 1}/${all.length})` : "";
-					const header = record.running
-						? `▶ ${statusLine(record)}${pos}`
-						: `■ ${metaLine(collectMeta(record))} · ${record.description} · finished${pos}`;
-					const hint = `esc back · wheel/↑↓/pgup/pgdn scroll · end follow · ${EXPAND_KEY} expand${
-						pos ? ` · ${WATCH_KEY} next agent${pos}` : ""
-					}${follow ? "" : " · paused"}`;
-					const footerLines = childFooter(width);
-					viewport = Math.max(1, tui.terminal.rows - 3 - footerLines.length);
-					const body = record.view.render(width);
-					const maxOffset = Math.max(0, body.length - viewport);
-					if (follow) offset = maxOffset;
-					else if (offset >= maxOffset) {
-						offset = maxOffset;
-						follow = true;
-					}
-					const window = body.slice(offset, offset + viewport);
-					while (window.length < viewport) window.push("");
-					return [header, ...window, "", hint, ...footerLines].slice(0, tui.terminal.rows);
+					return mode === "picker" ? renderPicker() : renderView(width);
 				},
 				handleInput(data: string) {
-					const mouse = SGR_MOUSE.exec(data);
-					if (mouse) {
-						const button = Number(mouse[1]);
-						if (button === 64) scrollBy(-WHEEL_LINES);
-						else if (button === 65) scrollBy(WHEEL_LINES);
-						return;
-					}
-					if (matchesKey(data, "escape")) done();
-					else if (matchesKey(data, "up")) scrollBy(-1);
-					else if (matchesKey(data, "down")) scrollBy(1);
-					else if (matchesKey(data, "pageUp")) scrollBy(-(viewport - 1));
-					else if (matchesKey(data, "pageDown")) scrollBy(viewport - 1);
-					else if (matchesKey(data, "home")) {
-						follow = false;
-						offset = 0;
-						tui.requestRender();
-					} else if (matchesKey(data, "end")) {
-						follow = true;
-						tui.requestRender();
-					} else if (matchesKey(data, EXPAND_KEY)) record.view.toggleExpanded();
-					else if (matchesKey(data, WATCH_KEY)) {
-						const next = nextChild(record.id);
-						if (next) switchTo(next);
-					}
+					if (mode === "picker") handlePickerInput(data);
+					else handleViewInput(data);
 				},
 			};
 		},
@@ -553,6 +657,19 @@ export function nextChild(currentId: string): ChildRecord | undefined {
 	const all = [...liveChildren.values()];
 	if (all.length === 0) return undefined;
 	const target = all[(all.findIndex((r) => r.id === currentId) + 1) % all.length];
+	state.watchCursor = target.id;
+	return target;
+}
+
+/**
+ * Child before `currentId` in spawn order (wrapping; last child if the id is
+ * gone). Moves the F2 cursor like nextChild so outer cycling stays in step.
+ */
+export function prevChild(currentId: string): ChildRecord | undefined {
+	const all = [...liveChildren.values()];
+	if (all.length === 0) return undefined;
+	const idx = all.findIndex((r) => r.id === currentId);
+	const target = idx < 0 ? all.at(-1)! : all[(idx - 1 + all.length) % all.length]!;
 	state.watchCursor = target.id;
 	return target;
 }
