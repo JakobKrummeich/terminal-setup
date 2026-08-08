@@ -7,8 +7,12 @@
  * Horizontal spacing is the terminal's job now (WezTerm pixel padding,
  * ~/codingprojects/weztermconfig).
  *
- * Mechanism: extensions share pi's module instances, so patching
- * Markdown.prototype.render affects the components pi constructs.
+ * Mechanism: pi's extension loader aliases bare package imports (like
+ * `@earendil-works/pi-tui`) to its own dist entry files, resolved through
+ * Node's native module cache — so this file gets the very Markdown class pi
+ * constructs from, and patching Markdown.prototype.render affects pi's
+ * components. (Relative imports, by contrast, duplicate per extension — see
+ * AGENTS.md.)
  * Coupled to pi-tui internals (`paddingX` prop) — re-verify after `pi update`.
  *
  * Known residual: long lines are still HARD-WRAPPED at render width; copying

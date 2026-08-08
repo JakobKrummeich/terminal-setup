@@ -15,9 +15,8 @@ Read `README.md` first — layout, install, known issues live there. Don't dupli
 - `install-terminal.sh` and `install-pi.sh` are idempotent — safe to re-run as smoke tests.
 - **pi loads each extension file with its own jiti instance (`moduleCache: false`).**
   Files under `pi/extensions/lib/` imported by two extensions exist as two module
-  copies; module-level state silently splits. Bare package imports (pi-tui etc.) are
-  exempt: the loader aliases them to pi's own dist entries, resolved natively — shared
-  instances (why markdown-no-padding's prototype patch reaches pi's components). Shared state must live on `globalThis`
+  copies; module-level state silently splits. Only relative imports split — bare
+  package imports (pi-tui etc.) are aliased to pi's own module instances and stay shared. Shared state must live on `globalThis`
   under a versioned `Symbol.for` key — see `lib/pending-work.ts` and
   `lib/child-session.ts`. Bump the key when the state shape changes.
 - **A stub `tsc` shadows the real compiler** and a shell wrapper prints fake
