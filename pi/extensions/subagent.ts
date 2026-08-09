@@ -15,65 +15,52 @@ import {
 
 const TOOL_DESCRIPTION = `Delegate a task to a fresh agent session that works autonomously and reports back.
 
-The agent starts with no memory of this conversation, so the prompt must be self-contained.
-It has the same tools, skills and project context you do, and runs in the same working directory.
-Only its final message comes back to you, so ask for whatever you need in that one reply.
-For cheap readonly lookups, both you and the agents you spawn can use the Explore tool
-instead of burning context (yours or an Agent delegation) on them.
+The agent has the same tools, skills and project context you do, in the same working directory,
+but no memory of this conversation: the prompt must be self-contained. Only its final message
+comes back, so ask for everything you need in that one reply. For cheap readonly lookups, use
+the Explore tool instead (the agents you spawn have it too).
 
-Agents run one at a time: a second call while one is running is rejected, so never emit two Agent
-calls in the same message. Delegate one sizeable, self-contained track, wait for its result, then
-decide what comes next.
-
-You don't need the user's permission to delegate. But delegation is not free: the agent
-re-establishes context, re-explores and reports back, and you then read its report. Delegate work
-that is genuinely independent and large enough to justify a fresh context:
+Agents run one at a time — a second call while one runs is rejected, so never emit two Agent
+calls in one message, and do not split one modest job across several agents. Delegation is not
+free; delegate work that is independent and large enough to justify a fresh context:
 - Implementation of a defined task, especially multi-file work or edit/test/fix loops.
-- Verification and review of work that is already done. Default to this generator-verifier split:
-  a fresh agent that did not write the code catches what you would skim past.
+- Verification and review of finished work — a fresh agent catches what its author skims past.
 - Long mechanical grind: migrations, renames, repetitive fixes across many files.
 
-Before spawning, check:
-- Small and bounded — a few reads, one search, a short edit? Do it inline.
-- Do not split one modest job across several agents; they queue up and each pays full context cost.
-- Keep spawn counts low: one well-briefed agent beats several loosely-briefed ones.
-- Commit to the delegation. Do not redo its work while it runs, or re-derive its findings after.
+Do inline instead: small bounded jobs — a few reads, one search, a short edit.
+Keep for yourself: planning and spec work; synthesis — never "based on your findings, fix the
+bug", digest results yourself and hand over concrete paths, lines and changes; single
+known-file edits and targeted greps.
 
-Trust but verify: the agent's summary says what it meant to do, not necessarily what it did. When
-it writes or edits code, check the actual changes before reporting the work as done.
+You don't need the user's permission to delegate. Commit to the delegation: do not redo its
+work while it runs or re-derive its findings after. Trust but verify — when the agent changed
+code, check the actual changes before reporting the work done. Briefing: for lookups hand over
+the exact command; for investigations hand over the question, not prescribed steps.
 
-Keep for yourself:
-- Planning and spec work. Delegate the legwork that feeds a plan; write the plan yourself.
-- Synthesis. Never delegate understanding — do not write "based on your findings, fix the bug".
-  Digest the results and hand over concrete paths, lines and changes.
-- Single known-file edits and targeted greps. Just do them.
-
-Briefing: lookups — hand over the exact command. Investigations — hand over the question, since
-prescribed steps become dead weight when the premise is wrong.
-
-The agent may come back with a clarifying question instead of a result. That is normal: answer
-it yourself by calling this tool again with resume_id set to the id in the result, which
-continues the same session with its context intact. You stand in for the user.`;
+The agent may return a clarifying question instead of a result. Answer it yourself — you stand
+in for the user — by calling this tool again with resume_id set to the id in the result, which
+continues that session with its context intact.`;
 
 // Prepended to the first prompt of a fresh child. Children are otherwise clones of the parent —
 // same system prompt, same skills — so this is the only place they learn they are delegates and
 // who reads their output.
 const CHILD_CONTRACT = `You are a delegated agent. Your final message is the only thing the caller
-sees — it goes to another agent, not to a human. The 10-line response limit does not apply to it.
+sees, and the caller is another agent, not a human. Response-length limits from the system prompt
+do not apply to that final message.
 
-- Never write findings, summaries or reports to .md files. Return them as your final message.
-  (Files written as input to another tool are fine.)
+- Report findings in the final message itself — never in .md report files. (Files written as
+  input to another tool are fine.)
 - Use absolute paths. Include code snippets only when the exact text is load-bearing — a bug you
   found, a signature the caller needs. Do not recap code you merely read.
 - Complete the task fully. Don't gold-plate, don't leave it half-done.
-- You may use the timer tool and end your turn while waiting; the caller keeps waiting for you and
-  gets your message after the wake-up. Cancel any timer you no longer need before you finish.
+- You may use the timer tool and end your turn while waiting; the caller keeps waiting and gets
+  your message after the wake-up. Cancel timers you no longer need before you finish.
 - Stay in scope. Note anything out of scope in one sentence; don't fix it.
 - Report truthfully: if tests fail, say so with the output; if you skipped a step, say that.
 - If you committed, list the paths and commit hashes.
-- Ambiguity you can settle from the repo, settle. Details that are cheap to revise: assume,
-  state the assumption. Scope, approach, or anything hard to undo: ask the caller one question
-  instead — never guess; it can answer and resume you.
+- Ambiguity you can settle from the repo, settle. Details cheap to revise: assume, state the
+  assumption. Scope, approach, or anything hard to undo: ask the caller one question instead —
+  never guess; it can answer and resume you.
 
 Structure the final message as:
 1. What you did or found — specific: file paths, line numbers, snippets.

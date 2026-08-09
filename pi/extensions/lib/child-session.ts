@@ -894,7 +894,7 @@ async function runChildToolInSlot(
 	}
 	const text = watcher.text();
 	return textResult(
-		`${text || `(${options.kind} produced no text output)`}\n\n---\n${options.kind} id: ${record.id} (pass as resume_id to continue this session)`,
+		`${text || `(${options.kind} produced no text output)`}\n\n---\n${options.kind} id: ${record.id} (pass as resume_id to continue)`,
 		{ ...collectMeta(record), aborted: signal?.aborted === true },
 	);
 }

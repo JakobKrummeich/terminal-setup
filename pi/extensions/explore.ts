@@ -14,27 +14,25 @@ import {
 const TOOL_DESCRIPTION = `Delegate readonly exploration to a fast, cheap agent that reports back.
 
 Use it for questions about the codebase — "where is X handled", "how does Y work",
-"summarize this subsystem", lookups across many files — without burning your own context.
-Prefer it over doing large multi-file reads yourself. It is available to both the main
-agent and delegated agents.
+"summarize this subsystem", lookups across many files. Prefer it over reading many files
+yourself: it keeps your own context small. Delegated agents have it too. The explorer can
+only read, grep, find and ls: never send it a task that needs command execution or mutation.
 
-The explorer can only read, grep, find and ls: it cannot edit, write or run bash. Never
-send it a task that needs command execution or mutation.
+It has no memory of this conversation and only its final message comes back: make the prompt
+self-contained and ask for everything you need in that one reply — paths, line numbers, the
+specific facts.
 
-It starts with no memory of this conversation, so the prompt must be self-contained. Only
-its final message comes back, so ask for everything you need in that one reply: paths,
-line numbers, the specific facts.
-
-Up to N explorers run concurrently (configurable, default 3): emitting several Explore
-calls in ONE assistant message runs them in parallel — fan out for independent lookups
-instead of asking one explorer several unrelated questions. Calls beyond the limit are
-rejected; retry after one finishes. For follow-up questions, call again with resume_id
-set to the id in the result, which continues the same session with its context intact.`;
+Several Explore calls in ONE assistant message run in parallel (up to a limit, default 3) —
+fan out for independent lookups instead of asking one explorer several unrelated questions.
+Calls beyond the limit are rejected; retry after one finishes. For follow-up questions, call
+again with resume_id set to the id in the result, which continues that session with its
+context intact.`;
 
 // Prepended to the first prompt of a fresh explorer. Same idea as CHILD_CONTRACT in
 // subagent.ts, but for a readonly child whose report feeds another agent.
 const EXPLORER_CONTRACT = `You are a readonly explorer agent. Your final message is the only thing the
-caller sees — it goes to another agent, not to a human. The 10-line response limit does not apply to it.
+caller sees, and the caller is another agent, not a human. Response-length limits from the system
+prompt do not apply to it.
 
 - You have only read, grep, find and ls. You cannot edit, write or run commands.
 - Answer the question directly, with absolute paths, line numbers and load-bearing snippets.
