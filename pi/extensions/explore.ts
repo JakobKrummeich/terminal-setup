@@ -10,6 +10,7 @@ import {
 	renderChildResult,
 	runChildTool,
 } from "./lib/child-session.ts";
+import { CONTEXT_CAP_TOOL_NAME } from "./lib/env.ts";
 
 const TOOL_DESCRIPTION = `Delegate readonly exploration to a fast, cheap agent that reports back.
 
@@ -28,8 +29,10 @@ Calls beyond the limit are rejected; retry after one finishes. For follow-up que
 again with resume_id set to the id in the result, which continues that session with its
 context intact.`;
 
-// Prepended to the first prompt of a fresh explorer. Same idea as CHILD_CONTRACT in
-// subagent.ts, but for a readonly child whose report feeds another agent.
+// Appended to an explorer child's system prompt on every turn. Same idea as CHILD_CONTRACT
+// in subagent.ts, but for a readonly child whose report feeds another agent. The injection
+// itself happens in subagent.ts's before_agent_start handler — the single registration
+// point for all child kinds (see the comment there); this file only supplies the text.
 const EXPLORER_CONTRACT = `You are a readonly explorer agent. Your final message is the only thing the
 caller sees, and the caller is another agent, not a human. Response-length limits from the system
 prompt do not apply to it.
@@ -46,7 +49,7 @@ Structure the final message as:
 // grep/find/ls are pi builtins that the allowlist activates even without the rtk-tools
 // extension; context_handoff keeps the context-cap machinery working. An allowlist
 // enables only what it lists, so bash/edit/write and Agent/Explore are structurally out.
-export const EXPLORER_TOOLS = ["read", "grep", "find", "ls", "context_handoff"] as const;
+export const EXPLORER_TOOLS = ["read", "grep", "find", "ls", CONTEXT_CAP_TOOL_NAME] as const;
 
 const THINKING_LEVELS: readonly ChildThinkingLevel[] = [
 	"off",
@@ -228,7 +231,7 @@ export default function (pi: ExtensionAPI) {
 					excludeTools: [],
 					model: config.model,
 					thinkingLevel: config.thinkingLevel,
-					promptPrefix: EXPLORER_CONTRACT,
+					contract: EXPLORER_CONTRACT,
 				},
 				signal,
 				onUpdate,

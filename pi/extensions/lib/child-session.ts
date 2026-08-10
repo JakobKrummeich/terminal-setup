@@ -26,7 +26,11 @@ import { Container, type KeyId, matchesKey, Spacer, Text, type TUI } from "@eare
 import { renderFooterLines } from "../custom-footer.ts";
 import { cancelPendingWork } from "./pending-work.ts";
 import { waitForSessionQuiet } from "./session-quiet.ts";
-import { CONTEXT_CAP_SOFT_TRIGGER as SOFT_TRIGGER } from "./env.ts";
+import {
+	CONTEXT_CAP_SOFT_TRIGGER as SOFT_TRIGGER,
+	CONTEXT_CAP_STATUS_KEY,
+	CONTEXT_CAP_TOOL_NAME,
+} from "./env.ts";
 
 export const AGENT_TOOL = "Agent";
 export const EXPLORE_TOOL = "Explore";
@@ -98,7 +102,7 @@ interface SharedState {
 	 */
 	liveChildren: Map<string, ChildRecord>;
 	busyGroups: Map<string, BusyGroup>;
-	childSessionFlag: AsyncLocalStorage<true>;
+	childSessionStore: AsyncLocalStorage<ChildSessionInfo>;
 	/** F2 watch cursor: id of the last watched child, advanced per watchTarget() call. */
 	watchCursor: string | undefined;
 }
@@ -106,12 +110,12 @@ interface SharedState {
 // module on every session bind (moduleCache: false), so in a long-lived pi process an
 // old code copy may still hold the previous shape under the previous symbol — old and
 // new copies must never share a mis-shaped state object.
-const STATE_KEY = Symbol.for("terminal-setup.child-session.v3");
+const STATE_KEY = Symbol.for("terminal-setup.child-session.v4");
 const globals = globalThis as unknown as Record<symbol, SharedState | undefined>;
 const state: SharedState = (globals[STATE_KEY] ??= {
 	liveChildren: new Map(),
 	busyGroups: new Map(),
-	childSessionFlag: new AsyncLocalStorage<true>(),
+	childSessionStore: new AsyncLocalStorage<ChildSessionInfo>(),
 	watchCursor: undefined,
 });
 
@@ -123,9 +127,26 @@ export function resetChildState(): void {
 }
 
 export const liveChildren = state.liveChildren;
-const childSessionFlag = state.childSessionFlag;
-export const inChildSession = () => childSessionFlag.getStore() === true;
-const runInChildSession = <T>(fn: () => Promise<T>) => childSessionFlag.run(true, fn);
+const childSessionStore = state.childSessionStore;
+
+/** What a child session is, seen from inside its own extension loading/binding. */
+export interface ChildSessionInfo {
+	/** RunChildOptions.kind, e.g. "agent" or "explorer". */
+	kind: string;
+	/** RunChildOptions.contract — undefined when the child gets no delegate contract. */
+	contract: string | undefined;
+}
+
+export const inChildSession = () => childSessionStore.getStore() !== undefined;
+/**
+ * The ChildSessionInfo of the child currently being created, or undefined outside
+ * a child. Only meaningful while createChildSession's ALS scope is active — i.e.
+ * during extension load/bind of the child — so extensions must capture what they
+ * need at bind time (the store is gone when later events fire).
+ */
+export const childSessionInfo = (): ChildSessionInfo | undefined => childSessionStore.getStore();
+const runInChildSession = <T>(info: ChildSessionInfo, fn: () => Promise<T>) =>
+	childSessionStore.run(info, fn);
 
 export class ChildView {
 	private readonly container = new Container();
@@ -295,7 +316,7 @@ function countResets(session: AgentSession): number {
 		const content = (message as { content?: unknown }).content;
 		if (!Array.isArray(content)) continue;
 		for (const block of content as Array<{ type?: string; name?: string }>) {
-			if (block?.type === "toolCall" && block.name === "context_handoff") resets++;
+			if (block?.type === "toolCall" && block.name === CONTEXT_CAP_TOOL_NAME) resets++;
 		}
 	}
 	return resets;
@@ -362,14 +383,18 @@ export interface ChildSessionOptions {
 
 async function createChildSession(
 	ctx: ExtensionContext,
-	options: ChildSessionOptions,
+	options: RunChildOptions,
 ): Promise<AgentSession> {
 	const cwd = ctx.cwd;
 	const agentDir = getAgentDir();
 	const settingsManager = SettingsManager.create(cwd, agentDir);
 	const sessionManager = SessionManager.create(cwd, process.env.PI_CODING_AGENT_SESSION_DIR);
 	const modelRuntime = (ctx.modelRegistry as unknown as { runtime?: unknown }).runtime;
-	const { session } = await runInChildSession(() =>
+	// The ALS payload lets extensions loading inside the child know they are in a
+	// child and which contract it carries (subagent.ts appends it to the system
+	// prompt via before_agent_start — see the comment there).
+	const info: ChildSessionInfo = { kind: options.kind, contract: options.contract };
+	const { session } = await runInChildSession(info, () =>
 		createAgentSession({
 			cwd,
 			agentDir,
@@ -382,7 +407,7 @@ async function createChildSession(
 			...(modelRuntime !== undefined && { modelRuntime }),
 		} as Parameters<typeof createAgentSession>[0]),
 	);
-	await runInChildSession(() => session.bindExtensions({}));
+	await runInChildSession(info, () => session.bindExtensions({}));
 	return session;
 }
 
@@ -422,7 +447,7 @@ function childFooterData(ctx: ExtensionContext, record: ChildRecord, branch: str
 		modelId: session.model?.id,
 		reasoning: session.model?.reasoning === true,
 		thinkingLevel: session.thinkingLevel,
-		statuses: new Map([["context-cap", `${tokens}/${formatTokenCount(SOFT_TRIGGER)}`]]),
+		statuses: new Map([[CONTEXT_CAP_STATUS_KEY, `${tokens}/${formatTokenCount(SOFT_TRIGGER)}`]]),
 	};
 }
 
@@ -713,8 +738,12 @@ export interface RunChildOptions extends ChildSessionOptions {
 	concurrency?: number;
 	/** Full rejection text when the group is at its limit. Default: the serialized-calls message. */
 	busyMessage?: string;
-	/** Prepended to a fresh child's first prompt (role and output contract), not to resumes. */
-	promptPrefix?: string;
+	/**
+	 * Appended to the child's system prompt every turn (survives context-cap swaps);
+	 * the delegate role and output contract. Injection happens in subagent.ts's
+	 * before_agent_start handler — the prompt itself is never touched.
+	 */
+	contract?: string;
 }
 
 // Counting semaphore per busy group. Agents stay at limit 1: parallel agents would
@@ -866,19 +895,15 @@ async function runChildToolInSlot(
 	}
 	onSession(record.session);
 	record.running = true;
-	// Resumes keep the contract from the first turn; re-sending it would just burn tokens.
-	const prompt =
-		options.promptPrefix && !resumeId
-			? `${options.promptPrefix}\n\n${params.prompt}`
-			: params.prompt;
-	// The watch view shows only the task, not the boilerplate contract prefix.
+	// The child gets the task verbatim: the delegate contract rides the system
+	// prompt (options.contract, injected per turn by subagent.ts), not the prompt.
 	record.view.addUserMessage(params.prompt);
 	const watcher = watchChild(record, onUpdate);
 	const onAbort = () => void record.session.abort();
 	signal?.addEventListener("abort", onAbort, { once: true });
 	const startedAt = Date.now();
 	try {
-		await record.session.prompt(prompt);
+		await record.session.prompt(params.prompt);
 		await waitForChildDone(record, signal, watcher.pushStatus);
 	} finally {
 		record.elapsedMs += Date.now() - startedAt;

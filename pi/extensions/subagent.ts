@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
 	AGENT_TOOL,
+	childSessionInfo,
 	inChildSession,
 	liveChildren,
 	openChildPicker,
@@ -41,9 +42,9 @@ The agent may return a clarifying question instead of a result. Answer it yourse
 in for the user — by calling this tool again with resume_id set to the id in the result, which
 continues that session with its context intact.`;
 
-// Prepended to the first prompt of a fresh child. Children are otherwise clones of the parent —
-// same system prompt, same skills — so this is the only place they learn they are delegates and
-// who reads their output.
+// Appended to a child's system prompt on every turn (see the before_agent_start handler
+// below). Children are otherwise clones of the parent — same system prompt, same skills — so
+// this is the only place they learn they are delegates and who reads their output.
 const CHILD_CONTRACT = `You are a delegated agent. Your final message is the only thing the caller
 sees, and the caller is another agent, not a human. Response-length limits from the system prompt
 do not apply to that final message.
@@ -93,7 +94,7 @@ export default function (pi: ExtensionAPI) {
 			// Agents may not spawn agents: nesting is capped at one layer, structurally.
 			return runChildTool(
 				params,
-				{ kind: "agent", busyGroup: "agent", excludeTools: [AGENT_TOOL], promptPrefix: CHILD_CONTRACT },
+				{ kind: "agent", busyGroup: "agent", excludeTools: [AGENT_TOOL], contract: CHILD_CONTRACT },
 				signal,
 				onUpdate,
 				ctx,
@@ -103,6 +104,26 @@ export default function (pi: ExtensionAPI) {
 			return renderChildResult(result, theme, context);
 		},
 	});
+
+	// Delegate-contract injection. The contract lives in the child's SYSTEM prompt,
+	// appended fresh every turn, NOT in its first user message: context-cap's swap
+	// slices the message array at the swap marker, so a first-message contract would
+	// be deleted by the first handoff — leaving the child unaware that its LAST
+	// assistant message is harvested as the tool result. The system prompt is
+	// untouched by the swap, so the contract survives by construction.
+	//
+	// Registered HERE and only here: pi loads every top-level extension file in
+	// every child regardless of the tool allowlist, so this one registration covers
+	// agent AND explorer children alike. Registering in explore.ts too would append
+	// the contract twice. The contract is captured in a closure at bind time — the
+	// ALS scope carrying ChildSessionInfo is gone by the time the event fires.
+	const child = childSessionInfo();
+	if (child?.contract) {
+		const contract = child.contract;
+		pi.on("before_agent_start", async (event) => ({
+			systemPrompt: `${event.systemPrompt}\n\n${contract}`,
+		}));
+	}
 
 	if (inChildSession()) return;
 

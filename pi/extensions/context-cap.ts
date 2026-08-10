@@ -41,7 +41,7 @@ import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { CONTEXT_CAP_SOFT_TRIGGER, envInt } from "./lib/env.ts";
+import { CONTEXT_CAP_SOFT_TRIGGER, CONTEXT_CAP_STATUS_KEY, CONTEXT_CAP_TOOL_NAME, envInt } from "./lib/env.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -52,7 +52,7 @@ const HARD_TRIGGER = envInt("CONTEXT_CAP_HARD", 200_000);
 const MAX_RETRIES = 2;
 const CAP_DIR = path.join(os.homedir(), ".pi", "agent", "context-cap");
 const MARKER_TYPE = "context-cap-swap";
-const TOOL_NAME = "context_handoff";
+const TOOL_NAME = CONTEXT_CAP_TOOL_NAME;
 // No pending-work claim here (unlike timer.ts): every handoff continuation — the
 // steered swap marker, followUp reminders, the post-swap turns — is drained inside
 // the same `_runAgentPrompt` loop, so a caller awaiting `session.prompt()` already
@@ -203,7 +203,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		let suffix = "";
 		if (phase === "steered" || phase === "prompted") suffix = " ⚠ handoff";
 		else if (phase === "exhausted") suffix = " ⚠ awaiting hard cap";
-		ctx.ui.setStatus("context-cap", `${t}/${fmtTokens(SOFT_TRIGGER)}${suffix}`);
+		ctx.ui.setStatus(CONTEXT_CAP_STATUS_KEY, `${t}/${fmtTokens(SOFT_TRIGGER)}${suffix}`);
 	}
 
 	// deliverAs is ignored when idle (agent-session.js: isStreaming ? streamingBehavior
@@ -270,7 +270,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		}
 		// Provider-reported usage is stale (pre-swap) until the next response lands;
 		// show an explicit transient instead of a misleading high number.
-		ctx.ui.setStatus("context-cap", `swapped/${fmtTokens(SOFT_TRIGGER)}`);
+		ctx.ui.setStatus(CONTEXT_CAP_STATUS_KEY, `swapped/${fmtTokens(SOFT_TRIGGER)}`);
 		ctx.ui.notify(`context-cap: context swapped (${trigger}, ${fmtTokens(details.tokensAtSwap)} tokens)`, "info");
 	}
 

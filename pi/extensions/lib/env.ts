@@ -14,3 +14,9 @@ export function envInt(name: string, fallback: number): number {
 /** Soft context cap (tokens) — context-cap.ts's steer trigger; child-session.ts
  * shows it in the F2 watch footer. Resolved at import time. */
 export const CONTEXT_CAP_SOFT_TRIGGER = envInt("CONTEXT_CAP_SOFT", 160_000);
+
+/** Tool name registered by context-cap.ts; child-session.ts and explore.ts reference it. */
+export const CONTEXT_CAP_TOOL_NAME = "context_handoff";
+
+/** ctx.ui.setStatus key used by context-cap.ts; child-session.ts fakes it in the child footer. */
+export const CONTEXT_CAP_STATUS_KEY = "context-cap";

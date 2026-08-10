@@ -426,24 +426,28 @@ test("two explorers serialize; a slow explorer does not block an agent child", a
 	disposeChildren();
 });
 
-test("promptPrefix reaches the session but the watch view shows only the task", async () => {
+test("contract is never prepended to the child's prompt; the watch view shows only the task", async () => {
 	const ctx = await makeCtx(50);
 	initTheme(undefined, false); // rendering components needs a theme; no watcher, or the process never exits
 	const result = await runChildTool(
-		{ prompt: "tiny task", description: "prefix check" },
-		{ ...EXPLORER_OPTIONS, promptPrefix: "SLOW-TASK CONTRACTMARKER" },
+		{ prompt: "tiny task", description: "contract check" },
+		{ ...EXPLORER_OPTIONS, contract: "SLOW-TASK CONTRACTMARKER" },
 		undefined,
 		undefined,
 		ctx,
 	);
-	// "SLOW-TASK" appears only in the prefix; the scripted stream answers
-	// "slow child done" only when it sees it — proof the prefix reached the model.
-	assert.match(resultText(result), /slow child done/);
-	const record = [...liveChildren.values()].find((r) => r.description === "prefix check");
+	// The contract rides the child's SYSTEM prompt (injected by subagent.ts's
+	// before_agent_start handler — not loaded here: the temp agent dir has no
+	// extensions), never the prompt. The scripted stream answers "slow child done"
+	// only when the request messages contain "SLOW-TASK", so a fast answer proves
+	// the child got the task verbatim. Contract-in-system-prompt (and its survival
+	// across context-cap swaps) is covered end to end in child-contract.test.ts.
+	assert.match(resultText(result), /fast child done/);
+	const record = [...liveChildren.values()].find((r) => r.description === "contract check");
 	assert.ok(record, "child record must exist");
 	const rendered = record.view.render(120).join("\n");
 	assert.match(rendered, /tiny task/, "view shows the task");
-	assert.doesNotMatch(rendered, /CONTRACTMARKER/, "view must not show the contract prefix");
+	assert.doesNotMatch(rendered, /CONTRACTMARKER/, "view must not show the contract");
 	disposeChildren();
 });
 

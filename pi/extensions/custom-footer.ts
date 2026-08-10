@@ -1,6 +1,7 @@
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, Theme } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth } from "@mariozechner/pi-tui";
+import { CONTEXT_CAP_STATUS_KEY } from "./lib/env.ts";
 
 export interface FooterData {
 	cost: number;
@@ -57,9 +58,9 @@ export function renderFooterLines(width: number, theme: Theme, data: FooterData)
 	// context-cap (context size) gets prominent color; other statuses stay dim.
 	const clean = (text: string) => text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
 	const extensionStatuses = data.statuses;
-	const capStatus = clean(extensionStatuses.get("context-cap") ?? "");
+	const capStatus = clean(extensionStatuses.get(CONTEXT_CAP_STATUS_KEY) ?? "");
 	const otherStatuses = Array.from(extensionStatuses.entries())
-		.filter(([name]) => name !== "context-cap")
+		.filter(([name]) => name !== CONTEXT_CAP_STATUS_KEY)
 		.sort(([a], [b]) => a.localeCompare(b))
 		.map(([, text]) => clean(text))
 		.join(" ");
