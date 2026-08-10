@@ -394,7 +394,7 @@ async function createChildSession(
 	// child and which contract it carries (subagent.ts appends it to the system
 	// prompt via before_agent_start — see the comment there).
 	const info: ChildSessionInfo = { kind: options.kind, contract: options.contract };
-	const { session } = await runInChildSession(info, () =>
+	const { session, extensionsResult } = await runInChildSession(info, () =>
 		createAgentSession({
 			cwd,
 			agentDir,
@@ -407,6 +407,13 @@ async function createChildSession(
 			...(modelRuntime !== undefined && { modelRuntime }),
 		} as Parameters<typeof createAgentSession>[0]),
 	);
+	// Extension load errors must not stay silent: a child missing e.g. context-cap
+	// or the contract injection (subagent.ts) runs with different semantics than the
+	// parent and nobody would know. The child still runs — same policy as pi's own
+	// startup, which reports load errors and continues.
+	for (const { path: extPath, error } of extensionsResult?.errors ?? []) {
+		ctx.ui.notify(`${options.kind} child: extension failed to load: ${extPath}: ${error}`, "warning");
+	}
 	await runInChildSession(info, () => session.bindExtensions({}));
 	return session;
 }

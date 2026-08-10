@@ -1,6 +1,6 @@
-import type { AssistantMessage } from "@mariozechner/pi-ai";
-import type { ExtensionAPI, Theme } from "@mariozechner/pi-coding-agent";
-import { truncateToWidth } from "@mariozechner/pi-tui";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { CONTEXT_CAP_STATUS_KEY } from "./lib/env.ts";
 
 export interface FooterData {
