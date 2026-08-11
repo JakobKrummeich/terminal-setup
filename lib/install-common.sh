@@ -77,7 +77,7 @@ install_pi() {
 }
 
 install_pi_azure_response_retry_patch() {
-    # Temporary fail-closed workaround for Pi 0.83.0 Azure Responses failed SSE events.
+    # Temporary fail-closed workaround for Pi 0.83.0/0.84.1 Azure Responses failed SSE events.
     if ! command -v pi >/dev/null; then
         echo "SKIPPED: Pi Azure retry patch (pi is not installed)"
         return 0
@@ -86,7 +86,7 @@ install_pi_azure_response_retry_patch() {
     pi_bin="$(readlink -f "$(command -v pi)")"
     pi_root="$(cd "$(dirname "$pi_bin")/.." && pwd)"
     pi_ai_root="$pi_root/node_modules/@earendil-works/pi-ai"
-    PI_AI_ROOT="$pi_ai_root" node "$REPO/pi/patches/pi-0.83.0-azure-response-failed-retry.cjs"
+    PI_AI_ROOT="$pi_ai_root" node "$REPO/pi/patches/pi-azure-response-failed-retry.cjs"
 }
 
 install_wezterm() {
