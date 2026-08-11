@@ -13,9 +13,14 @@
  *    call sees ONLY the handoff. No compaction, no run abort, no LLM calls, no
  *    keepRecentTokens constraint. The session file keeps FULL history — the marker
  *    records exactly when/why the swap happened for later reconstruction.
- *  - hard cap (200k): pure backstop — swap with the latest file, staleness accepted.
+ *  - hard cap (200k): backstop — swap with the latest file, staleness accepted.
  *    One grace turn per cycle when the handoff write is likely in flight (message_end
  *    fires before tool execution — observed live 2026-07-08).
+ *  - one-jump crossing: a single message can cross BOTH caps (a grep of a
+ *    sourcemap returned ~340k tokens — observed live 2026-08-11, child explorer
+ *    wiped with no handoff ever requested). If that message ends in tool calls,
+ *    another turn is guaranteed — same guarantee the soft steer rides — so the
+ *    agent gets ONE emergency steer to write the handoff before the backstop wipes.
  *  - pi's threshold auto-compaction stays naturally quiet: it keys off provider-
  *    reported usage, which post-swap reflects only the scrubbed context.
  *
@@ -81,6 +86,11 @@ function silentStopMessage(tokens: number): string {
 	return `[context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at ${tokens} tokens (soft cap ${SOFT_TRIGGER}, hard cap ${HARD_TRIGGER}). This is your last turn before handoff.
 
 ${CONTENT_SPEC}`;
+}
+
+/** One-jump crossing of the hard cap: demand the handoff NOW — no "finish your work first". */
+function hardSteerMessage(tokens: number): string {
+	return `[context-cap] ⚠️ CONTEXT LIMIT EMERGENCY: your context jumped to ${tokens} tokens, past the hard cap ${HARD_TRIGGER}. Do NOT start any new work. ${CONTENT_SPEC}`;
 }
 
 function reminderMessage(attempt: number): string {
@@ -276,7 +286,8 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 
 	function hardCap(ctx: ExtensionContext, tokens: number) {
 		if (!expectedPath) {
-			// Hard crossed without a cycle (e.g. huge single jump): derive path context anyway.
+			// Hard crossed without a cycle and without a rescuable next turn (the
+			// one-jump toolUse case is steered in message_end): derive path context anyway.
 			startCycle(ctx, tokens);
 		} else {
 			// Cycle already in flight from the soft trigger — record the hard-cap
@@ -389,6 +400,24 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		if (tokens == null) return; // unknown usage — never trigger blind
 
 		if (tokens >= HARD_TRIGGER) {
+			// One-jump crossing: no cycle in flight (the soft steer never fired — the
+			// PREVIOUS message was below the soft cap) and this message ends in tool
+			// calls, so another turn is guaranteed. Wiping now would discard a context
+			// that never saw a warning (observed live 2026-08-11: explorer grep of a
+			// .js.map jumped 36k → 377k). Steer an immediate handoff instead; the
+			// grace below protects the message carrying the tool call, and an agent
+			// that ignores this steer still meets the backstop one grace turn later.
+			if (phase === "idle" && msg.stopReason === "toolUse") {
+				startCycle(ctx, tokens);
+				phase = "steered";
+				updateStatus(ctx, tokens);
+				pi.sendUserMessage(hardSteerMessage(tokens), { deliverAs: "steer" });
+				ctx.ui.notify(
+					`context-cap: hard cap (${fmtTokens(tokens)}) crossed in one jump — emergency handoff requested`,
+					"warning",
+				);
+				return;
+			}
 			// Grace turn: a handoff cycle is in flight and this message ends in tool
 			// calls — message_end fires BEFORE tools execute, so swapping now would
 			// scrub away the handoff write itself (observed live). Let the tools run

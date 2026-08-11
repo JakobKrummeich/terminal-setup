@@ -148,12 +148,24 @@ export const childSessionInfo = (): ChildSessionInfo | undefined => childSession
 const runInChildSession = <T>(info: ChildSessionInfo, fn: () => Promise<T>) =>
 	childSessionStore.run(info, fn);
 
+/** Text of a session message's content — string (custom messages) or text blocks. */
+function messageText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter((b): b is { type: "text"; text: string } => (b as { type?: string }).type === "text")
+		.map((b) => b.text ?? "")
+		.join("\n");
+}
+
 export class ChildView {
 	private readonly container = new Container();
 	private readonly pendingTools = new Map<string, ToolExecutionComponent>();
 	private readonly tools: ToolExecutionComponent[] = [];
 	private streaming: AssistantMessageComponent | undefined;
 	private expanded = false;
+	/** Prompts shown eagerly via addUserMessage; their message_start event is skipped (no double render). */
+	private pendingManualPrompts = 0;
 	private requestRender: () => void = () => {};
 	private readonly ui: TUI;
 	constructor(
@@ -174,9 +186,28 @@ export class ChildView {
 		return this.container.render(width);
 	}
 	addUserMessage(text: string) {
+		this.pendingManualPrompts++;
 		this.container.addChild(new Spacer(1));
 		this.container.addChild(new UserMessageComponent(text, getMarkdownTheme()));
 		this.requestRender();
+	}
+	/**
+	 * Injected mid-run messages — context-cap steers/reminders (role "user") and
+	 * swap markers (role "custom", e.g. customType "context-cap-swap") — otherwise
+	 * the F2 view shows a handoff tool call with no visible cause and no visible
+	 * post-swap injection. The child's own prompt() delivery re-emits the prompt
+	 * already shown by addUserMessage; pendingManualPrompts swallows exactly those.
+	 */
+	private addInjectedMessage(message: { role: string; content?: unknown; display?: boolean }) {
+		if (message.role === "user" && this.pendingManualPrompts > 0) {
+			this.pendingManualPrompts--;
+			return;
+		}
+		if (message.role === "custom" && message.display === false) return;
+		const text = messageText(message.content);
+		if (!text.trim()) return;
+		this.container.addChild(new Spacer(1));
+		this.container.addChild(new UserMessageComponent(text, getMarkdownTheme()));
 	}
 	private syncToolCalls(message: AssistantMessage) {
 		const content = (message as { content?: unknown }).content;
@@ -207,6 +238,10 @@ export class ChildView {
 	handle(event: AgentSessionEvent) {
 		switch (event.type) {
 			case "message_start": {
+				if (event.message.role === "user" || event.message.role === "custom") {
+					this.addInjectedMessage(event.message as { role: string; content?: unknown; display?: boolean });
+					break;
+				}
 				if (event.message.role !== "assistant") break;
 				this.streaming = new AssistantMessageComponent(undefined, false, getMarkdownTheme());
 				this.container.addChild(this.streaming);
