@@ -68,6 +68,15 @@ Structure the final message as:
 2. Summary: one sentence the caller can relay.`;
 
 export default function (pi: ExtensionAPI) {
+	// Kill-switch for benchmark runs (context-cap impact study, ~/context-cap-study/plan.html):
+	// non-empty PI_SUBAGENT_DISABLE registers nothing — main and child sessions alike.
+	// Blast radius beyond the Agent tool: this file is also the single registration
+	// point for the child contract injection (before_agent_start), the F2 watch
+	// shortcut and the session_shutdown child-state reset — all of which cover
+	// EXPLORER children too. Setting this var alone degrades explorers; the study
+	// always sets PI_EXPLORE_DISABLE alongside.
+	if (process.env.PI_SUBAGENT_DISABLE) return;
+
 	pi.registerTool({
 		name: AGENT_TOOL,
 		label: "Agent",

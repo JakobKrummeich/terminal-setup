@@ -200,6 +200,10 @@ export function resolveExplorerConfig(
 }
 
 export default function (pi: ExtensionAPI) {
+	// Kill-switch for benchmark runs (context-cap impact study, ~/context-cap-study/plan.html):
+	// non-empty PI_EXPLORE_DISABLE registers nothing — main and child sessions alike.
+	if (process.env.PI_EXPLORE_DISABLE) return;
+
 	// Registered in child sessions too, deliberately: that is how subagents get it.
 	pi.registerTool({
 		name: EXPLORE_TOOL,
