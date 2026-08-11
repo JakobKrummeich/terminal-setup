@@ -1,3 +1,6 @@
 {
-  "candidates": ["anthropic/claude-sonnet-5"]
+  "candidates": [
+    "anthropic/claude-sonnet-5",
+    "azure-openai-responses/gpt-5.6-luna"
+  ]
 }
