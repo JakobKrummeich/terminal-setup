@@ -46,6 +46,7 @@ import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { appendEvent } from "./lib/agent-runs.ts";
 import { CONTEXT_CAP_SOFT_TRIGGER, CONTEXT_CAP_STATUS_KEY, CONTEXT_CAP_TOOL_NAME, envInt } from "./lib/env.ts";
 
 // ---------------------------------------------------------------------------
@@ -278,6 +279,9 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		} else {
 			pi.sendMessage({ customType: MARKER_TYPE, content, display: true, details }, { deliverAs: "steer" });
 		}
+		// Dashboard index (agent-runs.jsonl): a swap happened in this session — main
+		// or child alike, the sid tells them apart. No-op for in-memory sessions.
+		appendEvent(ctx.sessionManager.getSessionDir(), { ts: Date.now(), event: "reset", sid: sessionId(ctx) });
 		// Provider-reported usage is stale (pre-swap) until the next response lands;
 		// show an explicit transient instead of a misleading high number.
 		ctx.ui.setStatus(CONTEXT_CAP_STATUS_KEY, `swapped/${fmtTokens(SOFT_TRIGGER)}`);

@@ -1,0 +1,4 @@
+{
+	"//": "Makes node treat the browser modules here as ESM so test/dashboard-ui.test.ts can import gantt-layout.js directly. Browsers never read this file.",
+	"type": "module"
+}

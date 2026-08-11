@@ -24,6 +24,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Container, type KeyId, matchesKey, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import { renderFooterLines } from "../custom-footer.ts";
+import { appendEvent, type RunStatus } from "./agent-runs.ts";
 import { cancelPendingWork } from "./pending-work.ts";
 import { waitForSessionQuiet } from "./session-quiet.ts";
 import {
@@ -52,6 +53,14 @@ export type ChildThinkingLevel = NonNullable<ExtensionContext["thinkingLevel"]>;
 export interface ChildRecord {
 	id: string;
 	kind: string;
+	/** The child's session uuid (sessionManager.getSessionId()) — `sid` in agent-runs.jsonl. */
+	sid: string;
+	/**
+	 * The main session's sid for this spawn tree — `root` in agent-runs.jsonl.
+	 * A child spawned by another child inherits the spawner's rootSid; falls back
+	 * to the child's own sid when the spawner is unknown (bare test contexts).
+	 */
+	rootSid: string;
 	session: AgentSession;
 	view: ChildView;
 	description: string;
@@ -61,6 +70,8 @@ export interface ChildRecord {
 	/** Reasons the child is between runs but not finished (timer, context handoff). */
 	waitingFor?: string;
 	running: boolean;
+	/** Epoch ms of the last agent-runs.jsonl progress row (write throttle). */
+	lastProgressAt?: number;
 }
 
 export interface RunMeta {
@@ -110,7 +121,7 @@ interface SharedState {
 // module on every session bind (moduleCache: false), so in a long-lived pi process an
 // old code copy may still hold the previous shape under the previous symbol — old and
 // new copies must never share a mis-shaped state object.
-const STATE_KEY = Symbol.for("terminal-setup.child-session.v4");
+const STATE_KEY = Symbol.for("terminal-setup.child-session.v5");
 const globals = globalThis as unknown as Record<symbol, SharedState | undefined>;
 const state: SharedState = (globals[STATE_KEY] ??= {
 	liveChildren: new Map(),
@@ -289,12 +300,15 @@ function watchChild(
 		record.view.handle(event);
 		switch (event.type) {
 			case "turn_end":
-				record.turns++;
 				record.currentTool = undefined;
+				// Before turns++: the progress row's `turn` is the turn that just ended.
+				writeProgressEvent(record);
+				record.turns++;
 				pushStatus();
 				break;
 			case "tool_execution_start":
 				record.currentTool = event.toolName;
+				writeProgressEvent(record);
 				pushStatus();
 				break;
 			case "tool_execution_end":
@@ -371,6 +385,75 @@ export function collectMeta(record: ChildRecord): RunMeta {
 		costUsd: stats.cost,
 		durationMs: record.elapsedMs,
 	};
+}
+
+// --- agent-runs.jsonl writers (dashboard data layer — docs/agent-dashboard-spec.md).
+// The index lives in the same dir as the session files; appendEvent no-ops for
+// in-memory sessions (dir ""), which keeps harness-based tests off the disk.
+
+/** Coarse heartbeat rate: at most one progress row per child per this interval. */
+const PROGRESS_THROTTLE_MS = 2_000;
+
+/** Written once per child, right after its record is registered. */
+function writeSpawnEvent(record: ChildRecord, parentSid: string): void {
+	const manager = record.session.sessionManager;
+	const sessionFile = manager.getSessionFile();
+	if (!sessionFile) return; // in-memory child: no transcript to index
+	appendEvent(manager.getSessionDir(), {
+		ts: Date.now(),
+		event: "spawn",
+		sid: record.sid,
+		root: record.rootSid,
+		parentSid,
+		kind: record.kind,
+		label: `${record.kind}#${record.id}`,
+		sessionFile,
+		description: record.description,
+	});
+}
+
+/** Heartbeat on turn end / tool change — throttled, so the disk suffices for a live view. */
+function writeProgressEvent(record: ChildRecord): void {
+	const now = Date.now();
+	if (now - (record.lastProgressAt ?? 0) < PROGRESS_THROTTLE_MS) return;
+	record.lastProgressAt = now;
+	appendEvent(record.session.sessionManager.getSessionDir(), {
+		ts: now,
+		event: "progress",
+		sid: record.sid,
+		turn: record.turns + 1,
+		...(record.currentTool !== undefined && { tool: record.currentTool }),
+	});
+}
+
+/** Written every time a run settles; numbers are cumulative (last row per sid wins). */
+function writeFinishEvent(record: ChildRecord, status: RunStatus): void {
+	const meta = collectMeta(record);
+	appendEvent(record.session.sessionManager.getSessionDir(), {
+		ts: Date.now(),
+		event: "finish",
+		sid: record.sid,
+		status,
+		turns: meta.turns,
+		costUsd: meta.costUsd,
+		contextTokens: meta.contextTokens,
+		contextPercent: meta.contextPercent,
+		resets: meta.resets,
+		durationMs: meta.durationMs,
+	});
+}
+
+/**
+ * Root sid for a child about to be spawned by `spawnerSid`: when the spawner is
+ * itself a live child (agent spawning explorers — its record is in the shared
+ * liveChildren map), the tree root is the spawner's own root; otherwise the
+ * spawner IS the main session and thus the root.
+ */
+function rootSidFor(spawnerSid: string): string {
+	for (const record of liveChildren.values()) {
+		if (record.sid === spawnerSid) return record.rootSid;
+	}
+	return spawnerSid;
 }
 
 export function metaLine(meta: RunMeta): string {
@@ -923,9 +1006,16 @@ async function runChildToolInSlot(
 		const id = randomUUID().slice(0, 8);
 		const session = await createChildSession(ctx, options);
 		session.setSessionName(`${options.kind}#${id}`);
+		// Spawner = the session whose tool call runs right now: the main session, or
+		// an agent child when its own Explore call lands here (ctx is then the child's
+		// ExtensionContext). Optional chain: unit tests pass bare fake contexts.
+		const spawnerSid = ctx.sessionManager?.getSessionId();
+		const sid = session.sessionManager.getSessionId();
 		record = {
 			id,
 			kind: options.kind,
+			sid,
+			rootSid: spawnerSid ? rootSidFor(spawnerSid) : sid,
 			session,
 			view: new ChildView(session, ctx.cwd),
 			description: params.description ?? labelFromPrompt(params.prompt),
@@ -934,6 +1024,7 @@ async function runChildToolInSlot(
 			running: false,
 		};
 		liveChildren.set(id, record);
+		if (spawnerSid) writeSpawnEvent(record, spawnerSid);
 	}
 	onSession(record.session);
 	record.running = true;
@@ -944,9 +1035,13 @@ async function runChildToolInSlot(
 	const onAbort = () => void record.session.abort();
 	signal?.addEventListener("abort", onAbort, { once: true });
 	const startedAt = Date.now();
+	let failed = false;
 	try {
 		await record.session.prompt(params.prompt);
 		await waitForChildDone(record, signal, watcher.pushStatus);
+	} catch (error) {
+		failed = true; // finish row must say "error", not "done"
+		throw error;
 	} finally {
 		record.elapsedMs += Date.now() - startedAt;
 		watcher.stop();
@@ -958,6 +1053,8 @@ async function runChildToolInSlot(
 		// worktree. No-op on a clean finish (no claims left); on abort or claim
 		// self-expiry this disarms the child's timer via the claim's cancel callback.
 		cancelPendingWork(record.session.sessionManager.getSessionId());
+		// After elapsedMs is final: the finish row carries this run's cumulative numbers.
+		writeFinishEvent(record, signal?.aborted ? "cancelled" : failed ? "error" : "done");
 	}
 	const text = watcher.text();
 	return textResult(
