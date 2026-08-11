@@ -58,11 +58,14 @@ const registryOf = (models: Record<string, typeof fastModel>) => ({
 	find: (p: string, m: string) => models[`${p}/${m}`],
 });
 
-test("resolveExplorerConfig: unset env → parent model, low thinking, no warnings", () => {
+test("resolveExplorerConfig: unset env → parent model with loud setup warning", () => {
 	const config = resolveExplorerConfig({}, registryWith("x", "y"), parentModel);
 	assert.equal(config.model, parentModel);
 	assert.equal(config.thinkingLevel, "low");
-	assert.deepEqual(config.warnings, []);
+	assert.equal(config.warnings.length, 1);
+	assert.match(config.warnings[0], /WARNING: no dedicated explorer model configured/);
+	assert.match(config.warnings[0], /anthropic\/claude-sonnet-4-5/);
+	assert.equal(config.parentFallbackWarning, config.warnings[0]);
 });
 
 test("resolveExplorerConfig: valid provider/modelId resolves", () => {
@@ -163,7 +166,7 @@ test("explorerModelsFile: honors PI_CODING_AGENT_DIR, falls back to ~/.pi/agent"
 	assert.ok(explorerModelsFile({}).endsWith("/.pi/agent/extensions/explorer-models.json"));
 });
 
-test("loadExplorerCandidates: missing file → empty list, no warnings (feature off)", () => {
+test("loadExplorerCandidates: missing file → empty list; resolver owns fallback warning", () => {
 	const result = loadExplorerCandidates(path.join(candidatesDir, "does-not-exist.json"));
 	assert.deepEqual(result, { candidates: [], warnings: [] });
 });
@@ -176,7 +179,7 @@ test("loadExplorerCandidates: valid file → candidates, no warnings", () => {
 	});
 });
 
-test("loadExplorerCandidates: empty candidates list (the committed default) → no warnings", () => {
+test("loadExplorerCandidates: empty candidates list → no parser warning", () => {
 	const file = candidatesFile("empty.json", '{ "candidates": [] }');
 	assert.deepEqual(loadExplorerCandidates(file), { candidates: [], warnings: [] });
 });
@@ -206,16 +209,25 @@ test("loadExplorerCandidates: wrong shape → ignored with warning", () => {
 });
 
 test("resolveExplorerConfig: valid thinking level honored", () => {
-	const config = resolveExplorerConfig({ PI_EXPLORER_THINKING: "high" }, registryWith("x", "y"), parentModel);
+	const config = resolveExplorerConfig(
+		{ PI_EXPLORER_MODEL: "x/y", PI_EXPLORER_THINKING: "high" },
+		registryWith("x", "y"),
+		parentModel,
+	);
 	assert.equal(config.thinkingLevel, "high");
 	assert.deepEqual(config.warnings, []);
 });
 
 test("resolveExplorerConfig: invalid thinking level → low + warning", () => {
-	const config = resolveExplorerConfig({ PI_EXPLORER_THINKING: "ultra" }, registryWith("x", "y"), parentModel);
+	const config = resolveExplorerConfig(
+		{ PI_EXPLORER_MODEL: "x/y", PI_EXPLORER_THINKING: "ultra" },
+		registryWith("x", "y"),
+		parentModel,
+	);
 	assert.equal(config.thinkingLevel, "low");
 	assert.equal(config.warnings.length, 1);
 	assert.match(config.warnings[0], /PI_EXPLORER_THINKING "ultra"/);
+	assert.equal(config.parentFallbackWarning, undefined);
 });
 
 // --- resolveExplorerParallel (pure) ---
@@ -237,7 +249,7 @@ test("resolveExplorerParallel: unset → 3; valid values honored; junk and non-p
  * hitting the network. Prompts containing "SLOW-TASK" answer after `slowMs`; everything
  * else answers fast — that keeps one child in-flight while another runs.
  */
-async function makeCtx(slowMs: number): Promise<ExtensionContext> {
+async function makeCtx(slowMs: number, notifications: string[] = []): Promise<ExtensionContext> {
 	const dir = mkdtempSync(path.join(tmpdir(), "pi-explore-cwd-"));
 	const runtime = await ModelRuntime.create({
 		authPath: path.join(dir, "auth.json"),
@@ -279,6 +291,7 @@ async function makeCtx(slowMs: number): Promise<ExtensionContext> {
 		model: parentModel,
 		thinkingLevel: "off",
 		modelRegistry: { runtime, find: () => undefined, isUsingOAuth: () => false },
+		ui: { notify: (message: string) => notifications.push(message) },
 	} as unknown as ExtensionContext;
 }
 
@@ -666,8 +679,9 @@ test("explorer child gets exactly the readonly allowlist", async () => {
 	disposeChildren();
 });
 
-test("config warnings prepend to success results but not to error results", async () => {
-	const ctx = await makeCtx(0);
+test("config warnings prepend and parent fallback notifies user", async () => {
+	const notifications: string[] = [];
+	const ctx = await makeCtx(0, notifications);
 	// makeCtx's registry finds nothing, so this spec guarantees a config warning.
 	process.env.PI_EXPLORER_MODEL = "nope/missing";
 	try {
@@ -697,7 +711,9 @@ test("config warnings prepend to success results but not to error results", asyn
 			ctx,
 		);
 		assert.match(resultText(ok), /^\[explorer\] PI_EXPLORER_MODEL "nope\/missing" not found/);
+		assert.match(resultText(ok), /WARNING: no dedicated explorer model configured/);
 		assert.match(resultText(ok), /fast child done/);
+		assert.ok(notifications.some((message) => message.includes("WARNING: no dedicated explorer model configured")));
 	} finally {
 		delete process.env.PI_EXPLORER_MODEL;
 		disposeChildren();

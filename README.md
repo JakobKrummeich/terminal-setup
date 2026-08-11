@@ -179,7 +179,7 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | `context-cap.ts` | auto token-cap handoff: at 160k the agent writes a handoff file (`~/.pi/agent/context-cap/<sessionId>-<seq>.md`), then a persistent swap-marker entry is appended and a `context` handler slices the LLM context at it — the next LLM call sees only the handoff (session ≠ context: full history + forensic swap metadata stay in the session file); 200k hard backstop with stale-file fallback |
 | `custom-footer.ts` | cumulative token/cost footer |
 | `dump-system-prompt.ts` | debug: dump active system prompt |
-| `explore.ts` | `Explore` tool: delegate readonly exploration ("where is X", "how does Y work") to a cheap child agent that only gets `read`/`grep`/`find`/`ls` (plus `context_handoff`) — no bash, edit or write, structurally. Available to the main agent *and* to subagents; explorers have their own busy group, so a subagent can explore while its `Agent` call runs. Up to `PI_EXPLORER_PARALLEL` explorers (default 3) run concurrently — several `Explore` calls in one assistant message fan out in parallel. Model via `PI_EXPLORER_MODEL` (`provider/modelId`), else first matching candidate from committed `explorer-models.json`, else the parent's model; thinking via `PI_EXPLORER_THINKING` (default `low`); bad values fall back with a warning in the tool result |
+| `explore.ts` | `Explore` tool: delegate readonly exploration ("where is X", "how does Y work") to a cheap child agent that only gets `read`/`grep`/`find`/`ls` (plus `context_handoff`) — no bash, edit or write, structurally. Available to the main agent *and* to subagents; explorers have their own busy group, so a subagent can explore while its `Agent` call runs. Up to `PI_EXPLORER_PARALLEL` explorers (default 3) run concurrently — several `Explore` calls in one assistant message fan out in parallel. Model via `PI_EXPLORER_MODEL` (`provider/modelId`), else first matching candidate from local `explorer-models.json`, else the parent's model; thinking via `PI_EXPLORER_THINKING` (default `low`); missing model config shows a TUI warning. Configure per environment; see `docs/explorer-setup.md` |
 | `lib/child-session.ts` | shared child-session plumbing for `subagent.ts` and `explore.ts` (not an extension: pi's loader only scans top-level `*.ts`) |
 | `lib/pending-work.ts` | cross-extension "this session is not finished yet" claims (globalThis-backed, because pi loads every extension file with its own jiti instance and `moduleCache: false`). Claims can carry a `cancel` callback; `cancelPendingWork()` disarms and clears everything for a session. `timer.ts` is currently the only producer |
 | `lib/session-quiet.ts` | `waitForSessionQuiet()`: the definition of "child is done" — agent idle *and* no queued steer/follow-up messages (bounded grace) *and* no pending-work claims |
@@ -232,12 +232,12 @@ nesting at one layer (structural, not a counter — nothing to configure).
   children running, repeated **F2** presses cycle through them. Configure the model with
   `PI_EXPLORER_MODEL=provider/modelId` (split on the first slash — model ids may contain
   slashes) and `PI_EXPLORER_THINKING=off|minimal|low|medium|high|xhigh|max` (default `low`).
-  For a machine-portable config, list candidates in `pi/extensions/explorer-models.json`
-  (`{ "candidates": ["provider/modelId", ...] }`, committed to the repo): the first
-  candidate present in the local model registry wins, so machines with different
-  providers (e.g. Anthropic OAuth vs. an OpenAI-responses gateway) each pick their own.
-  Precedence: env var → candidates → parent model; broken specs and files warn in the
-  tool result instead of failing.
+  For per-machine setup, create `~/.pi/agent/extensions/explorer-models.json`
+  (`{ "candidates": ["provider/modelId", ...] }`) or set `PI_EXPLORER_MODEL`.
+  Do not commit this file: providers and credentials differ by environment. The first
+  candidate present in local model registry wins; this is selection, not request-failure
+  failover. Precedence: env var → local candidates → parent model. Missing or broken
+  config warns in both TUI and tool result. See `docs/explorer-setup.md`.
 
 ## Tests
 

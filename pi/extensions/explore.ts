@@ -77,19 +77,26 @@ export interface ExplorerConfig {
 	model: ChildModel | undefined;
 	thinkingLevel: ChildThinkingLevel;
 	warnings: string[];
+	parentFallbackWarning: string | undefined;
 }
 
 type ModelRegistry = Pick<ExtensionContext["modelRegistry"], "find">;
 
+const EXPLORER_CONFIG_PATH = "~/.pi/agent/extensions/explorer-models.json";
+const EXPLORER_SETUP_DOC = "docs/explorer-setup.md";
+
+function parentFallbackWarning(parentModel: ChildModel | undefined): string {
+	const model = parentModel ? `${parentModel.provider}/${parentModel.id}` : "(none)";
+	return `[explorer] WARNING: no dedicated explorer model configured; using parent model ${model}. Set PI_EXPLORER_MODEL=provider/modelId or create ${EXPLORER_CONFIG_PATH}. See ${EXPLORER_SETUP_DOC}.`;
+}
+
 /**
- * Machine-portable model preference list, committed to the repo next to this file
- * (the extensions dir is symlinked into ~/.pi/agent, so all machines share it).
- * Schema: { "candidates": ["provider/modelId", ...] } — first candidate present in
- * the local model registry wins, so each machine resolves to whatever it has.
+ * Machine-local model preference list. Do not commit this file: providers and
+ * credentials differ by environment. Schema: { "candidates": ["provider/modelId", ...] };
+ * first candidate present in local model registry wins.
  *
- * Resolved through the agent dir, not import.meta (tsconfig checks these files as
- * CJS, where import.meta is a syntax error). PI_CODING_AGENT_DIR is the same
- * override pi itself honors, and the tests point it at a temp dir.
+ * Resolved through agent dir, not import.meta (tsconfig checks these files as CJS,
+ * where import.meta is syntax error). PI_CODING_AGENT_DIR is same override pi honors.
  */
 export function explorerModelsFile(env: NodeJS.ProcessEnv): string {
 	// `||` not `??`: pi's own getAgentDir treats an empty env var as unset.
@@ -119,9 +126,9 @@ export interface ExplorerCandidates {
 }
 
 /**
- * Load the candidate list from a JSON file. A missing file means the feature is
- * off (no warning); a present-but-broken file is ignored with a warning, so a
- * typo never breaks the tool.
+ * Load candidate list from JSON file. Missing file means no dedicated model is
+ * configured; resolver emits loud parent-model fallback warning. Broken file is
+ * ignored with warning, so typo never breaks tool.
  */
 export function loadExplorerCandidates(filePath: string): ExplorerCandidates {
 	let raw: string;
@@ -163,6 +170,7 @@ export function resolveExplorerConfig(
 ): ExplorerConfig {
 	const warnings: string[] = [];
 	let model: ChildModel | undefined;
+	let parentFallback: string | undefined;
 	const modelSpec = env.PI_EXPLORER_MODEL;
 	if (modelSpec) {
 		model = findModelSpec(modelSpec, registry);
@@ -173,7 +181,8 @@ export function resolveExplorerConfig(
 		if (!model) warnings.push(`[explorer] no explorer-models.json candidate found (${candidates.join(", ")})`);
 	}
 	if (!model) {
-		if (warnings.length > 0) warnings.push(`[explorer] using parent model ${parentModel?.id ?? "(none)"}`);
+		parentFallback = parentFallbackWarning(parentModel);
+		warnings.push(parentFallback);
 		model = parentModel;
 	}
 	// Explorers should be fast regardless of the parent's level, so the default is
@@ -187,7 +196,7 @@ export function resolveExplorerConfig(
 			warnings.push(`[explorer] PI_EXPLORER_THINKING "${levelSpec}" is not a thinking level; using "low"`);
 		}
 	}
-	return { model, thinkingLevel, warnings };
+	return { model, thinkingLevel, warnings, parentFallbackWarning: parentFallback };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -219,6 +228,9 @@ export default function (pi: ExtensionAPI) {
 			const fileConfig = loadExplorerCandidates(explorerModelsFile(process.env));
 			const config = resolveExplorerConfig(process.env, ctx.modelRegistry, ctx.model, fileConfig.candidates);
 			config.warnings.unshift(...fileConfig.warnings);
+			if (config.parentFallbackWarning) {
+				ctx.ui.notify(config.parentFallbackWarning, "warning");
+			}
 			const parallel = resolveExplorerParallel(process.env);
 			const result = await runChildTool(
 				params,
