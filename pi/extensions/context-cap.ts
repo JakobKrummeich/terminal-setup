@@ -21,6 +21,18 @@
  *    wiped with no handoff ever requested). If that message ends in tool calls,
  *    another turn is guaranteed — same guarantee the soft steer rides — so the
  *    agent gets ONE emergency steer to write the handoff before the backstop wipes.
+ *  - network-error hygiene (observed live on flaky networks): errored/aborted
+ *    messages and turns are synthesized by pi's failure path, never agent
+ *    decisions — both handlers skip them. Old behavior: errored turn_ends burned
+ *    reminder retries (two blips → "exhausted" with the agent never seeing a
+ *    reminder, stale reminders queued for later delivery), an errored
+ *    message_end during a hard cycle bypassed the grace gate and fired the
+ *    no-file backstop wipe mid-flake, and a reminder queued into an aborted run
+ *    un-aborted it via pi's queued-message rescue. Additionally: a cycle whose
+ *    window shrank far below the soft trigger (swap/compaction raced an error;
+ *    ESC silently drops extension-queued steers) resets instead of demanding a
+ *    handoff from a fresh window, and every cap message carries a stale-ignore
+ *    clause because pi's queues can deliver it arbitrarily late.
  *  - pi's threshold auto-compaction stays naturally quiet: it keys off provider-
  *    reported usage, which post-swap reflects only the scrubbed context.
  *
@@ -77,27 +89,41 @@ const CONTENT_SPEC = `Call the \`${TOOL_NAME}\` tool. Its \`markdown\` argument 
 
 After the tool returns, end your turn. Your context will then be replaced by this handoff.`;
 
+// pi's steering/followUp queues can deliver a cap message arbitrarily late — a
+// network-errored run strands it until the next prompt, which may be a fresh
+// post-swap window where the demand is nonsense. Self-invalidate by instruction.
+const STALE_CLAUSE =
+	"(If your context looks fresh — a recent session-handoff summary, only a few messages — this warning is stale; ignore it and continue your work.)";
+
 function steerMessage(tokens: number): string {
 	return `[context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at ${tokens} tokens (soft cap ${SOFT_TRIGGER}, hard cap ${HARD_TRIGGER}).
 
-Finish your current logical unit of work first. Then: ${CONTENT_SPEC}`;
+Finish your current logical unit of work first. Then: ${CONTENT_SPEC}
+
+${STALE_CLAUSE}`;
 }
 
 function silentStopMessage(tokens: number): string {
 	return `[context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at ${tokens} tokens (soft cap ${SOFT_TRIGGER}, hard cap ${HARD_TRIGGER}). This is your last turn before handoff.
 
-${CONTENT_SPEC}`;
+${CONTENT_SPEC}
+
+${STALE_CLAUSE}`;
 }
 
 /** One-jump crossing of the hard cap: demand the handoff NOW — no "finish your work first". */
 function hardSteerMessage(tokens: number): string {
-	return `[context-cap] ⚠️ CONTEXT LIMIT EMERGENCY: your context jumped to ${tokens} tokens, past the hard cap ${HARD_TRIGGER}. Do NOT start any new work. ${CONTENT_SPEC}`;
+	return `[context-cap] ⚠️ CONTEXT LIMIT EMERGENCY: your context jumped to ${tokens} tokens, past the hard cap ${HARD_TRIGGER}. Do NOT start any new work. ${CONTENT_SPEC}
+
+${STALE_CLAUSE}`;
 }
 
 function reminderMessage(attempt: number): string {
 	return `[context-cap] No handoff was recorded — the \`${TOOL_NAME}\` tool was not called.
 
-Call it now (see the earlier context-limit instructions), then end your turn. (reminder ${attempt}/${MAX_RETRIES})`;
+Call it now (see the earlier context-limit instructions), then end your turn. (reminder ${attempt}/${MAX_RETRIES})
+
+${STALE_CLAUSE}`;
 }
 
 const PREAMBLE =
@@ -401,7 +427,28 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		if (msg.role !== "assistant") return;
 		const tokens = ctx.getContextUsage()?.tokens;
 		updateStatus(ctx, tokens);
+		// Network-errored / user-aborted messages are synthesized by pi's failure
+		// path, not agent decisions, and carry no fresh usage (getContextUsage
+		// backward-scans past them to the previous real reading). Acting on that
+		// stale reading double-fires decisions already taken for it — observed
+		// live: an errored message during an emergency cycle bypassed the grace
+		// gate (stopReason ≠ "toolUse") and wiped via the no-file backstop while
+		// the handoff was still perfectly reachable. Skip; pi retries or settles,
+		// and the next real message re-evaluates.
+		if (msg.stopReason === "error" || msg.stopReason === "aborted") return;
 		if (tokens == null) return; // unknown usage — never trigger blind
+
+		// Fresh-window guard: mid-cycle but the context shrank far below the soft
+		// trigger — a swap/compaction raced a network error, or the steer was
+		// dropped (ESC clears extension-queued messages silently) and work resumed
+		// fresh. The demand this cycle rides on no longer applies; without the
+		// reset, turn-end verification keeps demanding a handoff from a window
+		// that is nowhere near the cap.
+		if (phase !== "idle" && tokens < SOFT_TRIGGER / 2) {
+			resetCycle();
+			updateStatus(ctx, tokens);
+			ctx.ui.notify("context-cap: context shrank mid-cycle — stale handoff cycle reset", "info");
+		}
 
 		if (tokens >= HARD_TRIGGER) {
 			// One-jump crossing: no cycle in flight (the soft steer never fired — the
@@ -455,6 +502,15 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("turn_end", (event, ctx) => {
+		// Errored/aborted turns never reached the agent (the message is synthetic,
+		// toolResults always []). Treating them as refusals burned reminder retries
+		// during network flakes — two blips flipped the cycle to "exhausted" with
+		// the agent never having seen one reminder — and queuing a reminder into an
+		// aborted run un-aborted it via pi's queued-message rescue (continue()).
+		// Skip; the cycle stays armed and the next real turn re-evaluates.
+		const stopReason = (event.message as { stopReason?: string }).stopReason;
+		if (stopReason === "error" || stopReason === "aborted") return;
+
 		const tokens = ctx.getContextUsage()?.tokens;
 		const hasToolCalls = event.toolResults.length > 0;
 

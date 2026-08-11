@@ -40,7 +40,7 @@ import { getModel } from "@earendil-works/pi-ai/compat";
 import { initTheme, ModelRuntime, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { liveChildren, runChildTool } from "../lib/child-session.ts";
 import { CONTEXT_CAP_TOOL_NAME } from "../lib/env.ts";
-import { type ScriptedStep, sleep, textStep, toolStep } from "./harness.ts";
+import { type ResponseStep, type ScriptedStep, sleep, textStep, toolStep } from "./harness.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 // context-cap writes handoff files under the real home dir (os.homedir()), not
@@ -115,7 +115,8 @@ async function makeCtx(script: ScriptedStep[], calls: CapturedCall[]): Promise<E
 			systemPrompt: String(context?.systemPrompt ?? ""),
 			messages: JSON.stringify(context?.messages ?? []),
 		});
-		const scripted = script[step++] ?? textStep("(script exhausted)");
+		// This driver renders responses only (no error steps in child scripts).
+		const scripted = (script[step++] ?? textStep("(script exhausted)")) as ResponseStep;
 		const stream = createAssistantMessageEventStream();
 		void (async () => {
 			const output: any = {

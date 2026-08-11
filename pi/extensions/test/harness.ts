@@ -24,10 +24,14 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-/** One scripted assistant response: either a tool call or a final text answer. */
+/** One scripted assistant response: a tool call, a final text answer, or a network failure. */
 export type ScriptedStep =
 	| { kind: "tool"; id: string; name: string; args: Record<string, unknown>; contextTokens?: number }
-	| { kind: "text"; text: string; contextTokens?: number };
+	| { kind: "text"; text: string; contextTokens?: number }
+	| { kind: "error"; message?: string; aborted?: boolean };
+
+/** A step that yields an assistant response — what stream drivers actually render. */
+export type ResponseStep = Exclude<ScriptedStep, { kind: "error" }>;
 
 export const toolStep = (
 	id: string,
@@ -47,6 +51,21 @@ export const textStep = (text: string, contextTokens?: number): ScriptedStep => 
 	text,
 	contextTokens,
 });
+
+/**
+ * Simulated network/stream failure: the LLM call throws instead of returning a
+ * stream. Exercises pi's real failure path (handleRunFailure): a synthesized
+ * assistant message with stopReason "error" plus message_end / turn_end /
+ * agent_end, exactly as a dead API stream produces live.
+ */
+export const errorStep = (message?: string): ScriptedStep => ({ kind: "error", message });
+
+/**
+ * Simulated user abort mid-call: aborts the session, then the LLM call throws.
+ * The abort signal is already set when handleRunFailure runs, so the synthesized
+ * assistant message carries stopReason "aborted" (the ESC path's stopReason).
+ */
+export const abortedStep = (): ScriptedStep => ({ kind: "error", aborted: true });
 
 export interface TestSessionOptions {
 	/** Absolute paths of extensions under test. */
@@ -125,9 +144,20 @@ export async function createTestSession(options: TestSessionOptions): Promise<Te
 	let step = 0;
 	const llmDelayMs = options.llmDelayMs ?? 50;
 	session.agent.streamFunction = ((m: any) => {
+		const peek = options.script[step];
+		if (peek?.kind === "error") {
+			// Throw synchronously from the stream function: pi awaits the call, so
+			// this lands in runWithLifecycle's catch -> handleRunFailure.
+			step++;
+			// session.abort() sets the agent's abort signal synchronously (before its
+			// internal awaits), so the failure below is classified as "aborted".
+			if (peek.aborted) void session.abort();
+			throw new Error(peek.message ?? "simulated network error");
+		}
 		const stream = createAssistantMessageEventStream();
 		void (async () => {
-			const scripted: ScriptedStep = options.script[step++] ?? textStep("(script exhausted)");
+			// "error" was consumed above at the same index, so the cast is safe.
+			const scripted = (options.script[step++] ?? textStep("(script exhausted)")) as ResponseStep;
 			const output: any = {
 				role: "assistant",
 				content: [],
