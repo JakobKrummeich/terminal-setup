@@ -4,7 +4,7 @@
 // (core/package-manager.js collectAutoExtensionEntries), so files under lib/ are
 // never loaded as extensions and need no default export.
 import { AsyncLocalStorage } from "node:async_hooks";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
@@ -13,6 +13,7 @@ import {
 	type AgentSessionEvent,
 	AssistantMessageComponent,
 	createAgentSession,
+	DefaultResourceLoader,
 	getAgentDir,
 	getMarkdownTheme,
 	SessionManager,
@@ -499,6 +500,54 @@ export interface ChildSessionOptions {
 	excludeTools: string[];
 }
 
+/**
+ * Env var carrying the parent's explicit extension list (colon-separated absolute
+ * paths), set by a launcher that starts pi with `-ne -e <path> ...`.
+ */
+const CHILD_EXTENSIONS_ENV = "PI_CHILD_EXTENSIONS";
+
+/**
+ * Resource loader replicating the parent's `-ne -e ...` flags for a child session.
+ *
+ * createAgentSession does NOT inherit the parent process's CLI flags: called bare it
+ * builds a DefaultResourceLoader that auto-discovers ~/.pi/agent/extensions and
+ * <cwd>/.pi/extensions. That is right for a normal host session (the child then has
+ * the same extensions as its parent), but wrong wherever the parent deliberately ran
+ * with -ne and an explicit -e list. Concretely, the podman-hands devcontainer setup
+ * (devcontainer/start-devcontainer.sh) runs pi on the host with every file/shell tool
+ * re-registered to execute inside a container; a bare child would miss podman-hands,
+ * fall back to pi's builtin bash/read/write/edit and execute on the HOST, outside the
+ * sandbox. The launcher exports PI_CHILD_EXTENSIONS with the same paths it passes via
+ * -e, and we rebuild that exact extension set here.
+ *
+ * Returns undefined when the var is unset — plain host sessions keep discovery.
+ */
+async function childResourceLoader(
+	cwd: string,
+	agentDir: string,
+	settingsManager: SettingsManager,
+): Promise<DefaultResourceLoader | undefined> {
+	const spec = process.env[CHILD_EXTENSIONS_ENV];
+	if (!spec) return undefined;
+	const additionalExtensionPaths = spec.split(":").filter((p) => p.length > 0);
+	// Hard-fail on a stale path instead of loading a partial set: a missing
+	// podman-hands is exactly the sandbox escape this loader exists to prevent, and
+	// the loader itself only records such paths as (easily missed) load errors.
+	const missing = additionalExtensionPaths.filter((p) => !existsSync(p));
+	if (missing.length > 0) {
+		throw new Error(`${CHILD_EXTENSIONS_ENV} lists paths that do not exist: ${missing.join(", ")}`);
+	}
+	const loader = new DefaultResourceLoader({
+		cwd,
+		agentDir,
+		settingsManager,
+		additionalExtensionPaths,
+		noExtensions: true,
+	});
+	await loader.reload();
+	return loader;
+}
+
 async function createChildSession(
 	ctx: ExtensionContext,
 	options: RunChildOptions,
@@ -506,6 +555,7 @@ async function createChildSession(
 	const cwd = ctx.cwd;
 	const agentDir = getAgentDir();
 	const settingsManager = SettingsManager.create(cwd, agentDir);
+	const resourceLoader = await childResourceLoader(cwd, agentDir, settingsManager);
 	const sessionManager = SessionManager.create(cwd, process.env.PI_CODING_AGENT_SESSION_DIR);
 	const modelRuntime = (ctx.modelRegistry as unknown as { runtime?: unknown }).runtime;
 	// The ALS payload lets extensions loading inside the child know they are in a
@@ -522,6 +572,7 @@ async function createChildSession(
 			excludeTools: options.excludeTools,
 			sessionManager,
 			settingsManager,
+			...(resourceLoader && { resourceLoader }),
 			...(modelRuntime !== undefined && { modelRuntime }),
 		} as Parameters<typeof createAgentSession>[0]),
 	);
