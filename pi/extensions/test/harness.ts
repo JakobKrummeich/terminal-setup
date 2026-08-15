@@ -76,6 +76,12 @@ export interface TestSessionOptions {
 	tools?: string[];
 	/** Simulated LLM latency per call. */
 	llmDelayMs?: number;
+	/**
+	 * Compaction settings override (default: disabled). Tests that exercise pi's
+	 * own compaction need it enabled plus a tiny `keepRecentTokens`, otherwise
+	 * prepareCompaction finds nothing to summarize in these small sessions.
+	 */
+	compaction?: { enabled?: boolean; reserveTokens?: number; keepRecentTokens?: number };
 }
 
 export interface QueueSnapshot {
@@ -86,6 +92,12 @@ export interface QueueSnapshot {
 
 export interface TestSession {
 	session: any;
+	/**
+	 * The session's ModelRuntime. `ctx.modelRegistry.complete()` delegates to it,
+	 * so patching `modelRuntime.complete` scripts standalone (non-agent-loop) LLM
+	 * calls made by extensions.
+	 */
+	modelRuntime: any;
 	/** Text of every user message actually delivered to the agent, in order. */
 	deliveredUserMessages: { atMs: number; text: string }[];
 	/** Every queue_update emitted by the session. */
@@ -133,7 +145,7 @@ export async function createTestSession(options: TestSessionOptions): Promise<Te
 		tools: options.tools ?? [],
 		sessionManager: SessionManager.inMemory(dir),
 		settingsManager: SettingsManager.inMemory({
-			compaction: { enabled: false },
+			compaction: { enabled: false, ...options.compaction },
 			retry: { enabled: false },
 		} as any),
 	});
@@ -213,6 +225,7 @@ export async function createTestSession(options: TestSessionOptions): Promise<Te
 
 	return {
 		session,
+		modelRuntime,
 		deliveredUserMessages,
 		queueSnapshots,
 		turnEnds,

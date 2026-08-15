@@ -10,10 +10,30 @@
  *    (customType "context-cap-swap", content = preamble + handoff body, details =
  *    forensic metadata) is appended to the session, and a "context" event handler
  *    slices the LLM message array at the latest marker. The first post-swap LLM
- *    call sees ONLY the handoff. No compaction, no run abort, no LLM calls, no
- *    keepRecentTokens constraint. The session file keeps FULL history — the marker
- *    records exactly when/why the swap happened for later reconstruction.
- *  - hard cap (200k): backstop — swap with the latest file, staleness accepted.
+ *    call sees ONLY the handoff. No compaction, no run abort, no keepRecentTokens
+ *    constraint. The session file keeps FULL history — the marker records exactly
+ *    when/why the swap happened for later reconstruction.
+ *  - hard cap (200k): backstop. Before falling back to a stale file (or to no
+ *    summary at all), ONE standalone LLM call drafts the handoff from the current
+ *    context (lib/handoff-writer.ts): 200k against a ~1M window leaves ample room,
+ *    and the alternative — re-injecting a minutes-old doc, or telling an unattended
+ *    `pi -p` run to "ask the user" — was measured wrong in a 17-run study
+ *    (~/context-cap-study, results/postmortem.md: one run re-injected a 6-minute-
+ *    stale doc whose "gates are green" claim was already false; another had 16
+ *    swaps and 15 docs). The drafted doc goes through the normal file path and is
+ *    marked author "machine" in its frontmatter and in the marker details, so later
+ *    reconstruction can tell it from an agent-written one. Any failure of that call
+ *    (no model, provider error, rejection, timeout, empty text) returns null and the
+ *    old stale/no-file behaviour runs unchanged — this path must never be worse
+ *    than not having it.
+ *    Sequencing: message_end/turn_end handlers are awaited all the way down
+ *    (extensions/runner.js emit → agent-session `_handleAgentEvent` →
+ *    pi-agent-core `processEvents`, which awaits each listener; agent-loop.js
+ *    awaits the message_end emit BEFORE executing that message's tool calls and
+ *    the turn_end emit before draining the steering queue). So awaiting an LLM
+ *    call inside message_end stalls the loop instead of racing it — there is no
+ *    window where the agent keeps working. The user's ESC is not checked in that
+ *    window either, hence the writer's own timeout plus ctx.signal.
  *    One grace turn per cycle when the handoff write is likely in flight (message_end
  *    fires before tool execution — observed live 2026-07-08).
  *  - one-jump crossing: a single message can cross BOTH caps (a grep of a
@@ -34,7 +54,15 @@
  *    handoff from a fresh window, and every cap message carries a stale-ignore
  *    clause because pi's queues can deliver it arbitrarily late.
  *  - pi's threshold auto-compaction stays naturally quiet: it keys off provider-
- *    reported usage, which post-swap reflects only the scrubbed context.
+ *    reported usage, which post-swap reflects only the scrubbed context. It can
+ *    still fire when a single message overshoots everything (contextWindow -
+ *    reserveTokens, default reserve 16384 — ~800k above our hard cap) or on
+ *    /compact. A `session_before_compact` handler then supplies a handoff-shaped
+ *    summary via the same writer instead of a generic one; returning undefined on
+ *    any failure hands the job back to pi's own summarizer. NOTE the semantic
+ *    difference: our swap scrubs to the handoff alone, pi's compaction KEEPS the
+ *    messages after firstKeptEntryId. Inside this hook pi's keep-recent semantics
+ *    apply — deliberately not fought. Switch off with CONTEXT_CAP_COMPACT_HANDOFF=0.
  *
  * Handoff transport is a TOOL, not a file write by the agent: the agent passes
  * markdown, the EXTENSION writes the file host-side. This is deliberate — in
@@ -48,7 +76,8 @@
  * session accumulates seq 1, 2, 3…). YAML frontmatter is written by the extension;
  * it is stripped before injection. No cleanup policy (v1).
  *
- * Config: constants below, overridable via env CONTEXT_CAP_SOFT / CONTEXT_CAP_HARD.
+ * Config: constants below, overridable via env CONTEXT_CAP_SOFT / CONTEXT_CAP_HARD;
+ * CONTEXT_CAP_COMPACT_HANDOFF=0 disables the pi-compaction hook (default on).
  * Live-verified (compaction-hijack predecessor + this design's API surface) 2026-07-08.
  * Full soft-cap cycle (steer → handoff write → swap) live-tested with lowered caps 2026-07-09.
  */
@@ -59,7 +88,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { appendEvent } from "./lib/agent-runs.ts";
-import { CONTEXT_CAP_SOFT_TRIGGER, CONTEXT_CAP_STATUS_KEY, CONTEXT_CAP_TOOL_NAME, envInt } from "./lib/env.ts";
+import { CONTEXT_CAP_SOFT_TRIGGER, CONTEXT_CAP_STATUS_KEY, CONTEXT_CAP_TOOL_NAME, envFlag, envInt } from "./lib/env.ts";
+import { draftHandoff, HANDOFF_SECTIONS, type HandoffMessage } from "./lib/handoff-writer.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -71,6 +101,8 @@ const MAX_RETRIES = 2;
 const CAP_DIR = path.join(os.homedir(), ".pi", "agent", "context-cap");
 const MARKER_TYPE = "context-cap-swap";
 const TOOL_NAME = CONTEXT_CAP_TOOL_NAME;
+/** Read at call time (not import time) so it can be flipped per test / per run. */
+const COMPACT_HANDOFF_ENV = "CONTEXT_CAP_COMPACT_HANDOFF";
 // No pending-work claim here (unlike timer.ts): every handoff continuation — the
 // steered swap marker, followUp reminders, the post-swap turns — is drained inside
 // the same `_runAgentPrompt` loop, so a caller awaiting `session.prompt()` already
@@ -80,12 +112,10 @@ const TOOL_NAME = CONTEXT_CAP_TOOL_NAME;
 // Messages
 // ---------------------------------------------------------------------------
 
+// Section list lives in lib/handoff-writer.ts: the machine writer must produce the
+// SAME document shape as the agent-written one, so there is exactly one copy of it.
 const CONTENT_SPEC = `Call the \`${TOOL_NAME}\` tool. Its \`markdown\` argument (plain markdown, NO YAML frontmatter, ~30 lines total):
-1. "## Current Task" — FIRST section: what you are working on right now and the overall goal. The next session sees ONLY this text; nobody will restate the task.
-2. A brief summary of this session and current status
-3. Key file paths that were worked on
-4. Information you found surprising or where you struggled
-5. What the next session needs to know to continue
+${HANDOFF_SECTIONS}
 
 After the tool returns, end your turn. Your context will then be replaced by this handoff.`;
 
@@ -128,6 +158,18 @@ ${STALE_CLAUSE}`;
 
 const PREAMBLE =
 	"You are continuing work from a previous session. The agent before you left you this information:";
+
+/** Machine-written handoff (hard-cap backstop): say so — its claims were never agent-verified. */
+const MACHINE_PREAMBLE =
+	"You are continuing work from a previous session. It hit its hard context limit before writing its own handoff, so the summary below was reconstructed automatically from its context by a single model call — it is second-hand: verify load-bearing claims (test/gate results, file state) before relying on them.";
+
+/** Prepended to the summary handed to pi's own compaction (keep-recent semantics, not a scrub). */
+const COMPACT_PREAMBLE =
+	"The earlier part of this session was replaced by the handoff below (written automatically when the context window filled up). The most recent messages follow it unchanged.";
+
+/** Writer instruction for the pi-compaction path, where recent messages survive. */
+const COMPACT_EXTRA_INSTRUCTIONS =
+	"Note: unlike a full context swap, the most recent messages of this conversation stay visible to the next session — this document replaces the older part only.";
 
 const STALE_NOTE =
 	"(Note: this handoff file was written earlier and may not reflect the very latest work — the session hit its hard context cap before a fresh handoff was written.)";
@@ -183,9 +225,9 @@ function stripFrontmatter(text: string): string {
 function writeHandoff(
 	filePath: string,
 	body: string,
-	meta: { sessionId: string; seq: number; tokens: number },
+	meta: { sessionId: string; seq: number; tokens: number; author: HandoffAuthor },
 ): void {
-	const fm = `---\nsessionId: ${meta.sessionId}\ntimestamp: ${new Date().toISOString()}\ntokens: ${meta.tokens}\nseq: ${meta.seq}\n---\n\n`;
+	const fm = `---\nsessionId: ${meta.sessionId}\ntimestamp: ${new Date().toISOString()}\ntokens: ${meta.tokens}\nseq: ${meta.seq}\nauthor: ${meta.author}\n---\n\n`;
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
 	fs.writeFileSync(filePath, fm + stripFrontmatter(body).trim() + "\n");
 }
@@ -200,6 +242,8 @@ function fmtTokens(n: number): string {
 
 type Phase = "idle" | "steered" | "prompted" | "exhausted";
 type SwapTrigger = "soft" | "hard" | "hard-no-file";
+/** Who wrote the handoff document: the agent via the tool, or the writer LLM call. */
+type HandoffAuthor = "agent" | "machine";
 
 /** Forensic metadata persisted on the swap-marker session entry (never sent to LLM). */
 interface SwapDetails {
@@ -208,6 +252,8 @@ interface SwapDetails {
 	tokensAtSwap: number;
 	handoffPath: string | null;
 	stale: boolean;
+	/** null = no document at all (hard-no-file). Lets reconstruction tell the paths apart. */
+	author: HandoffAuthor | null;
 }
 
 export default function contextCapExtension(pi: ExtensionAPI) {
@@ -220,6 +266,12 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 	let handoffWritten = false;
 	/** One-shot grace so the hard cap doesn't swap away the message carrying the tool call. */
 	let hardGraceUsed = false;
+	/**
+	 * Last LLM-visible message array (post-slice, i.e. exactly what the model saw).
+	 * Cached HERE, not in lib/: jiti gives each extension file its own module copy,
+	 * so module-level state in lib/ would silently split (AGENTS.md).
+	 */
+	let lastContextMessages: readonly HandoffMessage[] = [];
 
 	function resetCycle() {
 		phase = "idle";
@@ -259,10 +311,11 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		handoffWritten = false;
 	}
 
-	function buildSummary(filePath: string, stale: boolean): string {
+	function buildSummary(filePath: string, stale: boolean, author: HandoffAuthor): string {
 		const body = stripFrontmatter(fs.readFileSync(filePath, "utf8")).trim();
 		const staleNote = stale ? `\n\n${STALE_NOTE}` : "";
-		return `${PREAMBLE}\n\n${body}${staleNote}\n\n${CONTINUE_SUFFIX}`;
+		const preamble = author === "machine" ? MACHINE_PREAMBLE : PREAMBLE;
+		return `${preamble}\n\n${body}${staleNote}\n\n${CONTINUE_SUFFIX}`;
 	}
 
 	/**
@@ -270,11 +323,17 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 	 * filePath undefined = hard cap with no handoff file at all.
 	 * Instant and infallible past the file read — no compaction, no abort, no race.
 	 */
-	function doSwap(ctx: ExtensionContext, filePath: string | undefined, stale: boolean, trigger: SwapTrigger) {
+	function doSwap(
+		ctx: ExtensionContext,
+		filePath: string | undefined,
+		stale: boolean,
+		trigger: SwapTrigger,
+		author: HandoffAuthor = "agent",
+	) {
 		let content: string;
 		if (filePath) {
 			try {
-				content = buildSummary(filePath, stale);
+				content = buildSummary(filePath, stale, author);
 			} catch (e) {
 				resetCycle();
 				updateStatus(ctx, ctx.getContextUsage()?.tokens);
@@ -291,6 +350,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			tokensAtSwap: tokensAtTrigger,
 			handoffPath: filePath ?? null,
 			stale,
+			author: filePath ? author : null,
 		};
 		resetCycle();
 		// Idle (turn_end path): marker itself starts the next turn.
@@ -314,7 +374,50 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		ctx.ui.notify(`context-cap: context swapped (${trigger}, ${fmtTokens(details.tokensAtSwap)} tokens)`, "info");
 	}
 
-	function hardCap(ctx: ExtensionContext, tokens: number) {
+	/**
+	 * Last resort before the backstop wipes: draft the handoff ourselves from the
+	 * context the agent still has, and write it through the normal file path
+	 * (same <sessionId>-<seq>.md mechanism, frontmatter author "machine").
+	 * Returns the file path, or undefined on ANY failure — the caller then does
+	 * exactly what it did before this path existed.
+	 */
+	async function machineHandoff(ctx: ExtensionContext, lastMessage: unknown): Promise<string | undefined> {
+		const messages = [...lastContextMessages];
+		// message_end fires before the message is in the next context event, so the
+		// message that crossed the cap must be appended by hand.
+		if (lastMessage) messages.push(lastMessage as HandoffMessage);
+		if (messages.length === 0 || !expectedPath) return undefined;
+		ctx.ui.setStatus(CONTEXT_CAP_STATUS_KEY, `writing handoff/${fmtTokens(SOFT_TRIGGER)}`);
+		ctx.ui.notify("context-cap: no fresh handoff — writing one from the context (one LLM call)", "warning");
+		// Never throws (lib/handoff-writer.ts contract); honors the run's abort signal.
+		const draft = await draftHandoff({
+			modelRegistry: ctx.modelRegistry,
+			model: ctx.model,
+			messages,
+			signal: ctx.signal,
+		});
+		if (!draft) {
+			ctx.ui.notify("context-cap: could not write a handoff — falling back to the previous file", "warning");
+			return undefined;
+		}
+		try {
+			writeHandoff(expectedPath, draft.text, {
+				sessionId: sessionId(ctx),
+				seq,
+				tokens: tokensAtTrigger,
+				author: "machine",
+			});
+		} catch (e) {
+			ctx.ui.notify(
+				`context-cap: writing the machine handoff failed: ${e instanceof Error ? e.message : e}`,
+				"error",
+			);
+			return undefined;
+		}
+		return expectedPath;
+	}
+
+	async function hardCap(ctx: ExtensionContext, tokens: number, lastMessage?: unknown) {
 		if (!expectedPath) {
 			// Hard crossed without a cycle and without a rescuable next turn (the
 			// one-jump toolUse case is steered in message_end): derive path context anyway.
@@ -325,10 +428,29 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			tokensAtTrigger = tokens;
 		}
 		const fresh = expectedPath && handoffWritten ? expectedPath : undefined;
+		ctx.ui.notify(`context-cap: hard cap (${fmtTokens(tokens)}) — forcing handoff`, "warning");
+		if (!fresh) {
+			// No handoff from this cycle: rather than re-injecting a possibly minutes-old
+			// file (or nothing at all), spend one LLM call on a current one.
+			const written = await machineHandoff(ctx, lastMessage);
+			if (written) {
+				doSwap(ctx, written, false, "hard", "machine");
+				return;
+			}
+			// The draft failed because the user hit ESC mid-call — a window that only
+			// exists because we now await here. Wiping the context on an abort would be
+			// strictly worse than before: skip, leave the cycle armed, and let the next
+			// real message above the cap re-fire the backstop (the marker would be
+			// dropped by the aborting run anyway).
+			if (ctx.signal?.aborted) {
+				ctx.ui.notify("context-cap: aborted while writing the handoff — swap deferred", "warning");
+				updateStatus(ctx, tokens);
+				return;
+			}
+		}
 		const fallback = fresh ?? latestPath(sessionId(ctx));
 		const stale = !fresh && fallback !== undefined; // older seq file substituted
-		ctx.ui.notify(`context-cap: hard cap (${fmtTokens(tokens)}) — forcing handoff`, "warning");
-		doSwap(ctx, fallback, stale, fallback ? "hard" : "hard-no-file");
+		doSwap(ctx, fallback, stale, fallback ? "hard" : "hard-no-file", "agent");
 	}
 
 	// -- handoff tool -----------------------------------------------------------
@@ -374,7 +496,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 				};
 			}
 			try {
-				writeHandoff(expectedPath, body, { sessionId: sessionId(ctx), seq, tokens: tokensAtTrigger });
+				writeHandoff(expectedPath, body, { sessionId: sessionId(ctx), seq, tokens: tokensAtTrigger, author: "agent" });
 			} catch (e) {
 				// Host-side write failed (disk full, permissions). Report so the agent
 				// can retry; the hard cap remains the backstop.
@@ -409,9 +531,14 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		for (let i = msgs.length - 1; i >= 0; i--) {
 			const m = msgs[i] as { role: string; customType?: string };
 			if (m.role === "custom" && m.customType === MARKER_TYPE) {
-				return i > 0 ? { messages: msgs.slice(i) } : undefined;
+				const sliced = msgs.slice(i);
+				// Cache what the model actually sees — the machine writer hands off the
+				// live context, not the full session history behind the last marker.
+				lastContextMessages = i > 0 ? sliced : msgs;
+				return i > 0 ? { messages: sliced } : undefined;
 			}
 		}
+		lastContextMessages = msgs;
 		return undefined;
 	});
 
@@ -422,7 +549,11 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		updateStatus(ctx, ctx.getContextUsage()?.tokens);
 	});
 
-	pi.on("message_end", (event, ctx) => {
+	// Async on purpose: the hard-cap path may await one LLM call. Verified safe —
+	// pi-agent-core awaits every listener and awaits the message_end emit BEFORE
+	// executing that message's tool calls, so this stalls the loop rather than
+	// racing it (see the header). Every other path stays synchronous.
+	pi.on("message_end", async (event, ctx) => {
 		const msg = event.message as { role: string; stopReason?: string };
 		if (msg.role !== "assistant") return;
 		const tokens = ctx.getContextUsage()?.tokens;
@@ -484,7 +615,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 				hardGraceUsed = true;
 				return;
 			}
-			hardCap(ctx, tokens);
+			await hardCap(ctx, tokens, event.message);
 			return;
 		}
 
@@ -540,6 +671,51 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			updateStatus(ctx, tokens);
 			send(silentStopMessage(tokens));
 			ctx.ui.notify(`context-cap: soft cap (${fmtTokens(tokens)}) — last-turn handoff requested`, "info");
+		}
+	});
+
+	// -- pi's own compaction: last ditch ---------------------------------------
+
+	// Reached only when pi's threshold fires anyway (contextWindow - reserveTokens,
+	// ~800k above our hard cap — a single monstrous message), or on /compact. Supply
+	// a handoff-shaped summary instead of a generic one, from the SAME writer.
+	// Semantics differ from our swap and that is intended: pi keeps the messages
+	// after firstKeptEntryId, so the summary replaces the older part only.
+	pi.on("session_before_compact", async (event, ctx) => {
+		if (!envFlag(COMPACT_HANDOFF_ENV, true)) return undefined;
+		try {
+			const { preparation, signal } = event;
+			const messages = [
+				...preparation.messagesToSummarize,
+				...preparation.turnPrefixMessages,
+			] as HandoffMessage[];
+			const draft = await draftHandoff({
+				modelRegistry: ctx.modelRegistry,
+				model: ctx.model,
+				messages,
+				signal,
+				previousSummary: preparation.previousSummary,
+				extraInstructions: COMPACT_EXTRA_INSTRUCTIONS,
+			});
+			// undefined ⇒ pi runs its own summarization. That is the fallback for every
+			// failure here, including an abort we would otherwise race pi's own check on.
+			if (!draft || signal.aborted) return undefined;
+			ctx.ui.notify("context-cap: compaction summarized as a handoff", "info");
+			return {
+				compaction: {
+					summary: `${COMPACT_PREAMBLE}\n\n${draft.text}`,
+					// Echoed back VERBATIM: pi forwards both to sessionManager.appendCompaction
+					// without validation, and a wrong entry id desyncs the session on reload.
+					firstKeptEntryId: preparation.firstKeptEntryId,
+					tokensBefore: preparation.tokensBefore,
+					usage: draft.usage,
+					details: { author: "machine", writer: "context-cap", reason: event.reason },
+				},
+			};
+		} catch {
+			// The runner would log a throw as an extension error; falling through
+			// silently to pi's own compaction is the quieter, identical outcome.
+			return undefined;
 		}
 	});
 }
