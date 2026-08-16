@@ -28,9 +28,9 @@ import { appendEvent, type RunStatus } from "./agent-runs.ts";
 import { cancelPendingWork } from "./pending-work.ts";
 import { waitForSessionQuiet } from "./session-quiet.ts";
 import {
-	CONTEXT_CAP_SOFT_TRIGGER as SOFT_TRIGGER,
 	CONTEXT_CAP_STATUS_KEY,
 	CONTEXT_CAP_TOOL_NAME,
+	resolveTriggers,
 } from "./env.ts";
 
 export const AGENT_TOOL = "Agent";
@@ -563,6 +563,10 @@ function childFooterData(ctx: ExtensionContext, record: ChildRecord, branch: str
 	const session = record.session;
 	const usage = session.getContextUsage();
 	const tokens = usage?.tokens == null ? "?" : formatTokenCount(usage.tokens);
+	// The child has its own model, so resolve ITS soft cap rather than showing the
+	// static ceiling — a small-window child swaps far below 260k (see lib/env.ts).
+	const caps = resolveTriggers(usage?.contextWindow);
+	const soft = caps.disabled || !Number.isFinite(caps.soft) ? "off" : formatTokenCount(caps.soft);
 	return {
 		cost: session.getSessionStats().cost,
 		usingSubscription: session.model ? ctx.modelRegistry.isUsingOAuth(session.model) : false,
@@ -572,7 +576,7 @@ function childFooterData(ctx: ExtensionContext, record: ChildRecord, branch: str
 		modelId: session.model?.id,
 		reasoning: session.model?.reasoning === true,
 		thinkingLevel: session.thinkingLevel,
-		statuses: new Map([[CONTEXT_CAP_STATUS_KEY, `${tokens}/${formatTokenCount(SOFT_TRIGGER)}`]]),
+		statuses: new Map([[CONTEXT_CAP_STATUS_KEY, `${tokens}/${soft}`]]),
 	};
 }
 
