@@ -2,7 +2,7 @@
  * context-cap — token-cap + graceful handoff via context-scrub (session ≠ context).
  *
  * Always on. Coexists with /handoff (manual). Mechanism:
- *  - soft cap (260k): steer the agent mid-tool-use to call the `context_handoff`
+ *  - soft cap (≤260k, model-aware — see "triggers" below): steer the agent mid-tool-use to call the `context_handoff`
  *    tool ("Current Task" section first — the next context sees ONLY this text)
  *  - silent-stop fallback: turn ends without tool calls above soft cap → followUp
  *  - turn-end verification on both paths: no handoff → bounded followUp reminders
@@ -14,7 +14,7 @@
  *    complete turns before the marker — see "levers" below). No compaction, no run
  *    abort, no keepRecentTokens constraint. The session file keeps FULL history —
  *    the marker records exactly when/why the swap happened for later reconstruction.
- *  - hard cap (325k): backstop. Before falling back to a stale file (or to no
+ *  - hard cap (≤325k, model-aware): backstop. Before falling back to a stale file (or to no
  *    summary at all), ONE standalone LLM call drafts the handoff from the current
  *    context (lib/handoff-writer.ts): 325k against a ~1M window leaves ample room,
  *    and the alternative — re-injecting a minutes-old doc, or telling an unattended
@@ -57,7 +57,8 @@
  *  - pi's threshold auto-compaction stays naturally quiet: it keys off provider-
  *    reported usage, which post-swap reflects only the scrubbed context. It can
  *    still fire when a single message overshoots everything (contextWindow -
- *    reserveTokens, default reserve 16384 — ~800k above our hard cap) or on
+ *    reserveTokens, default reserve 16384 — the ceiling our hard cap is derived
+ *    from, so always above it) or on
  *    /compact. A `session_before_compact` handler then supplies a handoff-shaped
  *    summary via the same writer instead of a generic one; returning undefined on
  *    any failure hands the job back to pi's own summarizer. NOTE the semantic
@@ -89,8 +90,20 @@
  *    (selectContextTail below). The handoff itself stays the LAST thing the model
  *    reads. 0 reproduces the pre-lever slice exactly.
  *
- * Config: constants below, overridable via env CONTEXT_CAP_SOFT / CONTEXT_CAP_HARD;
- * CONTEXT_CAP_COMPACT_HANDOFF=0 disables the pi-compaction hook (default on).
+ * Triggers (lib/env.ts resolveTriggers, resolved FRESH on every check — never
+ * cached): pi auto-compacts at `contextWindow - 16384`, so a fixed 325k hard cap
+ * simply never fires on a 200k-window model and the extension is dead weight. Both
+ * caps are therefore derived from the live window
+ *   ceiling = contextWindow - 16384; hard = min(325k, 0.90*ceiling); soft = min(260k, 0.80*hard)
+ * and re-read per check, because the model can change mid-session and pi has no
+ * model-switch event. CONTEXT_CAP_SOFT / CONTEXT_CAP_HARD override a value
+ * outright (the other stays dynamic). Unknown window ⇒ last known window, else the
+ * static 260k/325k. A window too small to hold a cap disables the extension for
+ * that check rather than swapping at a nonsensical threshold. The window, the two
+ * values in force and their source are recorded in every swap marker and handoff
+ * frontmatter (contextWindow / softCap / hardCap / capSource).
+ *
+ * Config: the levers below; CONTEXT_CAP_COMPACT_HANDOFF=0 disables the pi-compaction hook (default on).
  * Live-verified (compaction-hijack predecessor + this design's API surface) 2026-07-08.
  * Full soft-cap cycle (steer → handoff write → swap) live-tested with lowered caps 2026-07-09.
  */
@@ -102,14 +115,16 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { appendEvent } from "./lib/agent-runs.ts";
 import {
-	CONTEXT_CAP_HARD_TRIGGER,
+	CONTEXT_CAP_RESERVE_TOKENS,
 	CONTEXT_CAP_SCHEMA,
-	CONTEXT_CAP_SOFT_TRIGGER,
 	CONTEXT_CAP_STATUS_KEY,
 	CONTEXT_CAP_TAIL_TOKENS,
 	CONTEXT_CAP_TOOL_NAME,
 	envFlag,
 	type HandoffSchema,
+	resolveTriggers,
+	type ResolvedTriggers,
+	type TriggerSource,
 } from "./lib/env.ts";
 import { draftHandoff, handoffLineBudget, handoffSections, type HandoffMessage } from "./lib/handoff-writer.ts";
 
@@ -117,8 +132,6 @@ import { draftHandoff, handoffLineBudget, handoffSections, type HandoffMessage }
 // Config
 // ---------------------------------------------------------------------------
 
-const SOFT_TRIGGER = CONTEXT_CAP_SOFT_TRIGGER;
-const HARD_TRIGGER = CONTEXT_CAP_HARD_TRIGGER;
 /** A/B levers, resolved once in lib/env.ts (see the header). */
 const SCHEMA: HandoffSchema = CONTEXT_CAP_SCHEMA;
 const TAIL_TOKENS = CONTEXT_CAP_TAIL_TOKENS;
@@ -151,16 +164,16 @@ After the tool returns, end your turn. Your context will then be replaced by thi
 const STALE_CLAUSE =
 	"(If your context looks fresh — a recent session-handoff summary, only a few messages — this warning is stale; ignore it and continue your work.)";
 
-function steerMessage(tokens: number): string {
-	return `[context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at ${tokens} tokens (soft cap ${SOFT_TRIGGER}, hard cap ${HARD_TRIGGER}).
+function steerMessage(tokens: number, caps: ResolvedTriggers): string {
+	return `[context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at ${tokens} tokens (soft cap ${caps.soft}, hard cap ${caps.hard}).
 
 Finish your current logical unit of work first. Then: ${CONTENT_SPEC}
 
 ${STALE_CLAUSE}`;
 }
 
-function silentStopMessage(tokens: number): string {
-	return `[context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at ${tokens} tokens (soft cap ${SOFT_TRIGGER}, hard cap ${HARD_TRIGGER}). This is your last turn before handoff.
+function silentStopMessage(tokens: number, caps: ResolvedTriggers): string {
+	return `[context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at ${tokens} tokens (soft cap ${caps.soft}, hard cap ${caps.hard}). This is your last turn before handoff.
 
 ${CONTENT_SPEC}
 
@@ -168,8 +181,8 @@ ${STALE_CLAUSE}`;
 }
 
 /** One-jump crossing of the hard cap: demand the handoff NOW — no "finish your work first". */
-function hardSteerMessage(tokens: number): string {
-	return `[context-cap] ⚠️ CONTEXT LIMIT EMERGENCY: your context jumped to ${tokens} tokens, past the hard cap ${HARD_TRIGGER}. Do NOT start any new work. ${CONTENT_SPEC}
+function hardSteerMessage(tokens: number, caps: ResolvedTriggers): string {
+	return `[context-cap] ⚠️ CONTEXT LIMIT EMERGENCY: your context jumped to ${tokens} tokens, past the hard cap ${caps.hard}. Do NOT start any new work. ${CONTENT_SPEC}
 
 ${STALE_CLAUSE}`;
 }
@@ -259,15 +272,71 @@ function writeHandoff(
 		schema: HandoffSchema;
 		tailTokens: number;
 		tailKeptTokens: number;
+		caps: ResolvedTriggers;
 	},
 ): void {
-	const fm = `---\nsessionId: ${meta.sessionId}\ntimestamp: ${new Date().toISOString()}\ntokens: ${meta.tokens}\nseq: ${meta.seq}\nauthor: ${meta.author}\nschema: ${meta.schema}\ntailTokens: ${meta.tailTokens}\ntailKeptTokens: ${meta.tailKeptTokens}\n---\n\n`;
+	const fm = `---\nsessionId: ${meta.sessionId}\ntimestamp: ${new Date().toISOString()}\ntokens: ${meta.tokens}\nseq: ${meta.seq}\nauthor: ${meta.author}\nschema: ${meta.schema}\ntailTokens: ${meta.tailTokens}\ntailKeptTokens: ${meta.tailKeptTokens}\ncontextWindow: ${yamlNumber(meta.caps.contextWindow)}\nsoftCap: ${yamlNumber(meta.caps.soft)}\nhardCap: ${yamlNumber(meta.caps.hard)}\ncapSource: ${meta.caps.source}\n---\n\n`;
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
 	fs.writeFileSync(filePath, fm + stripFrontmatter(body).trim() + "\n");
 }
 
+/** null / +Infinity (a disabled cap) are not YAML numbers — emit the null literal. */
+function yamlNumber(n: number | null): string {
+	return n != null && Number.isFinite(n) ? String(n) : "null";
+}
+
 function fmtTokens(n: number): string {
+	if (!Number.isFinite(n)) return "off";
 	return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+}
+
+// ---------------------------------------------------------------------------
+// Trigger resolution (model-aware, per check)
+// ---------------------------------------------------------------------------
+
+/** What a cap check needs from ctx — `ctx.getContextUsage()`'s shape, minimally. */
+type UsageLike = { contextWindow?: number | null } | null | undefined;
+type Notify = (message: string, level: "info" | "warning" | "error") => void;
+
+/**
+ * Per-session cap resolution: the pure lib/env.ts `resolveTriggers` plus the two
+ * things one session has to remember — the last context window it actually saw
+ * (pi reports none before the first LLM call, and a stale-but-real window beats the
+ * static fallback) and which warnings were already shown, so a degenerate window
+ * does not notify on every single message.
+ *
+ * A factory, not module state: jiti hands each extension file its own module copy
+ * (AGENTS.md), and tests want one resolver per case.
+ *
+ * Exported for tests.
+ */
+export function createCapResolver(): (usage: UsageLike, notify?: Notify) => ResolvedTriggers {
+	let lastKnownWindow: number | null = null;
+	let warnedDisabled = false;
+	let warnedClamped = false;
+	let warnedFallback = false;
+	return (usage, notify) => {
+		const observed = usage?.contextWindow;
+		const live = typeof observed === "number" && Number.isFinite(observed) && observed > 0 ? observed : null;
+		if (live != null) lastKnownWindow = live;
+		const caps = resolveTriggers(live ?? lastKnownWindow);
+		if (caps.disabled && !warnedDisabled) {
+			warnedDisabled = true;
+			notify?.(
+				`context-cap: context window ${caps.contextWindow ?? "unknown"} cannot hold a cap below pi's own compaction (reserve ${CONTEXT_CAP_RESERVE_TOKENS}) — cap disabled`,
+				"warning",
+			);
+		}
+		if (caps.clamped && !warnedClamped) {
+			warnedClamped = true;
+			notify?.(`context-cap: soft cap ≥ hard cap — soft clamped to ${caps.soft} (hard ${caps.hard})`, "warning");
+		}
+		if (caps.source === "fallback" && !warnedFallback) {
+			warnedFallback = true;
+			notify?.(`context-cap: context window unknown — using static caps ${caps.soft}/${caps.hard}`, "info");
+		}
+		return caps;
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -411,6 +480,14 @@ interface SwapDetails {
 	tailTokens: number;
 	/** Estimated tokens of raw transcript kept in front of the handoff (0 = lever off). */
 	tailKeptTokens: number;
+	/** Model context window this cycle's caps were derived from; null = unknown. */
+	contextWindow: number | null;
+	/** Soft trigger actually in force when the cycle started. */
+	softCap: number;
+	/** Hard trigger actually in force when the cycle started. */
+	hardCap: number;
+	/** Where softCap/hardCap came from: explicit env, derived from the window, or the static default. */
+	capSource: TriggerSource;
 }
 
 export default function contextCapExtension(pi: ExtensionAPI) {
@@ -423,6 +500,17 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 	let handoffWritten = false;
 	/** One-shot grace so the hard cap doesn't swap away the message carrying the tool call. */
 	let hardGraceUsed = false;
+	/**
+	 * Model-aware triggers. Resolved FRESH on every check (the model can change
+	 * mid-session and pi has no model-switch event), never at import time.
+	 */
+	const resolveCaps = createCapResolver();
+	/**
+	 * The pair in force when the current cycle started — what the steer message
+	 * quoted, and therefore what the marker/frontmatter must record. Deliberately
+	 * NOT re-resolved at swap time: the forensic question is "what fired this".
+	 */
+	let cycleCaps: ResolvedTriggers | null = null;
 	/**
 	 * Last LLM-visible message array (post-slice, i.e. exactly what the model saw).
 	 * Cached HERE, not in lib/: jiti gives each extension file its own module copy,
@@ -438,18 +526,31 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		tokensAtTrigger = 0;
 		handoffWritten = false;
 		hardGraceUsed = false;
+		cycleCaps = null;
 	}
 
 	function sessionId(ctx: ExtensionContext): string {
 		return ctx.sessionManager.getSessionId();
 	}
 
-	function updateStatus(ctx: ExtensionContext, tokens: number | null | undefined) {
+	/**
+	 * The triggers for THIS check, re-read from the live model each time. Handlers
+	 * pass the usage they already read: getContextUsage() re-estimates over the whole
+	 * message array, and near the cap that array is large.
+	 */
+	function capsFrom(ctx: ExtensionContext, usage: UsageLike): ResolvedTriggers {
+		return resolveCaps(usage, (message, level) => ctx.ui.notify(message, level));
+	}
+	function caps(ctx: ExtensionContext): ResolvedTriggers {
+		return capsFrom(ctx, ctx.getContextUsage());
+	}
+
+	function updateStatus(ctx: ExtensionContext, tokens: number | null | undefined, resolved?: ResolvedTriggers) {
 		const t = tokens == null ? "?" : fmtTokens(tokens);
 		let suffix = "";
 		if (phase === "steered" || phase === "prompted") suffix = " ⚠ handoff";
 		else if (phase === "exhausted") suffix = " ⚠ awaiting hard cap";
-		ctx.ui.setStatus(CONTEXT_CAP_STATUS_KEY, `${t}/${fmtTokens(SOFT_TRIGGER)}${suffix}`);
+		ctx.ui.setStatus(CONTEXT_CAP_STATUS_KEY, `${t}/${fmtTokens((resolved ?? caps(ctx)).soft)}${suffix}`);
 	}
 
 	// deliverAs is ignored when idle (agent-session.js: isStreaming ? streamingBehavior
@@ -458,7 +559,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		pi.sendUserMessage(text, { deliverAs: "followUp" });
 	}
 
-	function startCycle(ctx: ExtensionContext, tokens: number) {
+	function startCycle(ctx: ExtensionContext, tokens: number, triggerCaps: ResolvedTriggers) {
 		fs.mkdirSync(CAP_DIR, { recursive: true });
 		const next = nextPath(sessionId(ctx));
 		seq = next.seq;
@@ -466,6 +567,12 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		retries = 0;
 		tokensAtTrigger = tokens;
 		handoffWritten = false;
+		cycleCaps = triggerCaps;
+	}
+
+	/** Caps to stamp on this cycle's artefacts — the cycle's own, or a fresh read if none. */
+	function stampCaps(ctx: ExtensionContext): ResolvedTriggers {
+		return cycleCaps ?? caps(ctx);
 	}
 
 	/**
@@ -513,6 +620,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			content = NO_FILE_SUMMARY;
 			ctx.ui.notify("context-cap: hard cap hit with no handoff file — swapping without summary", "warning");
 		}
+		const swapCaps = stampCaps(ctx);
 		const details: SwapDetails = {
 			seq: filePath ? fileSeq(sessionId(ctx), path.basename(filePath)) ?? null : null,
 			trigger,
@@ -523,6 +631,10 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			schema: SCHEMA,
 			tailTokens: TAIL_TOKENS,
 			tailKeptTokens: tailKeptEstimate(),
+			contextWindow: swapCaps.contextWindow,
+			softCap: swapCaps.soft,
+			hardCap: swapCaps.hard,
+			capSource: swapCaps.source,
 		};
 		resetCycle();
 		// Idle (turn_end path): marker itself starts the next turn.
@@ -542,7 +654,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		appendEvent(ctx.sessionManager.getSessionDir(), { ts: Date.now(), event: "reset", sid: sessionId(ctx) });
 		// Provider-reported usage is stale (pre-swap) until the next response lands;
 		// show an explicit transient instead of a misleading high number.
-		ctx.ui.setStatus(CONTEXT_CAP_STATUS_KEY, `swapped/${fmtTokens(SOFT_TRIGGER)}`);
+		ctx.ui.setStatus(CONTEXT_CAP_STATUS_KEY, `swapped/${fmtTokens(swapCaps.soft)}`);
 		ctx.ui.notify(`context-cap: context swapped (${trigger}, ${fmtTokens(details.tokensAtSwap)} tokens)`, "info");
 	}
 
@@ -559,7 +671,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		// message that crossed the cap must be appended by hand.
 		if (lastMessage) messages.push(lastMessage as HandoffMessage);
 		if (messages.length === 0 || !expectedPath) return undefined;
-		ctx.ui.setStatus(CONTEXT_CAP_STATUS_KEY, `writing handoff/${fmtTokens(SOFT_TRIGGER)}`);
+		ctx.ui.setStatus(CONTEXT_CAP_STATUS_KEY, `writing handoff/${fmtTokens(stampCaps(ctx).soft)}`);
 		ctx.ui.notify("context-cap: no fresh handoff — writing one from the context (one LLM call)", "warning");
 		// Never throws (lib/handoff-writer.ts contract); honors the run's abort signal.
 		const draft = await draftHandoff({
@@ -582,6 +694,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 				schema: SCHEMA,
 				tailTokens: TAIL_TOKENS,
 				tailKeptTokens: tailKeptEstimate(),
+				caps: stampCaps(ctx),
 			});
 		} catch (e) {
 			ctx.ui.notify(
@@ -593,11 +706,11 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		return expectedPath;
 	}
 
-	async function hardCap(ctx: ExtensionContext, tokens: number, lastMessage?: unknown) {
+	async function hardCap(ctx: ExtensionContext, tokens: number, capsNow: ResolvedTriggers, lastMessage?: unknown) {
 		if (!expectedPath) {
 			// Hard crossed without a cycle and without a rescuable next turn (the
 			// one-jump toolUse case is steered in message_end): derive path context anyway.
-			startCycle(ctx, tokens);
+			startCycle(ctx, tokens, capsNow);
 		} else {
 			// Cycle already in flight from the soft trigger — record the hard-cap
 			// reading so the marker's forensic tokensAtSwap reflects swap time.
@@ -679,6 +792,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 					schema: SCHEMA,
 					tailTokens: TAIL_TOKENS,
 					tailKeptTokens: tailKeptEstimate(),
+					caps: stampCaps(ctx),
 				});
 			} catch (e) {
 				// Host-side write failed (disk full, permissions). Report so the agent
@@ -745,8 +859,12 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 	pi.on("message_end", async (event, ctx) => {
 		const msg = event.message as { role: string; stopReason?: string };
 		if (msg.role !== "assistant") return;
-		const tokens = ctx.getContextUsage()?.tokens;
-		updateStatus(ctx, tokens);
+		// Re-read per check: the model (and with it the window) can change mid-session
+		// and pi has no model-switch event.
+		const usage = ctx.getContextUsage();
+		const tokens = usage?.tokens;
+		const capsNow = capsFrom(ctx, usage);
+		updateStatus(ctx, tokens, capsNow);
 		// Network-errored / user-aborted messages are synthesized by pi's failure
 		// path, not agent decisions, and carry no fresh usage (getContextUsage
 		// backward-scans past them to the previous real reading). Acting on that
@@ -757,6 +875,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		// and the next real message re-evaluates.
 		if (msg.stopReason === "error" || msg.stopReason === "aborted") return;
 		if (tokens == null) return; // unknown usage — never trigger blind
+		if (capsNow.disabled) return; // window too small to hold a cap — warned once by the resolver
 
 		// Fresh-window guard: mid-cycle but the context shrank far below the soft
 		// trigger — a swap/compaction raced a network error, or the steer was
@@ -764,13 +883,13 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		// fresh. The demand this cycle rides on no longer applies; without the
 		// reset, turn-end verification keeps demanding a handoff from a window
 		// that is nowhere near the cap.
-		if (phase !== "idle" && tokens < SOFT_TRIGGER / 2) {
+		if (phase !== "idle" && tokens < capsNow.soft / 2) {
 			resetCycle();
-			updateStatus(ctx, tokens);
+			updateStatus(ctx, tokens, capsNow);
 			ctx.ui.notify("context-cap: context shrank mid-cycle — stale handoff cycle reset", "info");
 		}
 
-		if (tokens >= HARD_TRIGGER) {
+		if (tokens >= capsNow.hard) {
 			// One-jump crossing: no cycle in flight (the soft steer never fired — the
 			// PREVIOUS message was below the soft cap) and this message ends in tool
 			// calls, so another turn is guaranteed. Wiping now would discard a context
@@ -779,10 +898,10 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			// grace below protects the message carrying the tool call, and an agent
 			// that ignores this steer still meets the backstop one grace turn later.
 			if (phase === "idle" && msg.stopReason === "toolUse") {
-				startCycle(ctx, tokens);
+				startCycle(ctx, tokens, capsNow);
 				phase = "steered";
-				updateStatus(ctx, tokens);
-				pi.sendUserMessage(hardSteerMessage(tokens), { deliverAs: "steer" });
+				updateStatus(ctx, tokens, capsNow);
+				pi.sendUserMessage(hardSteerMessage(tokens, capsNow), { deliverAs: "steer" });
 				ctx.ui.notify(
 					`context-cap: hard cap (${fmtTokens(tokens)}) crossed in one jump — emergency handoff requested`,
 					"warning",
@@ -804,19 +923,19 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 				hardGraceUsed = true;
 				return;
 			}
-			await hardCap(ctx, tokens, event.message);
+			await hardCap(ctx, tokens, capsNow, event.message);
 			return;
 		}
 
 		// Soft steer: only when another turn is guaranteed (mid-tool-use),
 		// so the warning is seen while there is still budget to act on it.
-		if (tokens >= SOFT_TRIGGER && phase === "idle" && msg.stopReason === "toolUse") {
-			startCycle(ctx, tokens);
+		if (tokens >= capsNow.soft && phase === "idle" && msg.stopReason === "toolUse") {
+			startCycle(ctx, tokens, capsNow);
 			phase = "steered";
-			updateStatus(ctx, tokens);
+			updateStatus(ctx, tokens, capsNow);
 			// stopReason "toolUse" ⇒ run is streaming, so steer is the live path;
 			// deliverAs is ignored when idle (plain prompt), making one call safe for both.
-			pi.sendUserMessage(steerMessage(tokens), { deliverAs: "steer" });
+			pi.sendUserMessage(steerMessage(tokens, capsNow), { deliverAs: "steer" });
 			ctx.ui.notify(`context-cap: soft cap (${fmtTokens(tokens)}) — handoff requested`, "info");
 		}
 	});
@@ -831,8 +950,12 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		const stopReason = (event.message as { stopReason?: string }).stopReason;
 		if (stopReason === "error" || stopReason === "aborted") return;
 
-		const tokens = ctx.getContextUsage()?.tokens;
+		const usage = ctx.getContextUsage();
+		const tokens = usage?.tokens;
 		const hasToolCalls = event.toolResults.length > 0;
+		// Re-read per check (see message_end). Verification of an in-flight cycle still
+		// runs when the cap is disabled — a handoff already demanded must be collected.
+		const capsNow = capsFrom(ctx, usage);
 
 		// Verification (both steer and silent-stop paths): swap as soon as the file exists.
 		if ((phase === "steered" || phase === "prompted" || phase === "exhausted") && expectedPath) {
@@ -846,7 +969,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 				send(reminderMessage(retries));
 			} else {
 				phase = "exhausted";
-				updateStatus(ctx, tokens);
+				updateStatus(ctx, tokens, capsNow);
 				ctx.ui.notify("context-cap: handoff never recorded — waiting for hard cap backstop", "warning");
 			}
 			return;
@@ -854,11 +977,11 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 
 		// Silent-stop fallback: crossed soft cap but the crossing turn ended without
 		// tool calls, so the steer gate never fired — the agent saw no warning.
-		if (phase === "idle" && !hasToolCalls && tokens != null && tokens >= SOFT_TRIGGER) {
-			startCycle(ctx, tokens);
+		if (phase === "idle" && !hasToolCalls && !capsNow.disabled && tokens != null && tokens >= capsNow.soft) {
+			startCycle(ctx, tokens, capsNow);
 			phase = "prompted";
-			updateStatus(ctx, tokens);
-			send(silentStopMessage(tokens));
+			updateStatus(ctx, tokens, capsNow);
+			send(silentStopMessage(tokens, capsNow));
 			ctx.ui.notify(`context-cap: soft cap (${fmtTokens(tokens)}) — last-turn handoff requested`, "info");
 		}
 	});
@@ -866,7 +989,8 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 	// -- pi's own compaction: last ditch ---------------------------------------
 
 	// Reached only when pi's threshold fires anyway (contextWindow - reserveTokens,
-	// ~800k above our hard cap — a single monstrous message), or on /compact. Supply
+	// the ceiling our hard cap sits 10% under — a single monstrous message), or on
+	// /compact, or when a degenerate window disabled us entirely. Supply
 	// a handoff-shaped summary instead of a generic one, from the SAME writer.
 	// Semantics differ from our swap and that is intended: pi keeps the messages
 	// after firstKeptEntryId, so the summary replaces the older part only.
