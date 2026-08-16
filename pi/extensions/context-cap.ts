@@ -2,7 +2,7 @@
  * context-cap — token-cap + graceful handoff via context-scrub (session ≠ context).
  *
  * Always on. Coexists with /handoff (manual). Mechanism:
- *  - soft cap (160k): steer the agent mid-tool-use to call the `context_handoff`
+ *  - soft cap (260k): steer the agent mid-tool-use to call the `context_handoff`
  *    tool ("Current Task" section first — the next context sees ONLY this text)
  *  - silent-stop fallback: turn ends without tool calls above soft cap → followUp
  *  - turn-end verification on both paths: no handoff → bounded followUp reminders
@@ -10,12 +10,13 @@
  *    (customType "context-cap-swap", content = preamble + handoff body, details =
  *    forensic metadata) is appended to the session, and a "context" event handler
  *    slices the LLM message array at the latest marker. The first post-swap LLM
- *    call sees ONLY the handoff. No compaction, no run abort, no keepRecentTokens
- *    constraint. The session file keeps FULL history — the marker records exactly
- *    when/why the swap happened for later reconstruction.
- *  - hard cap (200k): backstop. Before falling back to a stale file (or to no
+ *    call sees ONLY the handoff (plus, if CONTEXT_CAP_TAIL_TOKENS > 0, the last
+ *    complete turns before the marker — see "levers" below). No compaction, no run
+ *    abort, no keepRecentTokens constraint. The session file keeps FULL history —
+ *    the marker records exactly when/why the swap happened for later reconstruction.
+ *  - hard cap (325k): backstop. Before falling back to a stale file (or to no
  *    summary at all), ONE standalone LLM call drafts the handoff from the current
- *    context (lib/handoff-writer.ts): 200k against a ~1M window leaves ample room,
+ *    context (lib/handoff-writer.ts): 325k against a ~1M window leaves ample room,
  *    and the alternative — re-injecting a minutes-old doc, or telling an unattended
  *    `pi -p` run to "ask the user" — was measured wrong in a 17-run study
  *    (~/context-cap-study, results/postmortem.md: one run re-injected a 6-minute-
@@ -76,6 +77,18 @@
  * session accumulates seq 1, 2, 3…). YAML frontmatter is written by the extension;
  * it is stripped before injection. No cleanup policy (v1).
  *
+ * A/B levers (paid experiment; everything else is unchanged when they are off):
+ *  - CONTEXT_CAP_SCHEMA=v1|v2 (default v2) picks the handoff document shape. The
+ *    choice is made once in lib/env.ts and flows from there into the tool's
+ *    `markdown` parameter description, the agent-facing CONTENT_SPEC and the
+ *    machine writer's prompt — no second copy that could drift. v2 is path-heavy
+ *    (forensics over 72 swaps: path recall 0.17, successors re-read files the
+ *    handoff never named).
+ *  - CONTEXT_CAP_TAIL_TOKENS=N (default 0) additionally keeps ~N tokens of raw
+ *    transcript immediately before the marker, cut only at complete turns
+ *    (selectContextTail below). The handoff itself stays the LAST thing the model
+ *    reads. 0 reproduces the pre-lever slice exactly.
+ *
  * Config: constants below, overridable via env CONTEXT_CAP_SOFT / CONTEXT_CAP_HARD;
  * CONTEXT_CAP_COMPACT_HANDOFF=0 disables the pi-compaction hook (default on).
  * Live-verified (compaction-hijack predecessor + this design's API surface) 2026-07-08.
@@ -88,15 +101,27 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { appendEvent } from "./lib/agent-runs.ts";
-import { CONTEXT_CAP_SOFT_TRIGGER, CONTEXT_CAP_STATUS_KEY, CONTEXT_CAP_TOOL_NAME, envFlag, envInt } from "./lib/env.ts";
-import { draftHandoff, HANDOFF_SECTIONS, type HandoffMessage } from "./lib/handoff-writer.ts";
+import {
+	CONTEXT_CAP_HARD_TRIGGER,
+	CONTEXT_CAP_SCHEMA,
+	CONTEXT_CAP_SOFT_TRIGGER,
+	CONTEXT_CAP_STATUS_KEY,
+	CONTEXT_CAP_TAIL_TOKENS,
+	CONTEXT_CAP_TOOL_NAME,
+	envFlag,
+	type HandoffSchema,
+} from "./lib/env.ts";
+import { draftHandoff, handoffLineBudget, handoffSections, type HandoffMessage } from "./lib/handoff-writer.ts";
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
 const SOFT_TRIGGER = CONTEXT_CAP_SOFT_TRIGGER;
-const HARD_TRIGGER = envInt("CONTEXT_CAP_HARD", 200_000);
+const HARD_TRIGGER = CONTEXT_CAP_HARD_TRIGGER;
+/** A/B levers, resolved once in lib/env.ts (see the header). */
+const SCHEMA: HandoffSchema = CONTEXT_CAP_SCHEMA;
+const TAIL_TOKENS = CONTEXT_CAP_TAIL_TOKENS;
 const MAX_RETRIES = 2;
 const CAP_DIR = path.join(os.homedir(), ".pi", "agent", "context-cap");
 const MARKER_TYPE = "context-cap-swap";
@@ -112,10 +137,11 @@ const COMPACT_HANDOFF_ENV = "CONTEXT_CAP_COMPACT_HANDOFF";
 // Messages
 // ---------------------------------------------------------------------------
 
-// Section list lives in lib/handoff-writer.ts: the machine writer must produce the
-// SAME document shape as the agent-written one, so there is exactly one copy of it.
-const CONTENT_SPEC = `Call the \`${TOOL_NAME}\` tool. Its \`markdown\` argument (plain markdown, NO YAML frontmatter, ~30 lines total):
-${HANDOFF_SECTIONS}
+// Section list lives in lib/handoff-writer.ts, the schema choice in lib/env.ts: the
+// machine writer must produce the SAME document shape as the agent-written one, so
+// there is exactly one copy of it.
+const CONTENT_SPEC = `Call the \`${TOOL_NAME}\` tool. Its \`markdown\` argument (plain markdown, NO YAML frontmatter, ~${handoffLineBudget(SCHEMA)} lines total):
+${handoffSections(SCHEMA)}
 
 After the tool returns, end your turn. Your context will then be replaced by this handoff.`;
 
@@ -225,15 +251,140 @@ function stripFrontmatter(text: string): string {
 function writeHandoff(
 	filePath: string,
 	body: string,
-	meta: { sessionId: string; seq: number; tokens: number; author: HandoffAuthor },
+	meta: {
+		sessionId: string;
+		seq: number;
+		tokens: number;
+		author: HandoffAuthor;
+		schema: HandoffSchema;
+		tailTokens: number;
+		tailKeptTokens: number;
+	},
 ): void {
-	const fm = `---\nsessionId: ${meta.sessionId}\ntimestamp: ${new Date().toISOString()}\ntokens: ${meta.tokens}\nseq: ${meta.seq}\nauthor: ${meta.author}\n---\n\n`;
+	const fm = `---\nsessionId: ${meta.sessionId}\ntimestamp: ${new Date().toISOString()}\ntokens: ${meta.tokens}\nseq: ${meta.seq}\nauthor: ${meta.author}\nschema: ${meta.schema}\ntailTokens: ${meta.tailTokens}\ntailKeptTokens: ${meta.tailKeptTokens}\n---\n\n`;
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
 	fs.writeFileSync(filePath, fm + stripFrontmatter(body).trim() + "\n");
 }
 
 function fmtTokens(n: number): string {
 	return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+}
+
+// ---------------------------------------------------------------------------
+// Recency tail (CONTEXT_CAP_TAIL_TOKENS)
+// ---------------------------------------------------------------------------
+
+/**
+ * Token estimate: characters / 4, the usual BPE rule of thumb for English + code.
+ * Deliberately local and allocation-light — this runs inside the synchronous
+ * `context` handler before every LLM call, where loading a tokenizer would be
+ * absurd. It is an APPROXIMATION: ±25% on prose, worse on dense JSON, and images
+ * are counted as a flat guess. The lever it feeds is a budget, not a limit that
+ * anything breaks on.
+ */
+const CHARS_PER_TOKEN = 4;
+/** Role/id/envelope overhead the character count does not see. */
+const MESSAGE_OVERHEAD_TOKENS = 4;
+/** Flat per-image guess (~1k tokens); exact size needs the provider's tiler. */
+const IMAGE_CHARS = 4000;
+
+/** The fields of an AgentMessage this file's estimator/pairing walk care about. */
+type TailMessage = {
+	role?: string;
+	content?: unknown;
+	toolCallId?: string;
+	summary?: string;
+	command?: string;
+	output?: string;
+};
+
+/** Cheap size estimate for one message. Pure; exported for tests. */
+export function estimateMessageTokens(message: unknown): number {
+	const m = (message ?? {}) as TailMessage;
+	let chars = 0;
+	if (typeof m.content === "string") chars += m.content.length;
+	else if (Array.isArray(m.content)) {
+		for (const raw of m.content) {
+			const c = (raw ?? {}) as { type?: string; text?: string; thinking?: string; name?: string; arguments?: unknown };
+			if (typeof c.text === "string") chars += c.text.length;
+			if (typeof c.thinking === "string") chars += c.thinking.length;
+			if (c.type === "image") chars += IMAGE_CHARS;
+			if (c.type === "toolCall") {
+				chars += c.name?.length ?? 0;
+				try {
+					chars += JSON.stringify(c.arguments ?? "").length;
+				} catch {
+					chars += 200; // unserializable arguments: guess rather than throw
+				}
+			}
+		}
+	}
+	// bashExecution / branchSummary / compactionSummary carry their text outside `content`.
+	for (const extra of [m.summary, m.command, m.output]) {
+		if (typeof extra === "string") chars += extra.length;
+	}
+	return MESSAGE_OVERHEAD_TOKENS + Math.ceil(chars / CHARS_PER_TOKEN);
+}
+
+export interface TailSelection {
+	/** Index of the first kept message. Equals `markerIndex` when nothing is kept. */
+	start: number;
+	/** Estimated tokens of messages[start … markerIndex). 0 when nothing is kept. */
+	tokens: number;
+}
+
+/**
+ * How much raw transcript directly before the swap marker may be kept.
+ *
+ * Pairing safety is the whole point: a tool result whose toolCall was cut, or an
+ * assistant toolCall whose result was cut, is a provider error — strictly worse
+ * than keeping nothing. So a cut is only allowed at a message that references
+ * nothing earlier (anything that is not `assistant` and not `toolResult`; those
+ * all convert to a standalone user message), and only when the walk from there
+ * to the marker contains no orphan result and no dangling call.
+ *
+ * Walks backwards from the marker, accumulating the estimate, and returns the
+ * EARLIEST safe boundary that still fits the budget. If none fits — budget too
+ * small, a tool call whose result lands after the marker, no boundary at all —
+ * it returns `start = markerIndex`, i.e. keep nothing: today's behaviour.
+ *
+ * Pure; exported for tests. O(n) over the messages it inspects.
+ */
+export function selectContextTail(
+	messages: readonly unknown[],
+	markerIndex: number,
+	budgetTokens: number,
+): TailSelection {
+	const nothing: TailSelection = { start: markerIndex, tokens: 0 };
+	if (!(budgetTokens > 0) || markerIndex <= 0) return nothing;
+
+	/** Results already walked past whose toolCall has not been seen yet (calls precede results). */
+	const unmatchedResults = new Set<string>();
+	let danglingCalls = 0;
+	let tokens = 0;
+	let best = nothing;
+
+	for (let i = markerIndex - 1; i >= 0; i--) {
+		const m = (messages[i] ?? {}) as TailMessage;
+		tokens += estimateMessageTokens(m);
+		if (tokens > budgetTokens) break; // every earlier start is larger still
+		if (m.role === "toolResult") {
+			if (typeof m.toolCallId === "string") unmatchedResults.add(m.toolCallId);
+		} else if (m.role === "assistant") {
+			for (const raw of Array.isArray(m.content) ? m.content : []) {
+				const c = (raw ?? {}) as { type?: string; id?: string };
+				if (c.type !== "toolCall" || typeof c.id !== "string") continue;
+				// Its result is after the marker and can never come back: no cut below
+				// this message is safe either, so the walk is done.
+				if (!unmatchedResults.delete(c.id)) danglingCalls++;
+			}
+		} else if (unmatchedResults.size === 0 && danglingCalls === 0) {
+			// References nothing earlier and everything after it is paired: safe cut.
+			best = { start: i, tokens };
+		}
+		if (danglingCalls > 0) break;
+	}
+	return best;
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +405,12 @@ interface SwapDetails {
 	stale: boolean;
 	/** null = no document at all (hard-no-file). Lets reconstruction tell the paths apart. */
 	author: HandoffAuthor | null;
+	/** A/B lever: handoff document schema the writer was asked for. */
+	schema: HandoffSchema;
+	/** A/B lever: configured recency-tail budget (CONTEXT_CAP_TAIL_TOKENS). */
+	tailTokens: number;
+	/** Estimated tokens of raw transcript kept in front of the handoff (0 = lever off). */
+	tailKeptTokens: number;
 }
 
 export default function contextCapExtension(pi: ExtensionAPI) {
@@ -311,6 +468,18 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		handoffWritten = false;
 	}
 
+	/**
+	 * Estimated size of the recency tail this swap carries, for the marker details
+	 * and the file frontmatter. Computed from the last LLM-visible context, which
+	 * is the same array the `context` handler cuts — minus the turn that lands
+	 * between the two, so treat it as the swap's projection, not a measurement.
+	 * 0 whenever the lever is off.
+	 */
+	function tailKeptEstimate(): number {
+		if (TAIL_TOKENS <= 0) return 0;
+		return selectContextTail(lastContextMessages, lastContextMessages.length, TAIL_TOKENS).tokens;
+	}
+
 	function buildSummary(filePath: string, stale: boolean, author: HandoffAuthor): string {
 		const body = stripFrontmatter(fs.readFileSync(filePath, "utf8")).trim();
 		const staleNote = stale ? `\n\n${STALE_NOTE}` : "";
@@ -351,6 +520,9 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			handoffPath: filePath ?? null,
 			stale,
 			author: filePath ? author : null,
+			schema: SCHEMA,
+			tailTokens: TAIL_TOKENS,
+			tailKeptTokens: tailKeptEstimate(),
 		};
 		resetCycle();
 		// Idle (turn_end path): marker itself starts the next turn.
@@ -395,6 +567,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			model: ctx.model,
 			messages,
 			signal: ctx.signal,
+			schema: SCHEMA,
 		});
 		if (!draft) {
 			ctx.ui.notify("context-cap: could not write a handoff — falling back to the previous file", "warning");
@@ -406,6 +579,9 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 				seq,
 				tokens: tokensAtTrigger,
 				author: "machine",
+				schema: SCHEMA,
+				tailTokens: TAIL_TOKENS,
+				tailKeptTokens: tailKeptEstimate(),
 			});
 		} catch (e) {
 			ctx.ui.notify(
@@ -457,7 +633,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 
 	// Always active (never hidden): tool definitions are part of the cached prompt
 	// prefix, so toggling them mid-session would invalidate the provider prompt
-	// cache at ~160k tokens — far pricier than the ~100 tokens this always costs.
+	// cache at ~260k tokens — far pricier than the ~100 tokens this always costs.
 	// setActiveTools also only takes effect on the NEXT turn, i.e. not on the very
 	// turn the soft-cap steer lands, which is exactly when the tool is needed.
 	pi.registerTool({
@@ -469,8 +645,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			"your entire context and replaces it with the text you pass. For a user-requested summary, write a normal reply.",
 		parameters: Type.Object({
 			markdown: Type.String({
-				description:
-					"Handoff body, plain markdown, no YAML frontmatter. First section must be '## Current Task'. ~30 lines.",
+				description: `Handoff body, plain markdown, no YAML frontmatter. First section must be '## Current Task'. ~${handoffLineBudget(SCHEMA)} lines.`,
 			}),
 		}),
 
@@ -496,7 +671,15 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 				};
 			}
 			try {
-				writeHandoff(expectedPath, body, { sessionId: sessionId(ctx), seq, tokens: tokensAtTrigger, author: "agent" });
+				writeHandoff(expectedPath, body, {
+					sessionId: sessionId(ctx),
+					seq,
+					tokens: tokensAtTrigger,
+					author: "agent",
+					schema: SCHEMA,
+					tailTokens: TAIL_TOKENS,
+					tailKeptTokens: tailKeptEstimate(),
+				});
 			} catch (e) {
 				// Host-side write failed (disk full, permissions). Report so the agent
 				// can retry; the hard cap remains the backstop.
@@ -531,11 +714,17 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		for (let i = msgs.length - 1; i >= 0; i--) {
 			const m = msgs[i] as { role: string; customType?: string };
 			if (m.role === "custom" && m.customType === MARKER_TYPE) {
-				const sliced = msgs.slice(i);
+				// Recency tail: keep whole turns in front of the marker when the lever is
+				// on. TAIL_TOKENS = 0 ⇒ start === i ⇒ byte-identical to the pre-lever slice.
+				// The marker (and any post-swap turns) stay last: the handoff is the last
+				// thing the model reads. Deterministic in the prefix, so later calls in the
+				// same window cut at the same place and the prompt prefix stays cacheable.
+				const { start } = selectContextTail(msgs, i, TAIL_TOKENS);
+				const sliced = msgs.slice(start);
 				// Cache what the model actually sees — the machine writer hands off the
 				// live context, not the full session history behind the last marker.
-				lastContextMessages = i > 0 ? sliced : msgs;
-				return i > 0 ? { messages: sliced } : undefined;
+				lastContextMessages = start > 0 ? sliced : msgs;
+				return start > 0 ? { messages: sliced } : undefined;
 			}
 		}
 		lastContextMessages = msgs;
@@ -696,6 +885,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 				signal,
 				previousSummary: preparation.previousSummary,
 				extraInstructions: COMPACT_EXTRA_INSTRUCTIONS,
+				schema: SCHEMA,
 			});
 			// undefined ⇒ pi runs its own summarization. That is the fallback for every
 			// failure here, including an abort we would otherwise race pi's own check on.
@@ -709,7 +899,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 					firstKeptEntryId: preparation.firstKeptEntryId,
 					tokensBefore: preparation.tokensBefore,
 					usage: draft.usage,
-					details: { author: "machine", writer: "context-cap", reason: event.reason },
+					details: { author: "machine", writer: "context-cap", reason: event.reason, schema: SCHEMA },
 				},
 			};
 		} catch {

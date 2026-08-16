@@ -29,7 +29,7 @@ import { fileURLToPath } from "node:url";
 import type { Model } from "@earendil-works/pi-ai";
 import {
 	draftHandoff,
-	HANDOFF_SECTIONS,
+	handoffSections,
 	HANDOFF_SYSTEM_PROMPT,
 	type HandoffCompleter,
 	type HandoffMessage,
@@ -106,7 +106,7 @@ test("draftHandoff: success returns the markdown, the shared spec and the standa
 	assert.equal(calls.length, 1, "exactly one LLM call");
 	assert.equal(calls[0].context.systemPrompt, HANDOFF_SYSTEM_PROMPT);
 	const sent = calls[0].context.messages[0].content[0].text;
-	assert.ok(sent.includes(HANDOFF_SECTIONS), "the agent-facing section list is reused verbatim");
+	assert.ok(sent.includes(handoffSections()), "the agent-facing section list is reused verbatim");
 	assert.ok(sent.includes("USER-TURN-SENTINEL"), "history is serialized into the prompt");
 	assert.ok(sent.includes("[User]:"), "history goes through serializeConversation, not raw messages");
 	assert.equal(calls[0].options.cacheRetention, "none", "standalone call must not touch the prompt cache");

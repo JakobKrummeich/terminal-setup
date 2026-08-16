@@ -2,12 +2,13 @@
  * handoff-writer — draft a context handoff with ONE standalone LLM call.
  *
  * Used by context-cap.ts on the two degraded paths where no agent-written
- * handoff exists: its own hard cap (200k of a ~1M window — plenty of room for
+ * handoff exists: its own hard cap (325k of a ~1M window — plenty of room for
  * one more call) and pi's own compaction threshold (contextWindow -
  * reserveTokens, i.e. near death). Same document shape both times: the section
- * list below is the single source of truth, interpolated into the agent-facing
+ * lists below are the single source of truth, interpolated into the agent-facing
  * `context_handoff` tool instructions AND into this writer's prompt, so a
- * machine-written handoff is shaped exactly like an agent-written one.
+ * machine-written handoff is shaped exactly like an agent-written one. Which of
+ * them is live is the CONTEXT_CAP_SCHEMA lever, resolved once in lib/env.ts.
  *
  * Contract of `draftHandoff`: bounded (own AbortController + timeout +
  * maxTokens), and it NEVER throws — every failure (no model, provider error,
@@ -31,6 +32,7 @@ import { contentText, uuidv7 } from "@earendil-works/pi-ai";
 import type { Model, Usage } from "@earendil-works/pi-ai";
 import { convertToLlm, serializeConversation } from "@earendil-works/pi-coding-agent";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { CONTEXT_CAP_SCHEMA, type HandoffSchema } from "./env.ts";
 
 /**
  * `AgentMessage`, without importing @earendil-works/pi-agent-core: that package
@@ -43,20 +45,49 @@ export type HandoffCompleter = Pick<ModelRegistry, "complete">;
 
 /** Wall-clock bound for the whole call. The agent loop is stalled while it runs. */
 export const HANDOFF_TIMEOUT_MS = 120_000;
-/** A handoff is ~30 lines; the headroom absorbs reasoning tokens. */
+/** A handoff is ~30 (v1) to ~60 (v2) lines; the headroom absorbs reasoning tokens. */
 export const HANDOFF_MAX_TOKENS = 8192;
 /** Hard bound on the serialized conversation (tail kept — recent work matters most). */
 export const HANDOFF_MAX_CONVERSATION_CHARS = 400_000;
 
 /**
- * The handoff document shape — ONE source of truth, shared by the agent-facing
- * tool instructions in context-cap.ts (CONTENT_SPEC) and by this writer.
+ * The handoff document shape — ONE source of truth per schema, shared by the
+ * agent-facing tool instructions in context-cap.ts (CONTENT_SPEC and the tool's
+ * `markdown` parameter description) and by this writer's prompt. WHICH schema is
+ * live is decided in lib/env.ts (CONTEXT_CAP_SCHEMA) and nowhere else.
+ *
+ * v1 — the original shape. It is the A/B control: keep it byte-for-byte.
  */
-export const HANDOFF_SECTIONS = `1. "## Current Task" — FIRST section: what you are working on right now and the overall goal. The next session sees ONLY this text; nobody will restate the task.
+export const HANDOFF_SECTIONS_V1 = `1. "## Current Task" — FIRST section: what you are working on right now and the overall goal. The next session sees ONLY this text; nobody will restate the task.
 2. A brief summary of this session and current status
 3. Key file paths that were worked on
 4. Information you found surprising or where you struggled
 5. What the next session needs to know to continue`;
+
+/**
+ * v2 — path-heavy operational shape. The "Files" section is the point: a
+ * successor that is told which paths matter stops rediscovering them by grep.
+ */
+export const HANDOFF_SECTIONS_V2 = `1. "## Current Task" — FIRST section: what you are working on right now and the goal it serves. The next session sees ONLY this document; nobody will restate the task.
+2. "## Status" — what is done, what is in progress, what is left. Separate verified from unverified and mark every unverified claim as unverified (say what would verify it).
+3. "## Files" — EVERY path you touched or read this session that still matters, one per line, formatted \`path — state\` where state is one of: edited / created / read-only reference / needs work. Real paths only, no globs, no bare directory names. Be exhaustive rather than tidy: what you leave out, your successor re-discovers by grep.
+4. "## Repo State" — branch, what is committed vs uncommitted (name the paths), the last commit subject, and anything staged or stashed. Your successor's first instinct is \`git status\` / \`git log\`; answer it here instead of making it look.
+5. "## Next Step" — the exact next action as a runnable command or a precise edit (which file, what change), plus the commands that are known to work here (test/build/lint invocations with their real arguments).
+6. "## Dead Ends" — what you tried that did not work, so your successor does not retry it.
+7. "## Surprises / Open Questions" — what was not as expected, and what you could not settle.`;
+
+/** Line budget quoted to whoever writes the document, per schema. */
+const HANDOFF_LINE_BUDGET: Record<HandoffSchema, number> = { v1: 30, v2: 60 };
+
+/** Section list for a schema. Defaults to the live lever (lib/env.ts). */
+export function handoffSections(schema: HandoffSchema = CONTEXT_CAP_SCHEMA): string {
+	return schema === "v1" ? HANDOFF_SECTIONS_V1 : HANDOFF_SECTIONS_V2;
+}
+
+/** Line budget for a schema. Defaults to the live lever (lib/env.ts). */
+export function handoffLineBudget(schema: HandoffSchema = CONTEXT_CAP_SCHEMA): number {
+	return HANDOFF_LINE_BUDGET[schema];
+}
 
 export const HANDOFF_SYSTEM_PROMPT = `You are a coding agent whose context window is full. You are not continuing the work: your only job right now is to write the handoff document your successor session starts from.
 
@@ -84,6 +115,8 @@ export interface DraftHandoffOptions {
 	maxTokens?: number;
 	/** Appended to the instructions, e.g. pi-compaction's keep-recent semantics. */
 	extraInstructions?: string;
+	/** Document shape to ask for. Defaults to the live lever (CONTEXT_CAP_SCHEMA). */
+	schema?: HandoffSchema;
 	/** Summary of context that preceded `messages` (pi's `preparation.previousSummary`). */
 	previousSummary?: string;
 }
@@ -106,7 +139,7 @@ export function serializeForHandoff(
 /** The user-message body sent to the writer model. Pure — exported for tests. */
 export function handoffUserPrompt(
 	conversation: string,
-	options: { extraInstructions?: string; previousSummary?: string } = {},
+	options: { extraInstructions?: string; previousSummary?: string; schema?: HandoffSchema } = {},
 ): string {
 	const extra = options.extraInstructions ? `\n${options.extraInstructions}\n` : "";
 	const previous = options.previousSummary
@@ -118,8 +151,8 @@ export function handoffUserPrompt(
 ${conversation}
 </conversation>
 
-Write the handoff document now (plain markdown, NO YAML frontmatter, ~30 lines total):
-${HANDOFF_SECTIONS}
+Write the handoff document now (plain markdown, NO YAML frontmatter, ~${handoffLineBudget(options.schema)} lines total):
+${handoffSections(options.schema)}
 ${extra}
 Output the document only.`;
 }
@@ -165,6 +198,7 @@ export async function draftHandoff(options: DraftHandoffOptions): Promise<Handof
 								text: handoffUserPrompt(conversation, {
 									extraInstructions: options.extraInstructions,
 									previousSummary: options.previousSummary,
+									schema: options.schema,
 								}),
 							},
 						],
