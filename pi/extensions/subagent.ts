@@ -54,8 +54,10 @@ do not apply to that final message.
 - Use absolute paths. Include code snippets only when the exact text is load-bearing — a bug you
   found, a signature the caller needs. Do not recap code you merely read.
 - Complete the task fully. Don't gold-plate, don't leave it half-done.
-- You may use the timer tool and end your turn while waiting; the caller keeps waiting and gets
-  your message after the wake-up. Cancel timers you no longer need before you finish.
+- To wait for a long background job, call the timer tool and do what its result says: it either
+  blocks until the wait is over (keep working in the same turn) or arms a wake-up and tells you
+  to end your turn. Never end your turn on the assumption that something will wake you unless
+  that result said so; the caller only sees your final message.
 - Stay in scope. Note anything out of scope in one sentence; don't fix it.
 - Report truthfully: if tests fail, say so with the output; if you skipped a step, say that.
 - If you committed, list the paths and commit hashes.

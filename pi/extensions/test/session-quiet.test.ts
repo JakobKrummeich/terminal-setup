@@ -3,6 +3,11 @@
  * what keeps the parent's tool call open across a child's timer wake-up. These
  * tests drive it against a real session + the real timer extension — the exact
  * parent-side behavior, minus the TUI.
+ *
+ * The sessions that arm a timer run with `mode: "tui"`: only there does timer take
+ * its async, claim-holding branch. In a real child (mode "print") the timer blocks
+ * inside the tool call instead, so the child never goes idle mid-wait and this
+ * primitive has nothing to bridge.
  */
 
 import assert from "node:assert/strict";
@@ -36,6 +41,7 @@ test("quiet only after the timer wake-up run completed (the Agent-tool contract)
 	const TIMER_SECONDS = 0.3;
 	const t = await createTestSession({
 		extensionPaths: [TIMER_EXTENSION],
+		mode: "tui",
 		tools: ["timer"],
 		llmDelayMs: 20,
 		script: [
@@ -81,6 +87,7 @@ test("quiet only after the timer wake-up run completed (the Agent-tool contract)
 test("abort stops the wait promptly and the armed timer can be disarmed", async () => {
 	const t = await createTestSession({
 		extensionPaths: [TIMER_EXTENSION],
+		mode: "tui",
 		tools: ["timer"],
 		llmDelayMs: 20,
 		script: [

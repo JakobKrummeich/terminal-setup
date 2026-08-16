@@ -24,6 +24,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+/** pi's ExtensionMode. Re-declared: the package root does not re-export the type. */
+export type ExtensionMode = "tui" | "rpc" | "json" | "print";
+
 /** One scripted assistant response: a tool call, a final text answer, or a network failure. */
 export type ScriptedStep =
 	| { kind: "tool"; id: string; name: string; args: Record<string, unknown>; contextTokens?: number }
@@ -76,6 +79,13 @@ export interface TestSessionOptions {
 	tools?: string[];
 	/** Simulated LLM latency per call. */
 	llmDelayMs?: number;
+	/**
+	 * Extension run mode reported as `ctx.mode` (timer.ts branches on it).
+	 * Left unset, pi's ExtensionRunner default ("print") applies — the same value a
+	 * child session gets, since child-session.ts binds with no mode. Setting it
+	 * re-emits session_start, so opt in only where the mode matters.
+	 */
+	mode?: ExtensionMode;
 	/**
 	 * Compaction settings override (default: disabled). Tests that exercise pi's
 	 * own compaction need it enabled plus a tiny `keepRecentTokens`, otherwise
@@ -149,6 +159,8 @@ export async function createTestSession(options: TestSessionOptions): Promise<Te
 			retry: { enabled: false },
 		} as any),
 	});
+
+	if (options.mode !== undefined) await session.bindExtensions({ mode: options.mode });
 
 	const startedAt = Date.now();
 	const now = () => Date.now() - startedAt;

@@ -75,6 +75,7 @@ test("registry: cancelPendingWork invokes cancel callbacks and clears all claims
 test("an armed timer keeps the session claimed past the end of the run", async () => {
 	const t = await createTestSession({
 		extensionPaths: [TIMER_EXTENSION],
+		mode: "tui",
 		tools: ["timer"],
 		llmDelayMs: 20,
 		script: [
@@ -102,6 +103,7 @@ test("an armed timer keeps the session claimed past the end of the run", async (
 test("cancelling a timer releases the claim immediately", async () => {
 	const t = await createTestSession({
 		extensionPaths: [TIMER_EXTENSION],
+		mode: "tui",
 		tools: ["timer"],
 		llmDelayMs: 20,
 		script: [
@@ -124,6 +126,7 @@ test("cancelling a timer releases the claim immediately", async () => {
 test("cancelPendingWork disarms a claimed timer completely", async () => {
 	const t = await createTestSession({
 		extensionPaths: [TIMER_EXTENSION],
+		mode: "tui",
 		tools: ["timer"],
 		llmDelayMs: 20,
 		script: [
@@ -156,6 +159,7 @@ test("cancelPendingWork disarms a claimed timer completely", async () => {
 test("a wake-up stranded by the settle race is re-sent, not lost", async () => {
 	const t = await createTestSession({
 		extensionPaths: [TIMER_EXTENSION],
+		mode: "tui",
 		tools: ["timer"],
 		llmDelayMs: 20,
 		script: [

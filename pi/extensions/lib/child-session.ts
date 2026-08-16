@@ -894,12 +894,17 @@ function busyGroup(name: string): BusyGroup {
 /**
  * Wait until the child is really done, not merely between runs.
  *
- * `session.prompt()` resolves when the model stops calling tools — but `timer`
- * restarts the session from the outside via the wake-up message. Extensions
- * announce such restarts as pending-work claims (lib/pending-work.ts); the child
- * is done only when it is idle with an empty queue and no claim left
- * (lib/session-quiet.ts). Claims are self-expiring, so a lost wake-up delays the
- * result instead of hanging it.
+ * `session.prompt()` resolves when the model stops calling tools — but an extension
+ * may restart the session from the outside (the classic case: a `timer` wake-up
+ * message). Extensions announce such restarts as pending-work claims
+ * (lib/pending-work.ts); the child is done only when it is idle with an empty queue
+ * and no claim left (lib/session-quiet.ts). Claims are self-expiring, so a lost
+ * wake-up delays the result instead of hanging it.
+ *
+ * Note the child's own mode: `bindExtensions({})` below leaves pi's default "print",
+ * so `timer` takes its blocking branch inside a child and claims nothing — its wait
+ * simply keeps the child's run active. The claim path stays the contract for any
+ * out-of-band restart (and for a top-level TUI session's timer).
  */
 async function waitForChildDone(
 	record: ChildRecord,
