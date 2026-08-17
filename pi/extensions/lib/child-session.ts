@@ -29,9 +29,9 @@ import { appendEvent, type RunStatus } from "./agent-runs.ts";
 import { cancelPendingWork } from "./pending-work.ts";
 import { waitForSessionQuiet } from "./session-quiet.ts";
 import {
-	CONTEXT_CAP_SOFT_TRIGGER as SOFT_TRIGGER,
 	CONTEXT_CAP_STATUS_KEY,
 	CONTEXT_CAP_TOOL_NAME,
+	resolveTriggers,
 } from "./env.ts";
 
 export const AGENT_TOOL = "Agent";
@@ -614,6 +614,10 @@ function childFooterData(ctx: ExtensionContext, record: ChildRecord, branch: str
 	const session = record.session;
 	const usage = session.getContextUsage();
 	const tokens = usage?.tokens == null ? "?" : formatTokenCount(usage.tokens);
+	// The child has its own model, so resolve ITS soft cap rather than showing the
+	// static ceiling — a small-window child swaps far below 260k (see lib/env.ts).
+	const caps = resolveTriggers(usage?.contextWindow);
+	const soft = caps.disabled || !Number.isFinite(caps.soft) ? "off" : formatTokenCount(caps.soft);
 	return {
 		cost: session.getSessionStats().cost,
 		usingSubscription: session.model ? ctx.modelRegistry.isUsingOAuth(session.model) : false,
@@ -623,7 +627,7 @@ function childFooterData(ctx: ExtensionContext, record: ChildRecord, branch: str
 		modelId: session.model?.id,
 		reasoning: session.model?.reasoning === true,
 		thinkingLevel: session.thinkingLevel,
-		statuses: new Map([[CONTEXT_CAP_STATUS_KEY, `${tokens}/${formatTokenCount(SOFT_TRIGGER)}`]]),
+		statuses: new Map([[CONTEXT_CAP_STATUS_KEY, `${tokens}/${soft}`]]),
 	};
 }
 
@@ -941,12 +945,17 @@ function busyGroup(name: string): BusyGroup {
 /**
  * Wait until the child is really done, not merely between runs.
  *
- * `session.prompt()` resolves when the model stops calling tools — but `timer`
- * restarts the session from the outside via the wake-up message. Extensions
- * announce such restarts as pending-work claims (lib/pending-work.ts); the child
- * is done only when it is idle with an empty queue and no claim left
- * (lib/session-quiet.ts). Claims are self-expiring, so a lost wake-up delays the
- * result instead of hanging it.
+ * `session.prompt()` resolves when the model stops calling tools — but an extension
+ * may restart the session from the outside (the classic case: a `timer` wake-up
+ * message). Extensions announce such restarts as pending-work claims
+ * (lib/pending-work.ts); the child is done only when it is idle with an empty queue
+ * and no claim left (lib/session-quiet.ts). Claims are self-expiring, so a lost
+ * wake-up delays the result instead of hanging it.
+ *
+ * Note the child's own mode: `bindExtensions({})` below leaves pi's default "print",
+ * so `timer` takes its blocking branch inside a child and claims nothing — its wait
+ * simply keeps the child's run active. The claim path stays the contract for any
+ * out-of-band restart (and for a top-level TUI session's timer).
  */
 async function waitForChildDone(
 	record: ChildRecord,

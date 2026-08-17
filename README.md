@@ -61,9 +61,9 @@ git clone git@github.com:JakobKrummeich/terminal-setup.git ~/codingprojects/term
 ```
 
 This links pi extensions/themes/skills, copies pi settings if missing,
-installs/links `rtk`, and installs the shell `wsstate.sh` hook. For Pi `0.83.0`
-and `0.84.1`, it also applies a version-and-hash-guarded Azure Responses
-hidden-error retry workaround. Installer fails after a Pi upgrade until patch is
+installs/links `rtk`, and installs the shell `wsstate.sh` hook. For Pi
+`0.83.0`, `0.84.1`, and `0.84.2`, it also applies a version-and-hash-guarded
+Azure Responses hidden-error retry workaround. Installer fails after a Pi upgrade until patch is
 reviewed or removed. It does not install/link WezTerm or tmux.
 
 Then install apps themselves if flagged:
@@ -176,18 +176,18 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | file | purpose |
 |---|---|
 | `caveman-prompt.ts` | terse response style system prompt |
-| `context-cap.ts` | auto token-cap handoff: at 160k the agent writes a handoff file (`~/.pi/agent/context-cap/<sessionId>-<seq>.md`), then a persistent swap-marker entry is appended and a `context` handler slices the LLM context at it — the next LLM call sees only the handoff (session ≠ context: full history + forensic swap metadata stay in the session file); 200k hard backstop with stale-file fallback |
+| `context-cap.ts` | auto token-cap handoff: at the soft cap the agent writes a handoff file (`~/.pi/agent/context-cap/<sessionId>-<seq>.md`), then a persistent swap-marker entry is appended and a `context` handler slices the LLM context at it — the next LLM call sees only the handoff (session ≠ context: full history + forensic swap metadata stay in the session file); at the hard cap a backstop fires: if the agent never wrote one, the extension spends one standalone LLM call writing the handoff itself (author recorded in the frontmatter), falling back to the stale file, then to a no-context note. Both caps are **model-aware and re-resolved on every check** (no model-switch event exists, and the model can change mid-session): they must fire before pi's own compaction at `contextWindow - 16384`, so `hard = min(325k, 0.90 × (contextWindow - reserve))`, where `reserve` is pi's own `compaction.reserveTokens` read from its live settings (default 16384, override `CONTEXT_CAP_RESERVE`) and `soft = min(260k, 0.80 × hard)` — 260k/325k are ceilings, reached only from ~400k of window up; a 200k-window model gets 132k/165k. `CONTEXT_CAP_SOFT` / `CONTEXT_CAP_HARD` override a value outright (the other stays dynamic); unknown window falls back to the last one seen, then to the static 260k/325k; a window too small to hold a cap below pi's reserve disables the extension instead of swapping at a nonsense threshold. The same writer answers pi's own compaction (`session_before_compact`) with a handoff-shaped summary — disable with `CONTEXT_CAP_COMPACT_HANDOFF=0`. Two A/B levers: `CONTEXT_CAP_SCHEMA=v1\|v2` (default `v2`, the path-heavy schema whose `## Files` section names every path that still matters) and `CONTEXT_CAP_TAIL_TOKENS=N` (default 0; keeps ~N tokens of raw transcript, cut only at complete turns, in front of the handoff). Levers and caps alike are recorded in the marker details and the file frontmatter (`schema`, `tailTokens`, `tailKeptTokens`, `contextWindow`, `softCap`, `hardCap`, `capSource`) |
 | `custom-footer.ts` | cumulative token/cost footer |
 | `dump-system-prompt.ts` | debug: dump active system prompt |
 | `explore.ts` | `Explore` tool: delegate readonly exploration ("where is X", "how does Y work") to a cheap child agent that only gets `read`/`grep`/`find`/`ls` (plus `context_handoff`) — no bash, edit or write, structurally. Available to the main agent *and* to subagents; explorers have their own busy group, so a subagent can explore while its `Agent` call runs. Up to `PI_EXPLORER_PARALLEL` explorers (default 3) run concurrently — several `Explore` calls in one assistant message fan out in parallel. Model via `PI_EXPLORER_MODEL` (`provider/modelId`), else first matching candidate from local `explorer-models.json`, else the parent's model; thinking via `PI_EXPLORER_THINKING` (default `low`); missing model config shows a TUI warning. Configure per environment; see `docs/explorer-setup.md` |
 | `lib/child-session.ts` | shared child-session plumbing for `subagent.ts` and `explore.ts` (not an extension: pi's loader only scans top-level `*.ts`) |
-| `lib/pending-work.ts` | cross-extension "this session is not finished yet" claims (globalThis-backed, because pi loads every extension file with its own jiti instance and `moduleCache: false`). Claims can carry a `cancel` callback; `cancelPendingWork()` disarms and clears everything for a session. `timer.ts` is currently the only producer |
+| `lib/pending-work.ts` | cross-extension "this session is not finished yet" claims (globalThis-backed, because pi loads every extension file with its own jiti instance and `moduleCache: false`). Claims can carry a `cancel` callback; `cancelPendingWork()` disarms and clears everything for a session. `timer.ts` is currently the only producer — and only in interactive mode, where it arms a wake-up that outlives the run |
 | `lib/session-quiet.ts` | `waitForSessionQuiet()`: the definition of "child is done" — agent idle *and* no queued steer/follow-up messages (bounded grace) *and* no pending-work claims |
 | `handoff.ts` | session handoff summaries |
 | `markdown-no-padding.ts` | strip paddingX=1 from rendered markdown (copy-safety); patches pi-tui internals — re-verify after `pi update` |
 | `rtk.ts` / `rtk-tools.ts` | route tool calls through rtk token filter |
 | `subagent.ts` | `Agent` tool: delegate a task to a child agent session, capped at one layer deep. Press **F2** to watch the running child live in the normal TUI style, `Esc` to step back out (override the key with `PI_SUBAGENT_WATCH_KEY`) |
-| `timer.ts` | one-shot wakeup timer tool for long background tasks. Expiry is injected with `deliverAs: "steer"` so it lands at the next turn boundary; `"followUp"` only lands when the whole run ends, which stacked stale wake-ups during long runs (regression-tested). An armed timer claims pending work so a child session isn't reported as finished while it waits; the claim is released on evidence the wake-up run started (not on a guess), and a wake-up stranded by the settle race is re-sent (up to 3×) instead of lost |
+| `timer.ts` | wait tool for long background tasks, with two strategies picked from `ctx.mode` (the per-call result text says which one ran — the registered description can't, it is written before any mode is known). **Interactive (`tui`)**: one-shot wakeup timer — the agent ends its turn and the expiry is injected with `deliverAs: "steer"` so it lands at the next turn boundary; `"followUp"` only lands when the whole run ends, which stacked stale wake-ups during long runs (regression-tested). An armed timer claims pending work so a child session isn't reported as finished while it waits; the claim is released on evidence the wake-up run started (not on a guess), and a wake-up stranded by the settle race is re-sent (up to 3×) instead of lost. **Headless (`print`/`json`/`rpc`, and any unknown mode — fail-safe)**: the tool call itself blocks for the wait and returns "continue your task", never "end your turn". `pi -p` awaits a single `session.prompt()` and disposes the runtime right after, so a timer armed for after the turn wakes nothing and the run exits 0 mid-task; blocking keeps the run — and the process — alive. The requested duration is honoured in full — an hour is one call, one result: chopping it into re-callable chunks would bill a whole LLM round-trip at full context per chunk, and nothing in pi times a tool call out (`pi-agent-core` `dist/agent-loop.js:453` awaits `tool.execute()` bare). Instead the call reports progress on the `onUpdate` channel ("Ns elapsed, Ms remaining", ~20 ticks spread over the wait, floor 30s / ceiling 5min) so it never looks frozen, and aborting the tool call ends the wait at once. `PI_TIMER_MAX_WAIT_S` opts into a cap (unset/0 = none): a longer request then returns after the cap with how much time is left and asks to be called again |
 | `wsstate.ts` | report pi agent busy/idle to WezTerm workspace status via OSC 1337 |
 
 ### Subagents (`subagent.ts`)
@@ -217,12 +217,14 @@ nesting at one layer (structural, not a counter — nothing to configure).
   again — after an abort the child may still be draining, so release happens in the
   background, not in the tool's `finally`. Parallel children shared one worktree and one
   watch slot, and nothing here was verified under concurrency.
-- Done ≠ "the run ended". A `timer` wake-up restarts a session from the outside, which used
-  to end the parent's tool call while the child was still waiting. The `Agent` tool returns
-  only when the child is quiet (`lib/session-quiet.ts`): idle, empty message queue, and no
-  pending-work claims. Claims self-expire, so a lost wake-up delays the result instead of
-  hanging it. `context_handoff` needs no claim — its whole restart cycle runs inside the
-  child's `prompt()` call (regression-tested).
+- Done ≠ "the run ended". Anything that restarts a session from the outside (the classic
+  case: a `timer` wake-up) used to end the parent's tool call while the child was still
+  waiting. The `Agent` tool returns only when the child is quiet (`lib/session-quiet.ts`):
+  idle, empty message queue, and no pending-work claims. Claims self-expire, so a lost
+  wake-up delays the result instead of hanging it. `context_handoff` needs no claim — its
+  whole restart cycle runs inside the child's `prompt()` call (regression-tested). A child
+  binds its extensions without a mode, so it reports `print`: `timer` blocks inside the tool
+  call there and the child simply never goes idle while it waits.
 - No background runs, no parallelism, no agent types, no turn limits — deliberately.
 - Explorers (`explore.ts`) are the readonly counterpart: same plumbing, same watch view,
   but a readonly tool allowlist and a separate busy group. Unlike agents they run in

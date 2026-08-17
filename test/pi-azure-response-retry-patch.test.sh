@@ -8,18 +8,20 @@ trap 'rm -rf "$FIXTURE"' EXIT
 
 run_patch() {
   local version="$1"
+  local fixture="$2"
   local root="$FIXTURE/$version"
   mkdir -p "$root/dist/utils"
   printf '{"version":"%s","type":"module"}\n' "$version" > "$root/package.json"
-  cp "$REPO/test/fixtures/pi-ai-0.83.0-retry.js" "$root/dist/utils/retry.js"
+  cp "$REPO/test/fixtures/$fixture" "$root/dist/utils/retry.js"
   PI_AI_ROOT="$root" node "$PATCH" >&2
   PI_AI_ROOT="$root" node "$PATCH" >&2
   printf '%s\n' "$root/dist/utils/retry.js"
 }
 
-RETRY_083="$(run_patch 0.83.0)"
-RETRY_084="$(run_patch 0.84.1)"
-node --input-type=module - "$RETRY_083" "$RETRY_084" <<'NODE'
+RETRY_083="$(run_patch 0.83.0 pi-ai-0.83.0-retry.js)"
+RETRY_0841="$(run_patch 0.84.1 pi-ai-0.83.0-retry.js)"
+RETRY_0842="$(run_patch 0.84.2 pi-ai-0.84.2-retry.js)"
+node --input-type=module - "$RETRY_083" "$RETRY_0841" "$RETRY_0842" <<'NODE'
 import assert from "node:assert/strict";
 for (const retryPath of process.argv.slice(2)) {
   const { isRetryableAssistantError } = await import(`file://${retryPath}`);
@@ -34,5 +36,5 @@ for (const retryPath of process.argv.slice(2)) {
   assert.equal(isRetryableAssistantError({ ...unknownAzureFailure, rawStopReason: "completed" }), false);
   assert.equal(isRetryableAssistantError({ ...unknownAzureFailure, errorMessage: "insufficient_quota" }), false);
 }
-console.log("PASS: scoped Azure hidden-response retry patch for 0.83.0 and 0.84.1");
+console.log("PASS: scoped Azure hidden-response retry patch for 0.83.0, 0.84.1, and 0.84.2");
 NODE

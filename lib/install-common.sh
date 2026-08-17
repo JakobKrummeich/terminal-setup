@@ -77,7 +77,7 @@ install_pi() {
 }
 
 install_pi_azure_response_retry_patch() {
-    # Temporary fail-closed workaround for Pi 0.83.0/0.84.1 Azure Responses failed SSE events.
+    # Temporary fail-closed workaround for Pi 0.83.0/0.84.1/0.84.2 Azure Responses failed SSE events.
     if ! command -v pi >/dev/null; then
         echo "SKIPPED: Pi Azure retry patch (pi is not installed)"
         return 0
@@ -103,29 +103,94 @@ install_tmux() {
     command -v tmux >/dev/null || echo "TODO: sudo apt install tmux"
 }
 
+resolve_rtk_release_url() { # <os> <arch>
+    local os="$1" arch="$2"
+    curl -fsSL https://api.github.com/repos/rtk-ai/rtk/releases/latest \
+        | node -e '
+const assetNames = {
+  "Linux/x86_64": ["rtk-x86_64-unknown-linux-musl.tar.gz", "rtk-x86_64-unknown-linux-gnu.tar.gz"],
+  "Linux/aarch64": ["rtk-aarch64-unknown-linux-musl.tar.gz", "rtk-aarch64-unknown-linux-gnu.tar.gz"],
+  "Darwin/x86_64": ["rtk-x86_64-apple-darwin.tar.gz"],
+  "Darwin/arm64": ["rtk-aarch64-apple-darwin.tar.gz"],
+};
+try {
+  const [os, arch] = process.argv.slice(1);
+  const { assets } = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+  const asset = assetNames[`${os}/${arch}`]?.map((name) => assets.find((candidate) => candidate.name === name)).find(Boolean);
+  if (asset?.browser_download_url) process.stdout.write(asset.browser_download_url);
+} catch {
+  process.exit(1);
+}
+' "$os" "$arch"
+}
+
+install_rtk_from_url() { # <download-url>
+    local url="$1" download extract_dir extracted_rtk
+    mkdir -p "$HOME/.local/bin"
+    download="$(mktemp)"
+    if ! curl -fsSL "$url" -o "$download"; then
+        echo "WARN: could not download rtk release asset; install manually: https://github.com/rtk-ai/rtk"
+        rm -f "$download"
+        return 1
+    fi
+    case "$url" in
+        *.tar.gz)
+            extract_dir="$(mktemp -d)"
+            if ! tar -xzf "$download" -C "$extract_dir"; then
+                echo "WARN: could not extract rtk release asset; install manually: https://github.com/rtk-ai/rtk"
+                rm -rf "$extract_dir"
+                rm -f "$download"
+                return 1
+            fi
+            extracted_rtk="$(find "$extract_dir" -type f -name rtk -print -quit)"
+            if [ -z "$extracted_rtk" ]; then
+                echo "WARN: rtk release asset contains no rtk binary; install manually: https://github.com/rtk-ai/rtk"
+                rm -rf "$extract_dir"
+                rm -f "$download"
+                return 1
+            fi
+            if [ -d "$HOME/.local/bin/rtk" ] || ! mv "$extracted_rtk" "$HOME/.local/bin/rtk"; then
+                echo "WARN: could not place rtk binary; install manually: https://github.com/rtk-ai/rtk"
+                rm -rf "$extract_dir"
+                rm -f "$download"
+                return 1
+            fi
+            rm -rf "$extract_dir"
+            rm -f "$download"
+            ;;
+        *)
+            if [ -d "$HOME/.local/bin/rtk" ] || ! mv "$download" "$HOME/.local/bin/rtk"; then
+                echo "WARN: could not place rtk binary; install manually: https://github.com/rtk-ai/rtk"
+                rm -f "$download"
+                return 1
+            fi
+            ;;
+    esac
+    if ! chmod +x "$HOME/.local/bin/rtk"; then
+        echo "WARN: could not mark rtk binary executable; install manually: https://github.com/rtk-ai/rtk"
+        return 1
+    fi
+}
+
 install_rtk() {
     # ── rtk (latest release binary; used by pi extensions) ──────────
-    local rtk_bin="" URL=""
+    local rtk_bin="" URL="" os arch
     # Resolve rtk, but never to our own dest symlink (self-link = ELOOP).
     if command -v rtk >/dev/null && [ "$(command -v rtk)" != "$HOME/.pi/agent/bin/rtk" ]; then
         rtk_bin="$(command -v rtk)"
     else
         echo "Installing rtk (latest) ..."
-        mkdir -p ~/.local/bin
-        URL=$(curl -s https://api.github.com/repos/rtk-ai/rtk/releases/latest \
-            | grep -o '"browser_download_url": *"[^"]*linux[^"]*x86_64[^"]*"' \
-            | head -1 | cut -d'"' -f4)
-        if [ -n "$URL" ]; then
-            curl -fsSL "$URL" -o /tmp/rtk-download
-            case "$URL" in
-                *.tar.gz) tar -xzf /tmp/rtk-download -C /tmp && mv "$(find /tmp -maxdepth 2 -name rtk -type f -newer /tmp/rtk-download | head -1)" ~/.local/bin/rtk ;;
-                *) mv /tmp/rtk-download ~/.local/bin/rtk ;;
-            esac
-            chmod +x ~/.local/bin/rtk
-            rtk_bin="$HOME/.local/bin/rtk"
-            echo "INSTALLED: rtk $("$rtk_bin" --version 2>/dev/null || echo '?')"
+        os="$(uname -s)"
+        arch="$(uname -m)"
+        if ! URL="$(resolve_rtk_release_url "$os" "$arch")"; then
+            echo "WARN: could not fetch or parse rtk release metadata; install manually: https://github.com/rtk-ai/rtk"
+        elif [ -n "$URL" ]; then
+            if install_rtk_from_url "$URL"; then
+                rtk_bin="$HOME/.local/bin/rtk"
+                echo "INSTALLED: rtk $("$rtk_bin" --version 2>/dev/null || echo '?')"
+            fi
         else
-            echo "WARN: could not resolve rtk release asset; install manually: https://github.com/rtk-ai/rtk"
+            echo "WARN: no rtk release asset for $os/$arch; install manually: https://github.com/rtk-ai/rtk"
         fi
     fi
     if [ -n "$rtk_bin" ]; then

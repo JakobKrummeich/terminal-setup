@@ -24,6 +24,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+/** pi's ExtensionMode. Re-declared: the package root does not re-export the type. */
+export type ExtensionMode = "tui" | "rpc" | "json" | "print";
+
 /** One scripted assistant response: a tool call, a final text answer, or a network failure. */
 export type ScriptedStep =
 	| { kind: "tool"; id: string; name: string; args: Record<string, unknown>; contextTokens?: number }
@@ -76,6 +79,19 @@ export interface TestSessionOptions {
 	tools?: string[];
 	/** Simulated LLM latency per call. */
 	llmDelayMs?: number;
+	/**
+	 * Extension run mode reported as `ctx.mode` (timer.ts branches on it).
+	 * Left unset, pi's ExtensionRunner default ("print") applies — the same value a
+	 * child session gets, since child-session.ts binds with no mode. Setting it
+	 * re-emits session_start, so opt in only where the mode matters.
+	 */
+	mode?: ExtensionMode;
+	/**
+	 * Compaction settings override (default: disabled). Tests that exercise pi's
+	 * own compaction need it enabled plus a tiny `keepRecentTokens`, otherwise
+	 * prepareCompaction finds nothing to summarize in these small sessions.
+	 */
+	compaction?: { enabled?: boolean; reserveTokens?: number; keepRecentTokens?: number };
 }
 
 export interface QueueSnapshot {
@@ -86,6 +102,12 @@ export interface QueueSnapshot {
 
 export interface TestSession {
 	session: any;
+	/**
+	 * The session's ModelRuntime. `ctx.modelRegistry.complete()` delegates to it,
+	 * so patching `modelRuntime.complete` scripts standalone (non-agent-loop) LLM
+	 * calls made by extensions.
+	 */
+	modelRuntime: any;
 	/** Text of every user message actually delivered to the agent, in order. */
 	deliveredUserMessages: { atMs: number; text: string }[];
 	/** Every queue_update emitted by the session. */
@@ -133,10 +155,12 @@ export async function createTestSession(options: TestSessionOptions): Promise<Te
 		tools: options.tools ?? [],
 		sessionManager: SessionManager.inMemory(dir),
 		settingsManager: SettingsManager.inMemory({
-			compaction: { enabled: false },
+			compaction: { enabled: false, ...options.compaction },
 			retry: { enabled: false },
 		} as any),
 	});
+
+	if (options.mode !== undefined) await session.bindExtensions({ mode: options.mode });
 
 	const startedAt = Date.now();
 	const now = () => Date.now() - startedAt;
@@ -213,6 +237,7 @@ export async function createTestSession(options: TestSessionOptions): Promise<Te
 
 	return {
 		session,
+		modelRuntime,
 		deliveredUserMessages,
 		queueSnapshots,
 		turnEnds,
