@@ -23,7 +23,8 @@ import { fileURLToPath } from "node:url";
 import { createCapResolver } from "../context-cap.ts";
 import {
 	CONTEXT_CAP_HARD_TRIGGER,
-	CONTEXT_CAP_RESERVE_TOKENS,
+	CONTEXT_CAP_RESERVE_TOKENS_DEFAULT,
+	contextCapReserveTokens,
 	CONTEXT_CAP_SOFT_TRIGGER,
 	envIntOrNull,
 	resolveTriggers,
@@ -31,7 +32,7 @@ import {
 } from "../lib/env.ts";
 import { createTestSession, textStep, toolStep } from "./harness.ts";
 
-const CAP_KEYS = ["CONTEXT_CAP_SOFT", "CONTEXT_CAP_HARD"] as const;
+const CAP_KEYS = ["CONTEXT_CAP_SOFT", "CONTEXT_CAP_HARD", "CONTEXT_CAP_RESERVE", "PI_CODING_AGENT_DIR"] as const;
 
 /** Set env vars for one synchronous call and restore them exactly. */
 function withEnv<T>(vars: Partial<Record<(typeof CAP_KEYS)[number], string>>, fn: () => T): T {
@@ -63,7 +64,7 @@ test("precondition: no CONTEXT_CAP_* override is set in this process", () => {
 	}
 	assert.equal(CONTEXT_CAP_SOFT_TRIGGER, 260_000, "the static soft value is also the dynamic ceiling");
 	assert.equal(CONTEXT_CAP_HARD_TRIGGER, 325_000, "the static hard value is also the dynamic ceiling");
-	assert.equal(CONTEXT_CAP_RESERVE_TOKENS, 16_384, "must equal pi's compaction reserveTokens default");
+	assert.equal(CONTEXT_CAP_RESERVE_TOKENS_DEFAULT, 16_384, "must equal pi's compaction reserveTokens default");
 });
 
 test("dynamic triggers: the worked examples, window by window", () => {
@@ -85,7 +86,7 @@ test("dynamic triggers: the worked examples, window by window", () => {
 		assert.equal(caps.disabled, false);
 		assert.equal(caps.clamped, false);
 		// The whole point: both caps fire before pi's own compaction.
-		assert.ok(caps.hard < window - CONTEXT_CAP_RESERVE_TOKENS, `hard must be under pi's compact point (${window})`);
+		assert.ok(caps.hard < window - CONTEXT_CAP_RESERVE_TOKENS_DEFAULT, `hard must be under pi's compact point (${window})`);
 		assert.ok(caps.soft < caps.hard, `soft must leave room before hard (${window})`);
 	}
 });
@@ -152,7 +153,7 @@ test("unknown context window falls back to the static 260k/325k and records it",
 });
 
 test("degenerate window: cap disabled rather than armed at a nonsense threshold", () => {
-	for (const window of [1, 100, CONTEXT_CAP_RESERVE_TOKENS, CONTEXT_CAP_RESERVE_TOKENS + 1]) {
+	for (const window of [1, 100, CONTEXT_CAP_RESERVE_TOKENS_DEFAULT, CONTEXT_CAP_RESERVE_TOKENS_DEFAULT + 1]) {
 		const caps = resolveTriggers(window);
 		assert.equal(caps.disabled, true, `window ${window} cannot hold a cap under pi's reserve`);
 		assert.equal(caps.soft, Number.POSITIVE_INFINITY, "a disabled cap must be unfireable even if a caller forgets");
@@ -160,9 +161,9 @@ test("degenerate window: cap disabled rather than armed at a nonsense threshold"
 		assert.equal(caps.contextWindow, window);
 	}
 	// ceiling 2 ⇒ floor(0.9 * 2) = 1 ⇒ no room for a soft trigger underneath.
-	assert.equal(resolveTriggers(CONTEXT_CAP_RESERVE_TOKENS + 2).disabled, true);
+	assert.equal(resolveTriggers(CONTEXT_CAP_RESERVE_TOKENS_DEFAULT + 2).disabled, true);
 	// The first window that yields a usable pair.
-	const ok = resolveTriggers(CONTEXT_CAP_RESERVE_TOKENS + 3);
+	const ok = resolveTriggers(CONTEXT_CAP_RESERVE_TOKENS_DEFAULT + 3);
 	assert.equal(ok.disabled, false);
 	assert.deepEqual({ soft: ok.soft, hard: ok.hard }, { soft: 1, hard: 2 });
 	// Explicit env still wins on a degenerate window: nothing dynamic is needed.
@@ -334,4 +335,45 @@ test("a disabled cap never swaps: the type says so and the resolver says so", ()
 		assert.equal(tokens >= caps.soft, false);
 		assert.equal(tokens >= caps.hard, false);
 	}
+});
+
+// ---------------------------------------------------------------------------
+// pi's compaction reserve is a SETTING, not a constant
+// (settings-manager.js: `settings.compaction?.reserveTokens ?? 16384`), and
+// ExtensionContext exposes no way to read it. Assuming the default when the real
+// value is larger puts our hard cap ABOVE pi's compact point and silently disarms
+// the extension — the exact failure the dynamic caps exist to prevent.
+
+function withAgentDir<T>(settings: string | null, extra: Record<string, string>, fn: () => T): T {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cap-reserve-"));
+	if (settings !== null) fs.writeFileSync(path.join(dir, "settings.json"), settings);
+	return withEnv({ PI_CODING_AGENT_DIR: dir, ...extra }, fn);
+}
+
+test("reserve: falls back to pi's default when there is no settings file", () => {
+	withAgentDir(null, {}, () => {
+		assert.equal(contextCapReserveTokens(), CONTEXT_CAP_RESERVE_TOKENS_DEFAULT);
+	});
+});
+
+test("reserve: reads compaction.reserveTokens out of pi's live settings", () => {
+	withAgentDir(JSON.stringify({ compaction: { reserveTokens: 65_536 } }), {}, () => {
+		assert.equal(contextCapReserveTokens(), 65_536);
+		const caps = resolveTriggers(400_000);
+		assert.ok(caps.hard < 400_000 - 65_536, "hard must stay under pi's REAL compact point");
+	});
+});
+
+test("reserve: malformed or hostile settings fall back instead of throwing", () => {
+	for (const body of ["{not json", "{}", '{"compaction":{}}', '{"compaction":{"reserveTokens":"big"}}', '{"compaction":{"reserveTokens":-5}}']) {
+		withAgentDir(body, {}, () => {
+			assert.equal(contextCapReserveTokens(), CONTEXT_CAP_RESERVE_TOKENS_DEFAULT, body);
+		});
+	}
+});
+
+test("reserve: CONTEXT_CAP_RESERVE overrides the settings file outright", () => {
+	withAgentDir(JSON.stringify({ compaction: { reserveTokens: 65_536 } }), { CONTEXT_CAP_RESERVE: "1000" }, () => {
+		assert.equal(contextCapReserveTokens(), 1000);
+	});
 });

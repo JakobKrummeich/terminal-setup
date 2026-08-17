@@ -1,5 +1,9 @@
 // Env-var config helpers shared across extension files.
 //
+import { readFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+//
 // jiti caveat (see AGENTS.md): each top-level extension gets its own module copy
 // of this file, so only pure values/functions belong here — no shared state.
 
@@ -73,7 +77,33 @@ export const CONTEXT_CAP_HARD_TRIGGER = envInt("CONTEXT_CAP_HARD", 325_000);
  * whole extension is dead weight — which is exactly what a fixed 325k hard cap did
  * on any model with a 200k window.
  */
-export const CONTEXT_CAP_RESERVE_TOKENS = 16_384;
+export const CONTEXT_CAP_RESERVE_TOKENS_DEFAULT = 16_384;
+
+/**
+ * pi's reserve is a SETTING, not a constant: settings-manager.js resolves it as
+ * `settings.compaction?.reserveTokens ?? 16384`, and `ExtensionContext` exposes
+ * no way to read it (ui, mode, hasUI, cwd, sessionManager, modelRegistry, model,
+ * scopedModels, thinkingLevel, getContextUsage — no settings). Assuming 16384
+ * when the real value is larger puts our hard cap ABOVE pi's compaction point and
+ * the extension silently stops mattering, which is the bug the dynamic caps exist
+ * to fix. So read the live settings file, and let the environment win.
+ *
+ * Reading is safe; the file is pi's to write (never edit it on pi's behalf).
+ * Re-read per call rather than cached: pi rewrites the file at runtime.
+ */
+export function contextCapReserveTokens(): number {
+	const override = envIntOrNull("CONTEXT_CAP_RESERVE");
+	if (override != null) return override;
+	const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
+	try {
+		const raw = readFileSync(path.join(agentDir, "settings.json"), "utf8");
+		const value = (JSON.parse(raw) as { compaction?: { reserveTokens?: unknown } })?.compaction?.reserveTokens;
+		if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.floor(value);
+	} catch {
+		// Missing, unreadable or malformed settings: pi's own default applies.
+	}
+	return CONTEXT_CAP_RESERVE_TOKENS_DEFAULT;
+}
 
 /** Where the values in force came from. See resolveTriggers for the precedence. */
 export type TriggerSource = "env" | "dynamic" | "fallback";
@@ -108,7 +138,7 @@ function softOfHard(hard: number): number {
 /**
  * Resolve the soft/hard triggers for one check, given the model's context window.
  *
- *   ceiling = contextWindow - CONTEXT_CAP_RESERVE_TOKENS   (pi's own compact point)
+ *   ceiling = contextWindow - contextCapReserveTokens()    (pi's own compact point)
  *   hard    = min(CONTEXT_CAP_HARD_TRIGGER, floor(0.90 * ceiling))
  *   soft    = min(CONTEXT_CAP_SOFT_TRIGGER, floor(0.80 * hard))
  *
@@ -149,7 +179,7 @@ export function resolveTriggers(contextWindow: number | null | undefined): Resol
 		hard = envHard;
 		hardSource = "env";
 	} else if (window != null) {
-		const ceiling = window - CONTEXT_CAP_RESERVE_TOKENS;
+		const ceiling = window - contextCapReserveTokens();
 		if (ceiling <= 0) return off; // window smaller than pi's reserve
 		hard = hardOfCeiling(ceiling);
 		hardSource = "dynamic";

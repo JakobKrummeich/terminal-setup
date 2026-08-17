@@ -115,7 +115,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { appendEvent } from "./lib/agent-runs.ts";
 import {
-	CONTEXT_CAP_RESERVE_TOKENS,
+	contextCapReserveTokens,
 	CONTEXT_CAP_SCHEMA,
 	CONTEXT_CAP_STATUS_KEY,
 	CONTEXT_CAP_TAIL_TOKENS,
@@ -323,7 +323,7 @@ export function createCapResolver(): (usage: UsageLike, notify?: Notify) => Reso
 		if (caps.disabled && !warnedDisabled) {
 			warnedDisabled = true;
 			notify?.(
-				`context-cap: context window ${caps.contextWindow ?? "unknown"} cannot hold a cap below pi's own compaction (reserve ${CONTEXT_CAP_RESERVE_TOKENS}) — cap disabled`,
+				`context-cap: context window ${caps.contextWindow ?? "unknown"} cannot hold a cap below pi's own compaction (reserve ${contextCapReserveTokens()}) — cap disabled`,
 				"warning",
 			);
 		}
