@@ -38,7 +38,7 @@ const writer = () => import("../lib/handoff-writer.ts");
 const MACHINE_DRAFT = "## Current Task\nMACHINE-DRAFT-SENTINEL";
 /** Load-bearing fragments of the v2 schema, spelled out rather than derived. */
 const V2_FILES_LINE = '3. "## Files" — EVERY path you touched or read this session that still matters';
-const V2_NEXT_STEP_LINE = '5. "## Next Step" — the exact next action as a runnable command or a precise edit';
+const V2_NEXT_STEP_LINE = '4. "## Next Step" — the exact next action as a runnable command or a precise edit';
 
 interface CapturedContext {
 	messages: { role: string; content?: unknown }[];

@@ -53,7 +53,10 @@ test("v2 is the path-heavy schema: files section, imperative, real paths only", 
 	assert.match(HANDOFF_SECTIONS_V2, /no globs, no bare directory names/);
 	assert.match(HANDOFF_SECTIONS_V2, /unverified/);
 	assert.match(HANDOFF_SECTIONS_V2, /"## Dead Ends"/);
-	assert.equal(HANDOFF_SECTIONS_V2.split("\n").length, 7, "seven sections, one line each");
+	// No repo/VCS section: the cwd is often not the repo the work is in, so a
+	// handoff cannot answer `git status` reliably. See lib/handoff-writer.ts.
+	assert.doesNotMatch(HANDOFF_SECTIONS_V2, /Repo State|git status|git log|branch/);
+	assert.equal(HANDOFF_SECTIONS_V2.split("\n").length, 6, "six sections, one line each");
 });
 
 // ---------------------------------------------------------------------------

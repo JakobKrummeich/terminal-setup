@@ -67,14 +67,24 @@ export const HANDOFF_SECTIONS_V1 = `1. "## Current Task" — FIRST section: what
 /**
  * v2 — path-heavy operational shape. The "Files" section is the point: a
  * successor that is told which paths matter stops rediscovering them by grep.
+ * That section is also the only part with evidence behind it: E2 measured path
+ * recall, and it is what moved (0.235 -> 0.390, paired, n=24, p=2.2e-05).
+ *
+ * There is deliberately NO repo/VCS section. E1 found orientation queries
+ * (`git status`, `git log`) are 87% never carried, which argued for one, but a
+ * handoff cannot answer them reliably: the working directory is often not the
+ * repo the work is in — a cwd one level up, itself a repo, yields the PARENT's
+ * branch and status, which is worse than silence because it reads as authoritative.
+ * Detecting "which repo" correctly is not a summarization problem, so the section
+ * was removed rather than guessed. The successor runs `git status` itself; it is
+ * one cheap command against a wrong answer that costs a whole debugging detour.
  */
 export const HANDOFF_SECTIONS_V2 = `1. "## Current Task" — FIRST section: what you are working on right now and the goal it serves. The next session sees ONLY this document; nobody will restate the task.
 2. "## Status" — what is done, what is in progress, what is left. Separate verified from unverified and mark every unverified claim as unverified (say what would verify it).
 3. "## Files" — EVERY path you touched or read this session that still matters, one per line, formatted \`path — state\` where state is one of: edited / created / read-only reference / needs work. Real paths only, no globs, no bare directory names. Be exhaustive rather than tidy: what you leave out, your successor re-discovers by grep.
-4. "## Repo State" — branch, what is committed vs uncommitted (name the paths), the last commit subject, and anything staged or stashed. Your successor's first instinct is \`git status\` / \`git log\`; answer it here instead of making it look.
-5. "## Next Step" — the exact next action as a runnable command or a precise edit (which file, what change), plus the commands that are known to work here (test/build/lint invocations with their real arguments).
-6. "## Dead Ends" — what you tried that did not work, so your successor does not retry it.
-7. "## Surprises / Open Questions" — what was not as expected, and what you could not settle.`;
+4. "## Next Step" — the exact next action as a runnable command or a precise edit (which file, what change), plus the commands that are known to work here (test/build/lint invocations with their real arguments).
+5. "## Dead Ends" — what you tried that did not work, so your successor does not retry it.
+6. "## Surprises / Open Questions" — what was not as expected, and what you could not settle.`;
 
 /** Line budget quoted to whoever writes the document, per schema. */
 const HANDOFF_LINE_BUDGET: Record<HandoffSchema, number> = { v1: 30, v2: 60 };
