@@ -18,6 +18,13 @@
  *   "end your turn". Blocking is safe in every mode, the wake-up is not, so
  *   anything that is not confirmed "tui" takes the blocking path.
  *
+ * The blocking wait honours the requested duration in full — an hour is an hour,
+ * one tool call, one result. It is not chopped into re-callable chunks: every
+ * re-call would be a fresh LLM round-trip at full context, so a capped wait bills
+ * real money for nothing. Liveness comes from `onUpdate` heartbeats instead, and
+ * an abort cuts the wait immediately. A cap remains available, opt-in, via
+ * PI_TIMER_MAX_WAIT_S.
+ *
  * One timer at a time; setting a new one replaces the old (stated in result).
  *
  * Delivery: `deliverAs: "steer"`, NOT "followUp". pi delivers follow-ups only
@@ -55,19 +62,42 @@ const WAKE_TIMEOUT_MS = 30 * 60_000;
 /** Re-send attempts for a stranded wake-up before giving up and releasing. */
 const MAX_WAKE_RESENDS = 3;
 /**
- * Cap on ONE blocking (headless) wait, in seconds. Bounded from above by the
- * supervising harness, which treats a tool child blocked for 1500s as a stall,
- * and by the fact that a blocked call reports no progress at all; bounded from
- * below by the cost of looping (each extra call is another LLM round-trip).
- * 10 minutes covers most build/test/download waits in a single call and leaves
- * a 2.5x margin under the watchdog. Longer requests wait the cap and are told to
- * call again, so the agent can wait arbitrarily long without ever ending a turn.
- * Override with PI_TIMER_MAX_WAIT_S (read per call, so tests can set it).
+ * Optional cap on ONE blocking (headless) wait, in seconds. Unset (or <= 0) means
+ * NO cap: a headless agent has the same reach as an interactive one, which can arm
+ * a wake-up of any length. Capping would force the agent to re-call every N
+ * seconds, and every re-call is a full LLM round-trip at the current context size
+ * — 3 extra round-trips at 200k+ tokens for a 30-minute wait, buying nothing.
+ * Nothing in pi times a tool call out (pi-agent-core dist/agent-loop.js:453 awaits
+ * `tool.execute()` bare), so the block is safe; liveness is shown by the heartbeat
+ * below instead of by returning early. Set PI_TIMER_MAX_WAIT_S to opt into a cap
+ * — the capped result then tells the agent how much is left and to call again.
  */
-const DEFAULT_HEADLESS_MAX_WAIT_S = 600;
+const DEFAULT_HEADLESS_MAX_WAIT_S = 0;
 
+/** 0 = unlimited. Read per call, so a test or an operator can flip it live. */
 function headlessMaxWaitMs(): number {
 	return envInt("PI_TIMER_MAX_WAIT_S", DEFAULT_HEADLESS_MAX_WAIT_S) * 1000;
+}
+
+/**
+ * Heartbeat cadence for a blocked wait: ~20 updates spread over the whole wait,
+ * floored at 30s and ceilinged at 5min. Adaptive rather than fixed because the
+ * point is "this call is alive", not a clock: 20 ticks proves that for a 2-minute
+ * wait and for an 8-hour one alike, while a fixed 30s would emit 960 updates for
+ * the latter — and pi-agent-core keeps one promise per update in an array it
+ * awaits when execute() resolves (dist/agent-loop.js:454-469), so update count is
+ * not free. The floor keeps short waits from spamming, the ceiling keeps a very
+ * long wait from ever looking frozen for more than 5 minutes.
+ * PI_TIMER_HEARTBEAT_MS overrides the interval outright (tests use it).
+ */
+const HEARTBEAT_FRACTION = 20;
+const HEARTBEAT_MIN_MS = 30_000;
+const HEARTBEAT_MAX_MS = 5 * 60_000;
+
+function heartbeatIntervalMs(waitMs: number): number {
+	const override = envInt("PI_TIMER_HEARTBEAT_MS", 0);
+	if (override > 0) return override;
+	return Math.min(HEARTBEAT_MAX_MS, Math.max(HEARTBEAT_MIN_MS, Math.round(waitMs / HEARTBEAT_FRACTION)));
 }
 
 /**
@@ -210,10 +240,10 @@ export default function timerExtension(pi: ExtensionAPI) {
 		name: "timer",
 		label: "Timer",
 		description:
-			"Wait out a long task (build, tests, deploy, download): start it in the background, then call timer. How the wait works depends on the run mode, and the tool result says which happened: either it blocks and returns when the time is up (continue working then), or it arms a wake-up message and tells you to end your turn. Follow the result text, not this description. One timer; new set replaces old.",
+			"Wait out a long task (build, tests, deploy, download): start it in the background, then call timer with the full time you need. How the wait works depends on the run mode, and the tool result says which happened: either it blocks for the whole duration and returns when the time is up (continue working then), or it arms a wake-up message and tells you to end your turn. Follow the result text, not this description. One timer; new set replaces old.",
 		parameters: timerParams,
 
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			sessionId = ctx.sessionManager.getSessionId();
 			const interactive = isInteractive(ctx);
 			if (params.action === "cancel") {
@@ -244,9 +274,18 @@ export default function timerExtension(pi: ExtensionAPI) {
 				// cannot exit and no wake-up (which nothing here could deliver) is promised.
 				const requestedMs = params.seconds * 1000;
 				const maxWaitMs = headlessMaxWaitMs();
-				const waitMs = Math.min(requestedMs, maxWaitMs);
+				const waitMs = maxWaitMs > 0 ? Math.min(requestedMs, maxWaitMs) : requestedMs;
 				const startedAt = Date.now();
-				const { aborted } = await waitOrAbort(waitMs, signal);
+				// Progress, so a long block never looks frozen: same channel the child-session
+				// tools use (lib/child-session.ts pushStatus), rendered as a live tool update.
+				const heartbeat = setInterval(() => {
+					const elapsed = Date.now() - startedAt;
+					const remainingS = Math.max(0, Math.round((waitMs - elapsed) / 1000));
+					onUpdate?.(
+						ok(`Timer "${name}": waiting — ${Math.round(elapsed / 1000)}s elapsed, ${remainingS}s remaining.`),
+					);
+				}, heartbeatIntervalMs(waitMs));
+				const { aborted } = await waitOrAbort(waitMs, signal).finally(() => clearInterval(heartbeat));
 				const elapsedS = Math.round((Date.now() - startedAt) / 1000);
 				if (aborted) {
 					return ok(
@@ -254,6 +293,7 @@ export default function timerExtension(pi: ExtensionAPI) {
 					);
 				}
 				if (waitMs < requestedMs) {
+					// Only reachable with PI_TIMER_MAX_WAIT_S set: loop instead of one long block.
 					const remainingS = Math.max(1, Math.round((requestedMs - waitMs) / 1000));
 					return ok(
 						`Timer "${name}": waited ${elapsedS}s of the ${params.seconds}s requested (one wait is capped at ${Math.round(maxWaitMs / 1000)}s). ${remainingS}s still to go — check the task; if it is not finished, call timer again with seconds: ${remainingS}. Keep working in this turn.`,

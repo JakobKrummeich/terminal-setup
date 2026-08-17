@@ -50,6 +50,40 @@ function headlessSession(mode: ExtensionMode, script: Parameters<typeof createTe
 	});
 }
 
+/** Text of every `onUpdate` partial the timer tool pushes, in order. */
+function collectToolUpdates(t: { session: { subscribe(fn: (e: unknown) => void): unknown } }): string[] {
+	const updates: string[] = [];
+	t.session.subscribe((event: unknown) => {
+		const e = event as {
+			type?: string;
+			toolName?: string;
+			partialResult?: { content?: Array<{ type?: string; text?: string }> };
+		};
+		if (e.type !== "tool_execution_update" || e.toolName !== "timer") return;
+		updates.push(
+			(e.partialResult?.content ?? [])
+				.filter((c) => c?.type === "text")
+				.map((c) => c.text ?? "")
+				.join("\n"),
+		);
+	});
+	return updates;
+}
+
+/** Run `fn` with env vars set, restoring exactly what was there before. */
+async function withEnv(vars: Record<string, string>, fn: () => Promise<void>): Promise<void> {
+	const previous = Object.entries(vars).map(([k]) => [k, process.env[k]] as const);
+	Object.assign(process.env, vars);
+	try {
+		await fn();
+	} finally {
+		for (const [k, v] of previous) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	}
+}
+
 /**
  * A long agent run: the agent sets a timer, then keeps calling tools for much
  * longer than the timer duration, sets a second timer, and only stops at the end.
@@ -208,9 +242,9 @@ test("headless: the result never tells the agent to end its turn", async () => {
 	}
 });
 
-test("headless: aborting the tool call ends the wait promptly and leaves no timer", async () => {
+test("headless: aborting a long wait ends it promptly and leaves no timer", async () => {
 	const t = await headlessSession("print", [
-		toolStep("s1", "timer", { action: "set", name: "long", seconds: 300 }),
+		toolStep("s1", "timer", { action: "set", name: "long", seconds: 3600 }),
 		textStep("never reached"),
 	]);
 	try {
@@ -220,7 +254,7 @@ test("headless: aborting the tool call ends the wait promptly and leaves no time
 		await t.session.abort();
 		await run;
 		const elapsedMs = Date.now() - startedAt;
-		assert.ok(elapsedMs < 5000, `abort took ${elapsedMs}ms — the wait must be cut short, not run to 300s`);
+		assert.ok(elapsedMs < 5000, `abort took ${elapsedMs}ms — the wait must be cut short, not run to 3600s`);
 
 		const results = toolResultTexts(t);
 		assert.ok(
@@ -241,10 +275,9 @@ test("headless: aborting the tool call ends the wait promptly and leaves no time
 	}
 });
 
-test("headless: a wait longer than the cap returns after the cap and asks to be called again", async () => {
-	const previous = process.env.PI_TIMER_MAX_WAIT_S;
-	process.env.PI_TIMER_MAX_WAIT_S = "1"; // stand-in for the 600s default
-	try {
+test("headless: PI_TIMER_MAX_WAIT_S caps the wait and asks to be called again", async () => {
+	// Opt-in only: the default is no cap, so this env var is the whole feature.
+	await withEnv({ PI_TIMER_MAX_WAIT_S: "1" }, async () => {
 		const t = await headlessSession("print", [
 			toolStep("s1", "timer", { action: "set", name: "slow", seconds: 3 }),
 			textStep("checked"),
@@ -265,10 +298,73 @@ test("headless: a wait longer than the cap returns after the cap and asks to be 
 		} finally {
 			t.dispose();
 		}
-	} finally {
-		if (previous === undefined) delete process.env.PI_TIMER_MAX_WAIT_S;
-		else process.env.PI_TIMER_MAX_WAIT_S = previous;
-	}
+	});
+});
+
+// The cap used to default to 600s. Chopping a long wait into re-callable chunks
+// costs one full LLM round-trip per chunk at whatever the context happens to be,
+// so the default is now "wait exactly as long as you were asked to". Proven from
+// the heartbeat's own remaining-time figure: a clamped wait would count down from
+// the cap, not from the hour that was requested.
+test("headless: a wait far longer than the old 600s default is not clamped", async () => {
+	await withEnv({ PI_TIMER_HEARTBEAT_MS: "50" }, async () => {
+		const t = await headlessSession("print", [
+			toolStep("s1", "timer", { action: "set", name: "hour", seconds: 3600 }),
+			textStep("never reached"),
+		]);
+		const updates = collectToolUpdates(t);
+		try {
+			const run = t.session.prompt("start");
+			await sleep(LLM_DELAY_MS + 250);
+			assert.ok(updates.length > 0, "no progress update was emitted while blocked");
+
+			const remaining = updates
+				.map((text) => /(\d+)s remaining/.exec(text)?.[1])
+				.filter((v): v is string => v !== undefined)
+				.map(Number);
+			assert.ok(remaining.length > 0, `progress updates carry no remaining time: ${JSON.stringify(updates)}`);
+			assert.ok(
+				remaining[0] > 3500,
+				`first update reported ${remaining[0]}s remaining — the 3600s request was clamped`,
+			);
+
+			await t.session.abort();
+			await run;
+			assert.ok(
+				toolResultTexts(t).some((text) => text.includes('of 3600s requested')),
+				"the abort result must report the full requested duration",
+			);
+		} finally {
+			t.dispose();
+		}
+	});
+});
+
+test("headless: progress updates are emitted while the call is blocked", async () => {
+	await withEnv({ PI_TIMER_HEARTBEAT_MS: "50" }, async () => {
+		const t = await headlessSession("print", [
+			toolStep("s1", "timer", { action: "set", name: "build", seconds: 0.6 }),
+			textStep("done"),
+		]);
+		const updates = collectToolUpdates(t);
+		try {
+			await t.session.prompt("start");
+			assert.ok(
+				updates.length >= 3,
+				`a blocked call must not look frozen: got ${updates.length} updates over a 600ms wait`,
+			);
+			for (const text of updates) {
+				assert.match(text, /^Timer "build": waiting — \d+s elapsed, \d+s remaining\.$/);
+			}
+			// Updates are progress, not the result: the result still arrives at the end.
+			assert.ok(
+				toolResultTexts(t).some((text) => text.startsWith('Timer "build" fired after')),
+				"the final result must still be the fired-after result",
+			);
+		} finally {
+			t.dispose();
+		}
+	});
 });
 
 test("headless: cancel reports that there is nothing armed to cancel", async () => {
