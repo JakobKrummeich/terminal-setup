@@ -61,9 +61,9 @@ git clone git@github.com:JakobKrummeich/terminal-setup.git ~/codingprojects/term
 ```
 
 This links pi extensions/themes/skills, copies pi settings if missing,
-installs/links `rtk`, and installs the shell `wsstate.sh` hook. For Pi `0.83.0`
-and `0.84.1`, it also applies a version-and-hash-guarded Azure Responses
-hidden-error retry workaround. Installer fails after a Pi upgrade until patch is
+installs/links `rtk`, and installs the shell `wsstate.sh` hook. For Pi
+`0.83.0`, `0.84.1`, and `0.84.2`, it also applies a version-and-hash-guarded
+Azure Responses hidden-error retry workaround. Installer fails after a Pi upgrade until patch is
 reviewed or removed. It does not install/link WezTerm or tmux.
 
 Then install apps themselves if flagged:
