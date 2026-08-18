@@ -26,7 +26,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as trackerModule from "../agent-busy-tracker.ts";
 
-type Handler = (event?: unknown) => void;
+type Handler = (event?: unknown, ctx?: unknown) => void;
+
+/** Handlers see the live ExtensionContext; only .mode matters here. */
+const TUI_CTX = { mode: "tui" };
 type ExtensionFn = (pi: { on: (event: string, handler: Handler) => void }) => void;
 
 // ESM/CJS interop unwrap, same pattern as kill-switch.test.ts.
@@ -44,10 +47,10 @@ function loadTracker(): Map<string, Handler> {
 	return handlers;
 }
 
-function fire(handlers: Map<string, Handler>, event: string, payload?: unknown): void {
+function fire(handlers: Map<string, Handler>, event: string, payload?: unknown, ctx: unknown = TUI_CTX): void {
 	const handler = handlers.get(event);
 	assert.ok(handler, `extension subscribed to ${event}`);
-	handler(payload);
+	handler(payload, ctx);
 }
 
 // Event payloads mirror what agent-session.js actually emits: args ride on
@@ -68,9 +71,15 @@ const timerEnd = (toolCallId: string, isError = false) => ({
 });
 
 /** One full timer tool call: start (with args) then end (without). */
-function timerCall(handlers: Map<string, Handler>, id: string, action: string, isError = false): void {
-	fire(handlers, "tool_execution_start", timerStart(id, action));
-	fire(handlers, "tool_execution_end", timerEnd(id, isError));
+function timerCall(
+	handlers: Map<string, Handler>,
+	id: string,
+	action: string,
+	isError = false,
+	ctx: unknown = TUI_CTX,
+): void {
+	fire(handlers, "tool_execution_start", timerStart(id, action), ctx);
+	fire(handlers, "tool_execution_end", timerEnd(id, isError), ctx);
 }
 
 /**
@@ -193,6 +202,20 @@ test("cancel disarms; errored and foreign tool calls never arm", () => {
 		timerCall(handlers, "t7", "set");
 		assert.deepEqual(
 			emittedStates(captureStdout(() => fire(handlers, "session_shutdown"))),
+			["free"],
+		);
+	});
+});
+
+test("outside the TUI a successful set arms nothing — timer blocked, the wait is already over", () => {
+	withEnv("TMUX", undefined, () => {
+		const handlers = loadTracker();
+		fire(handlers, "session_start");
+		// Same tool surface, headless ctx (pi -p / rpc / child): timer.ts blocks
+		// inside the call, so by tool_execution_end nothing is armed anymore.
+		timerCall(handlers, "t1", "set", false, { mode: "print" });
+		assert.deepEqual(
+			emittedStates(captureStdout(() => fire(handlers, "agent_end"))),
 			["free"],
 		);
 	});

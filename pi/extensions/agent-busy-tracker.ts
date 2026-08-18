@@ -16,9 +16,17 @@
  * (agent-session.js builds it from toolCallId/toolName/result/isError only),
  * so the two are joined by toolCallId. Aggregation lives in
  * wezterm/workspace-status.lua.
+ *
+ * A successful timer `set` only means "armed" on the INTERACTIVE path
+ * (ctx.mode === "tui", the same test timer.ts itself branches on): everywhere
+ * else timer BLOCKS inside the tool call and returns with the wait already
+ * over — nothing stays armed, so arming here would report a stale "waiting".
+ * Child sessions never get that far: they share the parent's stdout, so this
+ * extension registers nothing in them at all (inChildSession guard).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { inChildSession } from "./lib/child-session.ts";
 
 function emit(state: "waiting" | "free") {
 	try {
@@ -33,6 +41,10 @@ function emit(state: "waiting" | "free") {
 }
 
 export default function (pi: ExtensionAPI) {
+	// Children share the parent's terminal; their timers block (print mode) and
+	// never park anything. Same load/bind-time guard as wsstate.ts.
+	if (inChildSession()) return;
+
 	let waiting = false;
 	// toolCallId → requested timer action, harvested at execution start. Entries
 	// are consumed at execution end; turn/session boundaries clear stragglers
@@ -61,7 +73,8 @@ export default function (pi: ExtensionAPI) {
 		set(false);
 	});
 
-	pi.on("tool_execution_start", (e) => {
+	pi.on("tool_execution_start", (e, ctx) => {
+		if ((ctx as { mode?: unknown }).mode !== "tui") return;
 		if (e.toolName !== "timer") return;
 		const action = (e.args as { action?: string } | undefined)?.action;
 		if (typeof action === "string") pendingAction.set(e.toolCallId, action);

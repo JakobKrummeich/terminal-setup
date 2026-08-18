@@ -50,10 +50,14 @@ const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..")
 // imports from its real location (same trick as child-contract.test.ts).
 const childExtDir = path.join(process.env.PI_CODING_AGENT_DIR, "extensions");
 mkdirSync(childExtDir, { recursive: true });
-writeFileSync(
-	path.join(childExtDir, "timer.ts"),
-	`export { default } from ${JSON.stringify(path.join(EXT_DIR, "timer.ts"))};\n`,
-);
+// wsstate + agent-busy-tracker ride along like in a production child (children
+// load the whole extensions dir): both must detect the child and stay silent.
+for (const name of ["timer.ts", "wsstate.ts", "agent-busy-tracker.ts"]) {
+	writeFileSync(
+		path.join(childExtDir, name),
+		`export { default } from ${JSON.stringify(path.join(EXT_DIR, name))};\n`,
+	);
+}
 
 // The child's tool calls flow through ChildView's ToolExecutionComponent,
 // which needs an initialized theme.
@@ -143,6 +147,15 @@ test("a real child's timer blocks inside the tool call (print mode), no wake-up,
 		],
 		calls,
 	);
+	// Capture everything the child writes to the shared stdout: a child's
+	// wsstate/agent-busy-tracker emission would corrupt the parent terminal's
+	// workspace state (child agent_end → "idle"/"waiting" mid-parent-run).
+	const stdoutChunks: string[] = [];
+	const originalWrite = process.stdout.write.bind(process.stdout);
+	process.stdout.write = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
+		stdoutChunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
+		return (originalWrite as (...a: unknown[]) => boolean)(chunk, ...rest);
+	}) as typeof process.stdout.write;
 	try {
 		const startedAt = Date.now();
 		const resultPromise = runChildTool(
@@ -192,7 +205,13 @@ test("a real child's timer blocks inside the tool call (print mode), no wake-up,
 			!calls[1].messages.includes("End your turn"),
 			"the blocking result never tells the child to end its turn",
 		);
+
+		// The child loaded wsstate.ts and agent-busy-tracker.ts like production
+		// children do — and emitted NO terminal-state OSC: both are main-session-only.
+		const osc = stdoutChunks.filter((c) => c.includes("SetUserVar=ws"));
+		assert.deepEqual(osc, [], "child must not write wsstate/wswait to the shared stdout");
 	} finally {
+		process.stdout.write = originalWrite;
 		for (const record of liveChildren.values()) record.session.dispose();
 		liveChildren.clear();
 	}
