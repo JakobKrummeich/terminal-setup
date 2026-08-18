@@ -11,7 +11,11 @@
  *
  * Deliberately standalone: timer.ts and wsstate.ts know nothing about this
  * file. Detection uses the timer tool's public contract (name + args), the
- * same surface the LLM sees. Aggregation lives in wezterm/workspace-status.lua.
+ * same surface the LLM sees. The args ride on tool_execution_start; the
+ * verdict (isError) on tool_execution_end — pi's end event carries NO args
+ * (agent-session.js builds it from toolCallId/toolName/result/isError only),
+ * so the two are joined by toolCallId. Aggregation lives in
+ * wezterm/workspace-status.lua.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -30,23 +34,44 @@ function emit(state: "waiting" | "free") {
 
 export default function (pi: ExtensionAPI) {
 	let waiting = false;
+	// toolCallId → requested timer action, harvested at execution start. Entries
+	// are consumed at execution end; turn/session boundaries clear stragglers
+	// (an aborted call may never see its end event).
+	const pendingAction = new Map<string, string>();
 
 	function set(next: boolean) {
 		waiting = next;
 		emit(waiting ? "waiting" : "free");
 	}
 
-	pi.on("session_start", () => set(false));
-	pi.on("session_shutdown", () => set(false));
+	pi.on("session_start", () => {
+		pendingAction.clear();
+		set(false);
+	});
+	pi.on("session_shutdown", () => {
+		pendingAction.clear();
+		set(false);
+	});
 
 	// A wake always starts a turn (timer expiry injects a user message), and a
 	// human typing also starts one — either way the park is over. No second
 	// clock here: durations stay owned by timer.ts.
-	pi.on("agent_start", () => set(false));
+	pi.on("agent_start", () => {
+		pendingAction.clear();
+		set(false);
+	});
+
+	pi.on("tool_execution_start", (e) => {
+		if (e.toolName !== "timer") return;
+		const action = (e.args as { action?: string } | undefined)?.action;
+		if (typeof action === "string") pendingAction.set(e.toolCallId, action);
+	});
 
 	pi.on("tool_execution_end", (e) => {
-		if (e.toolName !== "timer" || e.isError) return;
-		const action = (e.args as { action?: string } | undefined)?.action;
+		if (e.toolName !== "timer") return;
+		const action = pendingAction.get(e.toolCallId);
+		pendingAction.delete(e.toolCallId);
+		if (e.isError) return;
 		if (action === "set") waiting = true;
 		else if (action === "cancel") waiting = false;
 	});
