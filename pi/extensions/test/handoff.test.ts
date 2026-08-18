@@ -11,10 +11,19 @@ import test from "node:test";
 import * as handoffModule from "../handoff.ts";
 import { handoffLineBudget, handoffSections } from "../lib/handoff-writer.ts";
 
-const { HANDOFF_PROMPT, HANDOFF_PREAMBLE } = handoffModule as unknown as {
+const { HANDOFF_PROMPT, HANDOFF_PREAMBLE, extractHandoffSummary } = handoffModule as unknown as {
 	HANDOFF_PROMPT: string;
 	HANDOFF_PREAMBLE: string;
+	extractHandoffSummary: (
+		branch: Array<{ type: string; message?: { role?: string; stopReason?: string; content?: unknown } }>,
+	) => { ok: true; text: string } | { ok: false; reason: string };
 };
+
+const assistant = (content: unknown, stopReason = "stop") => ({
+	type: "message",
+	message: { role: "assistant", stopReason, content },
+});
+const user = (text: string) => ({ type: "message", message: { role: "user", content: text } });
 
 // ESM/CJS interop unwrap, same pattern as kill-switch.test.ts.
 type ExtensionFn = (pi: unknown) => void;
@@ -48,6 +57,36 @@ test("preamble matches context-cap's swap preamble byte for byte", () => {
 		HANDOFF_PREAMBLE,
 		"You are continuing work from a previous session. The agent before you left you this information:",
 	);
+});
+
+test("harvest accepts only a clean, non-empty reply", () => {
+	const doc = "## Current Task\nfinish the demo";
+	assert.deepEqual(
+		extractHandoffSummary([user("prompt"), assistant([{ type: "text", text: doc }])]),
+		{ ok: true, text: doc },
+	);
+	assert.deepEqual(extractHandoffSummary([assistant(doc)]), { ok: true, text: doc }, "string content");
+	// The newest assistant message wins — never an older one.
+	const r = extractHandoffSummary([assistant("old reply"), user("prompt"), assistant("new doc")]);
+	assert.deepEqual(r, { ok: true, text: "new doc" });
+});
+
+test("harvest rejects errored, aborted and empty replies — even with partial text", () => {
+	// Observed live: a timed-out request synthesizes stopReason 'error'. With
+	// partial streamed text attached, seeding it would ship a truncated handoff.
+	const errored = extractHandoffSummary([
+		assistant([{ type: "text", text: "## Current Task\ntruncated half-docu" }], "error"),
+	]);
+	assert.equal(errored.ok, false);
+	assert.match((errored as { reason: string }).reason, /failed.*run \/handoff again/);
+
+	const aborted = extractHandoffSummary([assistant("partial", "aborted")]);
+	assert.equal(aborted.ok, false);
+	assert.match((aborted as { reason: string }).reason, /aborted.*run \/handoff again/);
+
+	assert.equal(extractHandoffSummary([assistant([])]).ok, false, "empty reply");
+	assert.equal(extractHandoffSummary([assistant("   ")]).ok, false, "whitespace-only reply");
+	assert.equal(extractHandoffSummary([user("prompt only")]).ok, false, "no assistant at all");
 });
 
 test("extension registers the /handoff command", () => {
