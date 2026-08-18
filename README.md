@@ -206,10 +206,13 @@ nesting at one layer (structural, not a counter — nothing to configure).
 - **F2** opens the child's live conversation, `Esc` returns. The child keeps running either
   way. The key is one constant in the file plus the `PI_SUBAGENT_WATCH_KEY` env override.
 - The watch view uses pi's own message and tool components, so a child's `bash`, `edit` etc.
-  look exactly like they do in the main session. It scrolls with `↑`/`↓`, `PgUp`/`PgDn`,
-  `Home`/`End` (keyboard only — pi never enables mouse tracking), follows the tail until you
-  scroll away, and `Ctrl+O` expands tool output. Being an overlay, it leaves no residue in
-  the main transcript on `Esc`.
+  look exactly like they do in the main session. It scrolls with the mouse wheel, `↑`/`↓`, `PgUp`/`PgDn`,
+  `Home`/`End`, follows the tail until you scroll away, and `Ctrl+O` expands tool output. The view renders on the terminal's
+  **alternate screen** (vim/less style): the main screen and its scrollback are untouchable
+  while it is up, and `Esc` restores the exact pre-F2 screen — no watch-view rows can end up
+  mingled into the parent transcript's history. (Coupled to pi-tui's internal
+  capture/restoreRenderState API; if a pi update removes it, F2 degrades to the old
+  main-screen overlay.)
 - Child sessions are persisted (named `agent#<id>`), so a finished run can be reopened from
   the session picker and audited.
 - A child that needs a decision just asks; the main agent answers by calling `Agent` again
