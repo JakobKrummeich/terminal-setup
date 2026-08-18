@@ -186,7 +186,7 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | `lib/child-session.ts` | shared child-session plumbing for `subagent.ts` and `explore.ts` (not an extension: pi's loader only scans top-level `*.ts`) |
 | `lib/pending-work.ts` | cross-extension "this session is not finished yet" claims (globalThis-backed, because pi loads every extension file with its own jiti instance and `moduleCache: false`). Claims can carry a `cancel` callback; `cancelPendingWork()` disarms and clears everything for a session. `timer.ts` is currently the only producer — and only in interactive mode, where it arms a wake-up that outlives the run |
 | `lib/session-quiet.ts` | `waitForSessionQuiet()`: the definition of "child is done" — agent idle *and* no queued steer/follow-up messages (bounded grace) *and* no pending-work claims |
-| `handoff.ts` | session handoff summaries |
+| `handoff.ts` | `/handoff` command: the agent writes a handoff document as a normal reply (same schema + line budget as context-cap — both quote `lib/handoff-writer.ts`, so the `CONTEXT_CAP_SCHEMA` lever governs both), then a fresh session is seeded with it under the same preamble as a cap swap — but with `triggerTurn: false`: the successor waits for the user instead of continuing on its own |
 | `markdown-no-padding.ts` | strip paddingX=1 from rendered markdown (copy-safety); patches pi-tui internals — re-verify after `pi update` |
 | `rtk.ts` / `rtk-tools.ts` | route tool calls through rtk token filter |
 | `subagent.ts` | `Agent` tool: delegate a task to a child agent session, capped at one layer deep. Press **F2** to watch the running child live in the normal TUI style, `Esc` to step back out (override the key with `PI_SUBAGENT_WATCH_KEY`) |

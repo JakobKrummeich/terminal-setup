@@ -1,12 +1,28 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { handoffLineBudget, handoffSections } from "./lib/handoff-writer.ts";
 
-const HANDOFF_PROMPT = `Write a handoff as assistant message for the next agent who continues your work. Plain markdown, ~30 lines total:
-- A brief summary of this session and current status
-- Key file paths that were worked on
-- Information you found surprising or where you struggled
-- Information that you think help the next agent`;
+/**
+ * Reply-mode variant of context-cap's handoff request. The section list and
+ * line budget come from the SAME source (lib/handoff-writer.ts), so the
+ * CONTEXT_CAP_SCHEMA lever governs /handoff and the caps alike — one schema,
+ * two delivery mechanisms. The differences are deliberate:
+ *  - the document is a normal assistant reply harvested from the transcript,
+ *    not a context_handoff tool call (hence the explicit tool ban — the tool
+ *    would be refused anyway with no cycle armed, but noisily);
+ *  - the successor session is seeded with it and does NOT auto-continue
+ *    (triggerTurn: false below): the user stays in the driver's seat, so no
+ *    "Continue your work." suffix either.
+ */
+export const HANDOFF_PROMPT = `Write the handoff document your successor session starts from, as your reply. The next session sees this document and nothing else — no conversation history, no tool output. Anything you leave out is lost; be concrete (real paths, real commands, real state) and mark every unverified claim as unverified.
 
-const HANDOFF_PREAMBLE =
+Plain markdown, ~${handoffLineBudget()} lines total:
+${handoffSections()}
+
+Reply with the document only — no preamble, no sign-off, no code fence around the whole document, and do NOT call any tools (not even context_handoff: this handoff is harvested from your reply, not from a file).`;
+
+// Matches context-cap.ts's PREAMBLE byte for byte — successors read the same
+// opening line whether the handoff came from a cap swap or from /handoff.
+export const HANDOFF_PREAMBLE =
 	"You are continuing work from a previous session. The agent before you left you this information:";
 
 export default function handoffExtension(pi: ExtensionAPI) {
