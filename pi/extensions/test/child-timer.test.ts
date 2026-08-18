@@ -1,26 +1,26 @@
 /**
- * A REAL child session's timer takes the BLOCKING path — the contract behind
- * "timer works differently in a subagent than in the main agent".
+ * Child sessions get NO timer tool — "timer works differently in a subagent"
+ * resolved by not offering it there at all.
  *
- * Why this is worth pinning: child-session.ts binds child extensions with
- * `session.bindExtensions({})`, and it is pi's ExtensionRunner DEFAULT
- * (`mode = "print"`, dist/core/extensions/runner.js) that makes timer's
- * isInteractive() false in every child, even when the parent runs under the
- * TUI. Nothing in this repo states that mode; if a pi update ever changed the
- * default (or started inheriting the parent's mode), children would silently
- * flip to the async wake-up path. That flip would still be bridged by the
- * pending-work machinery (session-quiet.test.ts covers it with a forced
- * mode: "tui"), but the observable semantics change: the child goes idle
- * mid-wait, claims pending work, and is woken by an injected user message.
- * This test fails loudly on that day instead of letting the semantics drift.
+ * Why: a child binds its extensions with `session.bindExtensions({})`, and pi's
+ * ExtensionRunner defaults `mode` to "print" (dist/core/extensions/runner.js),
+ * so a child timer could only ever take the BLOCKING path — which buys nothing
+ * over `bash sleep N` (nothing in pi times a tool call out) while costing
+ * tool-listing tokens in every child prompt and inviting park-semantics
+ * confusion. timer.ts therefore registers nothing in children (bind-time
+ * inChildSession() guard, same pattern as wsstate.ts / agent-busy-tracker.ts).
+ * Explorers never had it (readonly allowlist); this covers agent children too.
  *
- * Blocking-path fingerprints asserted here, on a child driven through the real
- * runChildTool + the real timer extension:
- *  - the tool call itself spans the wait (parent's call is held >= the wait);
- *  - the post-wait LLM call sees the blocking TOOL RESULT ("fired after Ns")
- *    and NO injected wake-up user message ("expired." is the async text);
- *  - the child never claims pending work during the wait (the async path
- *    claims from the moment the timer is set).
+ * Pinned here on a REAL child driven through runChildTool, with timer.ts (and
+ * the two OSC extensions) present in the child's extensions dir like in
+ * production:
+ *  - a scripted timer call comes back "Tool timer not found" — the tool is
+ *    structurally absent, not merely discouraged;
+ *  - nothing blocks: the child's run completes far quicker than the requested
+ *    wait, and no pending-work claim is left behind;
+ *  - the child emits NO wsstate/wswait OSC on the shared stdout (those
+ *    extensions are main-session-only, agent-busy-tracker.test.ts has the
+ *    positive side).
  */
 
 // Children resolve their agent dir and session dir from the environment; point
@@ -45,13 +45,13 @@ import { type ResponseStep, type ScriptedStep, sleep, textStep, toolStep } from 
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 
-// Children discover extensions in <agentDir>/extensions. A re-export wrapper
-// (real file, not a symlink) lets the repo's timer.ts resolve its relative
+// Children discover extensions in <agentDir>/extensions. Re-export wrappers
+// (real files, not symlinks) let each repo extension resolve its relative
 // imports from its real location (same trick as child-contract.test.ts).
+// wsstate + agent-busy-tracker ride along like in a production child: all three
+// must detect the child at bind time and register nothing.
 const childExtDir = path.join(process.env.PI_CODING_AGENT_DIR, "extensions");
 mkdirSync(childExtDir, { recursive: true });
-// wsstate + agent-busy-tracker ride along like in a production child (children
-// load the whole extensions dir): both must detect the child and stay silent.
 for (const name of ["timer.ts", "wsstate.ts", "agent-busy-tracker.ts"]) {
 	writeFileSync(
 		path.join(childExtDir, name),
@@ -63,7 +63,7 @@ for (const name of ["timer.ts", "wsstate.ts", "agent-busy-tracker.ts"]) {
 // which needs an initialized theme.
 initTheme(undefined, false);
 
-const TIMER_SECONDS = 2;
+const TIMER_SECONDS = 30;
 
 const CHILD_OPTIONS = {
 	kind: "agent",
@@ -138,12 +138,12 @@ async function makeCtx(script: ScriptedStep[], calls: CapturedCall[]): Promise<E
 	} as unknown as ExtensionContext;
 }
 
-test("a real child's timer blocks inside the tool call (print mode), no wake-up, no claim", async () => {
+test("a real child has no timer tool: call errors fast, nothing blocks, no OSC, no claim", async () => {
 	const calls: CapturedCall[] = [];
 	const ctx = await makeCtx(
 		[
 			toolStep("t1", "timer", { action: "set", name: "childwait", seconds: TIMER_SECONDS }),
-			textStep("final report after the wait"),
+			textStep("final report without waiting"),
 		],
 		calls,
 	);
@@ -158,56 +158,42 @@ test("a real child's timer blocks inside the tool call (print mode), no wake-up,
 	}) as typeof process.stdout.write;
 	try {
 		const startedAt = Date.now();
-		const resultPromise = runChildTool(
-			{ prompt: "wait it out, then report", description: "child timer blocking" },
+		const result = await runChildTool(
+			{ prompt: "try to wait, then report", description: "child without timer" },
 			CHILD_OPTIONS,
 			undefined,
 			undefined,
 			ctx,
 		);
-
-		// Mid-wait probe: find the child and check it holds NO pending-work claim.
-		// The async path claims from the moment the timer is set; the blocking
-		// path never does — the in-flight tool call itself is the pending work.
-		let childSessionId: string | undefined;
-		for (let i = 0; i < 100 && childSessionId === undefined; i++) {
-			await sleep(20);
-			for (const record of liveChildren.values()) {
-				childSessionId = record.session.sessionManager.getSessionId();
-			}
-		}
-		assert.ok(childSessionId, "child session must appear in the registry");
-		await sleep((TIMER_SECONDS * 1000) / 2); // now mid-wait, if it blocks
-		assert.equal(hasPendingWork(childSessionId), false, "blocking path must not claim pending work");
-
-		const result = await resultPromise;
 		const elapsed = Date.now() - startedAt;
 		const text = result.content[0]?.text ?? "";
 
-		// The harvested report only exists after the wait: the call spanned it.
-		assert.match(text, /final report after the wait/);
-		assert.ok(
-			elapsed >= TIMER_SECONDS * 1000 - 50,
-			`parent's tool call must span the wait (took ${elapsed}ms)`,
-		);
+		// The child recovered from the missing tool and its report is harvested —
+		// long before the requested 30s wait could have elapsed.
+		assert.match(text, /final report without waiting/);
+		assert.ok(elapsed < TIMER_SECONDS * 1000, `run must not block on the timer (took ${elapsed}ms)`);
 
-		// The post-wait LLM call saw the blocking tool RESULT, not a wake-up.
-		assert.equal(calls.length, 2, "set + final answer, nothing else");
+		// The timer call itself came back as a structural error: not registered.
+		assert.equal(calls.length, 2, "timer attempt + final answer");
 		assert.ok(
-			calls[1].messages.includes("fired after"),
-			"post-wait call must carry the blocking result ('fired after Ns')",
+			calls[1].messages.includes("Tool timer not found"),
+			"the child's timer call must fail as an unknown tool",
 		);
-		assert.ok(
-			!calls[1].messages.includes("expired."),
-			"no injected wake-up user message (that is the interactive path)",
-		);
-		assert.ok(
-			!calls[1].messages.includes("End your turn"),
-			"the blocking result never tells the child to end its turn",
-		);
+		assert.ok(!calls[1].messages.includes("fired after"), "no blocking wait ran");
+		assert.ok(!calls[1].messages.includes("expired."), "no wake-up was injected");
+
+		// No pending-work claim outlives the call (the interactive path's claim
+		// machinery never engaged).
+		for (const record of liveChildren.values()) {
+			assert.equal(
+				hasPendingWork(record.session.sessionManager.getSessionId()),
+				false,
+				"child must hold no pending-work claim",
+			);
+		}
 
 		// The child loaded wsstate.ts and agent-busy-tracker.ts like production
-		// children do — and emitted NO terminal-state OSC: both are main-session-only.
+		// children do — and emitted NO terminal-state OSC: all main-session-only.
 		const osc = stdoutChunks.filter((c) => c.includes("SetUserVar=ws"));
 		assert.deepEqual(osc, [], "child must not write wsstate/wswait to the shared stdout");
 	} finally {

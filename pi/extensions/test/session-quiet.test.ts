@@ -5,9 +5,10 @@
  * parent-side behavior, minus the TUI.
  *
  * The sessions that arm a timer run with `mode: "tui"`: only there does timer take
- * its async, claim-holding branch. In a real child (mode "print") the timer blocks
- * inside the tool call instead, so the child never goes idle mid-wait and this
- * primitive has nothing to bridge.
+ * its async, claim-holding branch. A real child has no timer tool at all (timer.ts
+ * registers nothing in child sessions — child-timer.test.ts), so today this
+ * primitive is a safety net: it is what keeps the Agent tool correct if any
+ * extension ever claims pending work in a child again.
  */
 
 import assert from "node:assert/strict";
