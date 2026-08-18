@@ -36,6 +36,8 @@ const CAP_DIR = path.join(os.homedir(), ".pi", "agent", "context-cap");
 const TAIL_BUDGET = 2000;
 /** ~5000 estimated tokens: far over the budget, so this turn MUST be cut away. */
 const HUGE_PROMPT = `OLD-PROMPT-SENTINEL ${"x".repeat(20_000)}`;
+/** Small second-run prompt: the earliest safe cut boundary inside the budget. */
+const SMALL_PROMPT = "NEW-TURN-SENTINEL — wrap up and hand off.";
 const HANDOFF_BODY = "## Current Task\nHANDOFF-SENTINEL — finish the demo.";
 
 interface CapturedContext {
@@ -96,7 +98,10 @@ test("the swapped-in context is [recent turns …, handoff], pairing-safe and in
 		tools: ["timer", "context_handoff"],
 		llmDelayMs: 10,
 		script: [
-			// 10 >= soft cap 5 with stopReason toolUse -> steer requesting a handoff.
+			// Run 1 (the oversized old turn): stays below the soft cap.
+			toolStep("sA", "timer", { action: "cancel" }, 2),
+			textStep("old work done", 2),
+			// Run 2: 10 >= soft cap 5 with stopReason toolUse -> steer requesting a handoff.
 			toolStep("s1", "timer", { action: "cancel" }, 10),
 			toolStep("h1", "context_handoff", { markdown: HANDOFF_BODY }, 10),
 			textStep("continued after swap", 2),
@@ -107,6 +112,7 @@ test("the swapped-in context is [recent turns …, handoff], pairing-safe and in
 
 	try {
 		await t.session.prompt(HUGE_PROMPT);
+		await t.session.prompt(SMALL_PROMPT);
 		assert.equal(t.session.isIdle, true);
 
 		const postSwap = contexts.find((c) =>
@@ -127,7 +133,11 @@ test("the swapped-in context is [recent turns …, handoff], pairing-safe and in
 		const all = postSwap.messages.map(textOf).join("\n");
 		assert.ok(!all.includes("OLD-PROMPT-SENTINEL"), "the oversized older turn must not fit the budget");
 		assert.equal(postSwap.messages[0].role, "user", "the tail starts at a complete turn");
-		assert.ok(textOf(postSwap.messages[0]).includes("CONTEXT LIMIT WARNING"), "…here, the steer that opened the cycle");
+		assert.ok(textOf(postSwap.messages[0]).includes("NEW-TURN-SENTINEL"), "…here, the second run's prompt");
+		// Structural staleness guarantee: the steer that opened the cycle sits in
+		// the kept region of the session, but its cycle is over (marker behind it)
+		// — the scrub must keep it away from the model, clause or no clause.
+		assert.ok(!all.includes("CONTEXT LIMIT WARNING"), "a swapped-away cycle's steer must be scrubbed from the tail");
 
 		// Forensics: the marker says the lever fired and how much it kept.
 		const marker = (t.session.messages as { role: string; customType?: string; details?: any }[]).find(

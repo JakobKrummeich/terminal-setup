@@ -15,7 +15,10 @@
  *
  * Also covered: a cycle whose context shrank under it (swap/compaction raced an
  * error, or the steer was dropped) must reset instead of demanding a handoff
- * from a fresh window, and cap messages must carry a stale-ignore clause.
+ * from a fresh window — and once it has reset, the already-delivered warning
+ * must be SCRUBBED from the LLM-visible context (the structural replacement for
+ * the old "if this looks stale, ignore it" clause: the model never reads a
+ * warning that no longer applies, so no clause is needed).
  */
 
 // Must be set before createTestSession loads the extension (env is read at module load).
@@ -49,6 +52,36 @@ function swapMarkers(t: TestSession): SwapMarker[] {
 
 function delivered(t: TestSession, needle: string): string[] {
 	return t.deliveredUserMessages.map((m) => m.text).filter((text) => text.includes(needle));
+}
+
+interface CapturedContext {
+	messages: { role: string; content?: unknown }[];
+}
+
+/** LLM-visible message arrays, one per call (same helper as context-cap-tail.test.ts). */
+function captureContexts(t: TestSession): CapturedContext[] {
+	const seen: CapturedContext[] = [];
+	const inner = t.session.agent.streamFunction;
+	t.session.agent.streamFunction = ((model: unknown, llmContext: any, options: unknown) => {
+		seen.push({ messages: llmContext?.messages ?? [] });
+		return inner(model, llmContext, options);
+	}) as any;
+	return seen;
+}
+
+function contextText(c: CapturedContext): string {
+	return c.messages
+		.map((m) =>
+			typeof m.content === "string"
+				? m.content
+				: Array.isArray(m.content)
+					? m.content
+							.filter((p: { type?: string }) => p?.type === "text")
+							.map((p: { text?: string }) => p.text ?? "")
+							.join("\n")
+					: "",
+		)
+		.join("\n");
 }
 
 function toolResultTexts(t: TestSession): string[] {
@@ -215,6 +248,7 @@ test("a cycle stranded in a fresh window resets instead of demanding a handoff",
 		],
 	});
 	const sessionId = t.session.sessionManager.getSessionId();
+	const contexts = captureContexts(t);
 
 	try {
 		await t.session.prompt("start");
@@ -225,8 +259,27 @@ test("a cycle stranded in a fresh window resets instead of demanding a handoff",
 		const steers = delivered(t, "CONTEXT LIMIT WARNING");
 		assert.equal(steers.length, 1, "the original steer was delivered");
 		assert.ok(
-			steers[0].includes("this warning is stale"),
-			"cap messages must carry the stale-ignore clause for late delivery",
+			!steers[0].includes("this warning is stale"),
+			"no self-invalidation clause — staleness is handled structurally by the scrub",
+		);
+
+		// Structural guarantee: while the cycle was armed the model saw the warning
+		// (call 2); after the shrink reset it, the SAME session message is scrubbed
+		// from the LLM view (call 3) — stale demands are invisible, not disclaimed.
+		assert.equal(contexts.length, 3, "three LLM calls");
+		assert.ok(
+			contextText(contexts[1]).includes("CONTEXT LIMIT WARNING"),
+			"the armed cycle's warning reaches the model",
+		);
+		assert.ok(
+			!contextText(contexts[2]).includes("[context-cap]"),
+			"after the reset the stranded warning must be scrubbed from the LLM view",
+		);
+		assert.ok(
+			(t.session.messages as { role: string; content?: unknown }[]).some(
+				(m) => m.role === "user" && JSON.stringify(m.content ?? "").includes("CONTEXT LIMIT WARNING"),
+			),
+			"the warning stays in the session file for forensics",
 		);
 
 		assert.equal(
