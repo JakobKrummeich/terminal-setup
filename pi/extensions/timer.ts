@@ -51,6 +51,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { inChildSession } from "./lib/child-session.ts";
 import { envInt } from "./lib/env.ts";
 import { claimPendingWork, releasePendingWork } from "./lib/pending-work.ts";
 
@@ -150,6 +151,16 @@ function err(text: string) {
 }
 
 export default function timerExtension(pi: ExtensionAPI) {
+	// MAIN SESSION ONLY. A child session (Agent tool) is always headless
+	// (bindExtensions({}) → mode "print"), so its timer could only ever take the
+	// blocking path — which buys nothing over `bash sleep N` (nothing in pi times
+	// a tool call out) while costing tool-listing tokens in every child prompt
+	// and inviting park-semantics confusion. Explorers already exclude timer via
+	// their readonly allowlist; this guard removes it from every other child kind
+	// too: the tool is not registered, so a child's prompt never offers it.
+	// Same bind-time ALS guard as wsstate.ts / agent-busy-tracker.ts.
+	if (inChildSession()) return;
+
 	let active: ActiveTimer | undefined;
 	let sessionId: string | undefined;
 	/** Expiry fired, wake-up run not settled yet — still pending work. */

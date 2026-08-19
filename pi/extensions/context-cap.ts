@@ -52,8 +52,15 @@
  *    un-aborted it via pi's queued-message rescue. Additionally: a cycle whose
  *    window shrank far below the soft trigger (swap/compaction raced an error;
  *    ESC silently drops extension-queued steers) resets instead of demanding a
- *    handoff from a fresh window, and every cap message carries a stale-ignore
- *    clause because pi's queues can deliver it arbitrarily late.
+ *    handoff from a fresh window. Stale WARNINGS are handled structurally, not
+ *    by instruction: pi's queues can deliver a cap message arbitrarily late, so
+ *    the `context` handler scrubs every "[context-cap]" user message the model
+ *    must not act on — any one behind the latest swap marker (its cycle is
+ *    over; only reachable via the recency-tail lever) and, when no cycle is
+ *    armed, the stranded ones too. A warning landing in a fresh post-swap
+ *    window is thus invisible on the very first call (swap = marker + reset),
+ *    and one stranded by a shrink is hidden from the call after the reset on.
+ *    The session file keeps them all for forensics.
  *  - pi's threshold auto-compaction stays naturally quiet: it keys off provider-
  *    reported usage, which post-swap reflects only the scrubbed context. It can
  *    still fire when a single message overshoots everything (contextWindow -
@@ -159,40 +166,47 @@ ${handoffSections(SCHEMA)}
 After the tool returns, end your turn. Your context will then be replaced by this handoff.`;
 
 // pi's steering/followUp queues can deliver a cap message arbitrarily late — a
-// network-errored run strands it until the next prompt, which may be a fresh
-// post-swap window where the demand is nonsense. Self-invalidate by instruction.
-const STALE_CLAUSE =
-	"(If your context looks fresh — a recent session-handoff summary, only a few messages — this warning is stale; ignore it and continue your work.)";
+// Every cap warning/reminder carries this prefix. It is the scrub key: the
+// `context` handler removes messages carrying it from the LLM view once their
+// demand no longer applies (see isCapWarning below), so no message here needs a
+// "if this looks stale, ignore it" clause — a stale one is never seen at all.
+const WARNING_PREFIX = "[context-cap]";
 
 function steerMessage(tokens: number, caps: ResolvedTriggers): string {
-	return `[context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at ${tokens} tokens (soft cap ${caps.soft}, hard cap ${caps.hard}).
+	return `${WARNING_PREFIX} ⚠️ CONTEXT LIMIT WARNING: your context is at ${tokens} tokens (soft cap ${caps.soft}, hard cap ${caps.hard}).
 
-Finish your current logical unit of work first. Then: ${CONTENT_SPEC}
-
-${STALE_CLAUSE}`;
+Finish your current logical unit of work first. Then: ${CONTENT_SPEC}`;
 }
 
 function silentStopMessage(tokens: number, caps: ResolvedTriggers): string {
-	return `[context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at ${tokens} tokens (soft cap ${caps.soft}, hard cap ${caps.hard}). This is your last turn before handoff.
+	return `${WARNING_PREFIX} ⚠️ CONTEXT LIMIT WARNING: your context is at ${tokens} tokens (soft cap ${caps.soft}, hard cap ${caps.hard}). This is your last turn before handoff.
 
-${CONTENT_SPEC}
-
-${STALE_CLAUSE}`;
+${CONTENT_SPEC}`;
 }
 
 /** One-jump crossing of the hard cap: demand the handoff NOW — no "finish your work first". */
 function hardSteerMessage(tokens: number, caps: ResolvedTriggers): string {
-	return `[context-cap] ⚠️ CONTEXT LIMIT EMERGENCY: your context jumped to ${tokens} tokens, past the hard cap ${caps.hard}. Do NOT start any new work. ${CONTENT_SPEC}
-
-${STALE_CLAUSE}`;
+	return `${WARNING_PREFIX} ⚠️ CONTEXT LIMIT EMERGENCY: your context jumped to ${tokens} tokens, past the hard cap ${caps.hard}. Do NOT start any new work. ${CONTENT_SPEC}`;
 }
 
 function reminderMessage(attempt: number): string {
-	return `[context-cap] No handoff was recorded — the \`${TOOL_NAME}\` tool was not called.
+	return `${WARNING_PREFIX} No handoff was recorded — the \`${TOOL_NAME}\` tool was not called.
 
-Call it now (see the earlier context-limit instructions), then end your turn. (reminder ${attempt}/${MAX_RETRIES})
+Call it now (see the earlier context-limit instructions), then end your turn. (reminder ${attempt}/${MAX_RETRIES})`;
+}
 
-${STALE_CLAUSE}`;
+/**
+ * A cap warning/reminder as it appears in the message array: a user message
+ * whose text starts with WARNING_PREFIX. Only the four messages above match —
+ * swap-marker content (PREAMBLE…) and handoff bodies never carry the prefix.
+ */
+function isCapWarning(message: unknown): boolean {
+	const m = (message ?? {}) as { role?: string; content?: unknown };
+	if (m.role !== "user") return false;
+	if (typeof m.content === "string") return m.content.startsWith(WARNING_PREFIX);
+	if (!Array.isArray(m.content)) return false;
+	const first = (m.content.find((c) => (c as { type?: string })?.type === "text") ?? {}) as { text?: string };
+	return typeof first.text === "string" && first.text.startsWith(WARNING_PREFIX);
 }
 
 const PREAMBLE =
@@ -823,26 +837,63 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 	// Slice the LLM context at the latest swap marker: the first post-swap call
 	// sees ONLY the handoff (converted to a user message by pi), later calls see
 	// handoff + post-swap turns. The session file always keeps full history.
+	//
+	// This handler runs before EVERY LLM call — the last gate between the session
+	// and the model — which makes it the place where stale cap warnings become
+	// structurally invisible (they stay in the session file for forensics):
+	//  1. Warnings behind the latest marker belong to a swapped-away cycle —
+	//     only reachable via the recency-tail lever — and are always scrubbed.
+	//  2. With no cycle armed, ANY warning is a stranded delivery (pi's queues
+	//     can deliver steers arbitrarily late, e.g. after an errored run; doSwap
+	//     and the shrink guard in message_end reset the cycle): scrubbed. The
+	//     clause-bearing case — a warning landing in a fresh post-swap window —
+	//     is covered structurally: post-swap means marker present and phase
+	//     reset, so the warning is invisible on the very first call.
+	//     While a cycle IS armed, its post-marker warnings stand.
+	// No token-estimate freshness check here, deliberately: the estimator only
+	// sees the message array while provider-reported usage also counts the system
+	// prompt and tools — comparing the two mis-fires (observed as a spurious
+	// mid-cycle reset in the model-switch test). Shrink detection stays in
+	// message_end, where real usage is authoritative.
 	pi.on("context", (event) => {
-		const msgs = event.messages;
-		for (let i = msgs.length - 1; i >= 0; i--) {
-			const m = msgs[i] as { role: string; customType?: string };
+		const original = event.messages;
+		let markerIndex = -1;
+		for (let i = original.length - 1; i >= 0; i--) {
+			const m = original[i] as { role: string; customType?: string };
 			if (m.role === "custom" && m.customType === MARKER_TYPE) {
-				// Recency tail: keep whole turns in front of the marker when the lever is
-				// on. TAIL_TOKENS = 0 ⇒ start === i ⇒ byte-identical to the pre-lever slice.
-				// The marker (and any post-swap turns) stay last: the handoff is the last
-				// thing the model reads. Deterministic in the prefix, so later calls in the
-				// same window cut at the same place and the prompt prefix stays cacheable.
-				const { start } = selectContextTail(msgs, i, TAIL_TOKENS);
-				const sliced = msgs.slice(start);
-				// Cache what the model actually sees — the machine writer hands off the
-				// live context, not the full session history behind the last marker.
-				lastContextMessages = start > 0 ? sliced : msgs;
-				return start > 0 ? { messages: sliced } : undefined;
+				markerIndex = i;
+				break;
 			}
 		}
+		const msgs = original.filter(
+			(m, i) => !isCapWarning(m) || (phase !== "idle" && i > markerIndex),
+		);
+		const scrubbed = msgs.length !== original.length;
+		if (markerIndex >= 0) {
+			// The marker survives the scrub by construction (custom role, never a cap
+			// warning), so it is still present in msgs; re-locate it there.
+			let marker = -1;
+			for (let i = msgs.length - 1; i >= 0; i--) {
+				const m = msgs[i] as { role: string; customType?: string };
+				if (m.role === "custom" && m.customType === MARKER_TYPE) {
+					marker = i;
+					break;
+				}
+			}
+			// Recency tail: keep whole turns in front of the marker when the lever is
+			// on. TAIL_TOKENS = 0 ⇒ start === marker ⇒ the pre-lever slice.
+			// The marker (and any post-swap turns) stay last: the handoff is the last
+			// thing the model reads. Deterministic in the prefix, so later calls in the
+			// same window cut at the same place and the prompt prefix stays cacheable.
+			const { start } = selectContextTail(msgs, marker, TAIL_TOKENS);
+			const sliced = start > 0 ? msgs.slice(start) : msgs;
+			// Cache what the model actually sees — the machine writer hands off the
+			// live context, not the full session history behind the last marker.
+			lastContextMessages = sliced;
+			return start > 0 || scrubbed ? { messages: [...sliced] } : undefined;
+		}
 		lastContextMessages = msgs;
-		return undefined;
+		return scrubbed ? { messages: [...msgs] } : undefined;
 	});
 
 	// -- events ---------------------------------------------------------------
