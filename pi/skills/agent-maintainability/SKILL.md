@@ -52,6 +52,19 @@ Neither agent nor human can verify their own correctness by inspection — an ex
 
 Types are grep-able documentation: an agent that finds the type finds the contract.
 
+## Write-Time Rationale Is Agent Memory
+
+A human contributor carries intent between sessions; an agent wakes with none.
+Rationale written at change-time, committed beside the code, is the only
+intent that survives the author's amnesia.
+
+- WHY-comments earn their place by one test: *without it, would a competent
+  reader plausibly re-litigate the decision or "fix" it into a regression?*
+  (Measured costs, rejected alternatives, external constraints, races — yes.)
+- WHAT-comments restating readable code are noise; delete them.
+- This is documentation, not enforcement: it prevents honest mistakes,
+  never violations. Invariants still belong in types and tests.
+
 ## Review Checklist
 
 - [ ] **Grep test:** can every dispatch target be found by searching for a literal string?
