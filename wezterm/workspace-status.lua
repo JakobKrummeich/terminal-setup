@@ -1,7 +1,7 @@
 -- Workspace status prototype (v2): wezterm workspaces = tmux sessions.
 --
 -- Hierarchy (mirrors old tmux setup):
---   workspace (container/task unit, name = intent)  <- tmux session
+--   workspace (task unit, name = intent)            <- tmux session
 --     window/tab                                    <- tmux window
 --       pane                                        <- tmux pane
 --
@@ -27,7 +27,7 @@
 --
 -- Keys:
 --   Alt+W  workspace switcher (idle first, fuzzy)
---   Alt+N  new workspace (intent, then optional container)
+--   Alt+N  new workspace (name = intent)
 --   Alt+R  rename current workspace's intent
 --   Alt+,  rename current window/tab (tmux muscle memory)
 --
@@ -137,22 +137,7 @@ local function new_workspace(window, pane)
       description = 'intent (becomes workspace name)',
       action = wezterm.action_callback(function(win, p, intent)
         if not intent or intent == '' then return end
-        win:perform_action(
-          act.PromptInputLine {
-            description = 'container name (empty = host shell)',
-            action = wezterm.action_callback(function(win2, p2, ctr)
-              local spawn = {}
-              if ctr and ctr ~= '' then
-                spawn.args = { 'podman', 'exec', '-it', ctr, 'bash', '-l' }
-              end
-              win2:perform_action(
-                act.SwitchToWorkspace { name = intent, spawn = spawn },
-                p2
-              )
-            end),
-          },
-          p
-        )
+        win:perform_action(act.SwitchToWorkspace { name = intent }, p)
       end),
     },
     pane
