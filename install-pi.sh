@@ -8,6 +8,7 @@ REPO="$(cd "$(dirname "$0")" && pwd)"
 
 install_pi
 install_pi_azure_response_retry_patch
+install_pi_dash_service
 install_rtk
 install_shell_wsstate
 

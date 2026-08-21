@@ -3,13 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>pi agent dashboard</title>
+<title>pi dash</title>
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <header class="top">
 	<a class="brand" href="#/">pi agent dashboard</a>
 	<span class="tagline">read-only · live via /api/events</span>
+	<span class="host-badge" id="host-badge" title="daemon identity from /api/meta"></span>
 </header>
 <main id="app"><noscript>This dashboard requires JavaScript (it renders /api/sessions client-side).</noscript></main>
 <script type="module" src="/app.js"></script>

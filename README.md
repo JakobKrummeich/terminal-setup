@@ -32,7 +32,8 @@ wezterm/          wezterm.lua + workspace-status.lua (symlinked on Linux;
                   Windows uses a stub that loads them from WSL). 75-col
                   centered column(s), Solarized Dark/Light, workspace overview.
 install-terminal.sh  terminal installer: WezTerm, tmux, shell wsstate hook (no pi)
-install-pi.sh     pi installer: pi config, rtk, shell wsstate hook (no WezTerm/tmux)
+install-pi.sh     pi installer: pi config, pi-dash daemon, rtk, shell wsstate
+                  hook (no WezTerm/tmux)
 lib/              shared installer helpers
 docs/             specs + setup notes (agent-dashboard-spec.md, explorer-setup.md)
 docs/decisions/   why things are the way they are, incl. what was removed again
@@ -62,7 +63,10 @@ git clone git@github.com:JakobKrummeich/terminal-setup.git ~/codingprojects/term
 ```
 
 This links pi extensions/themes/skills, copies pi settings if missing,
-installs/links `rtk`, and installs the shell `wsstate.sh` hook. For Pi
+installs + starts the `pi-dash` dashboard daemon as a systemd user unit
+(skipped with a warning where systemd/user-bus is unavailable — see “Agent
+dashboard” below), installs/links `rtk`, and installs the shell `wsstate.sh`
+hook. For Pi
 `0.83.0`, `0.84.1`, and `0.84.2`, it also applies a version-and-hash-guarded
 Azure Responses hidden-error retry workaround. Installer fails after a Pi upgrade until patch is
 reviewed or removed. It does not install/link WezTerm or tmux.
@@ -177,7 +181,7 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | file | purpose |
 |---|---|
 | `agent-busy-tracker.ts` | second status axis on top of wsstate, reported via OSC 1337 SetUserVar: `wswait=waiting\|free` — is the agent parked between turns but able to wake itself (armed timer)? wsstate correctly says idle then, but the workspace must not show "needs you". Deliberately standalone: detects timers via the timer tool's public contract — args harvested at `tool_execution_start`, verdict at `tool_execution_end`, joined by `toolCallId` (pi's end event carries no args) — knows nothing of `timer.ts`/`wsstate.ts` internals; aggregation lives in `wezterm/workspace-status.lua`. Arms only under `ctx.mode === "tui"` (elsewhere timer blocks inside the call, so nothing stays armed) and, like wsstate, registers nothing in child sessions |
-| `agent-dash.ts` | agent dashboard (`docs/agent-dashboard-spec.md`): writes the main session's `session-start` rows into the per-project `agent-runs.jsonl` index (spawn/progress/finish rows come from `lib/child-session.ts`, reset from `context-cap.ts`) and auto-starts the dashboard HTTP server (`lib/dashboard-server.ts`) on `0.0.0.0`, port `PI_AGENT_DASH_PORT` or 7357. One server per port per machine — when another pi instance already bound it, this one only prints the URL. Opt out with `PI_AGENT_DASH_DISABLE`; never starts under `PI_OFFLINE` (test suite) |
+| `agent-dash.ts` | agent dashboard (`docs/agent-dashboard-spec.md`, “Agent dashboard” below): writes the main session's `session-start` rows into the per-project `agent-runs.jsonl` index (spawn/progress/finish rows come from `lib/child-session.ts`, reset from `context-cap.ts`) and probes the machine-global dashboard daemon (`GET /api/meta`, ~1s, once per process): daemon up → notifies its URL + hostname, down → “re-run install-pi.sh”. pi itself never serves the dashboard. Opt out with `PI_AGENT_DASH_DISABLE`; never probes under `PI_OFFLINE` (test suite) |
 | `caveman-prompt.ts` | terse response style system prompt |
 | `context-cap.ts` | auto token-cap handoff: at the soft cap the agent writes a handoff file (`~/.pi/agent/context-cap/<sessionId>-<seq>.md`), then a persistent swap-marker entry is appended and a `context` handler slices the LLM context at it — the next LLM call sees only the handoff (session ≠ context: full history + forensic swap metadata stay in the session file). The same handler makes stale cap warnings structurally invisible instead of asking the model to self-judge: `[context-cap]` user messages behind the latest marker (swapped-away cycle, reachable only via the tail lever) or present while no cycle is armed (stranded late delivery — pi's queues can deliver a steer after an errored run, into a fresh window) are scrubbed from the LLM view, so no warning carries an "ignore me if stale" clause; at the hard cap a backstop fires: if the agent never wrote one, the extension spends one standalone LLM call writing the handoff itself (author recorded in the frontmatter), falling back to the stale file, then to a no-context note. Both caps are **model-aware and re-resolved on every check** (no model-switch event exists, and the model can change mid-session): they must fire before pi's own compaction at `contextWindow - 16384`, so `hard = min(325k, 0.90 × (contextWindow - reserve))`, where `reserve` is pi's own `compaction.reserveTokens` read from its live settings (default 16384, override `CONTEXT_CAP_RESERVE`) and `soft = min(260k, 0.80 × hard)` — 260k/325k are ceilings, reached only from ~400k of window up; a 200k-window model gets 132k/165k. `CONTEXT_CAP_SOFT` / `CONTEXT_CAP_HARD` override a value outright (the other stays dynamic); unknown window falls back to the last one seen, then to the static 260k/325k; a window too small to hold a cap below pi's reserve disables the extension instead of swapping at a nonsense threshold. The same writer answers pi's own compaction (`session_before_compact`) with a handoff-shaped summary — disable with `CONTEXT_CAP_COMPACT_HANDOFF=0`. Two A/B levers: `CONTEXT_CAP_SCHEMA=v1\|v2` (default `v2`, the path-heavy schema whose `## Files` section names every path that still matters) and `CONTEXT_CAP_TAIL_TOKENS=N` (default 0; keeps ~N tokens of raw transcript, cut only at complete turns, in front of the handoff). Levers and caps alike are recorded in the marker details and the file frontmatter (`schema`, `tailTokens`, `tailKeptTokens`, `contextWindow`, `softCap`, `hardCap`, `capSource`) |
 | `custom-footer.ts` | cumulative token/cost footer |
@@ -192,6 +196,31 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | `subagent.ts` | `Agent` tool: delegate a task to a child agent session, capped at one layer deep. Press **F2** to watch the running child live in the normal TUI style, `Esc` to step back out (override the key with `PI_SUBAGENT_WATCH_KEY`) |
 | `timer.ts` | wait tool for long background tasks — main session only: child sessions are always headless (`bindExtensions({})` → mode `print`), where a timer could only block inside the tool call, which buys nothing over `bash sleep N` — so the extension registers nothing in children (bind-time `inChildSession()` guard) and a child's prompt never offers the tool. In the main session, two strategies picked from `ctx.mode` (the per-call result text says which one ran — the registered description can't, it is written before any mode is known). **Interactive (`tui`)**: one-shot wakeup timer — the agent ends its turn and the expiry is injected with `deliverAs: "steer"` so it lands at the next turn boundary; `"followUp"` only lands when the whole run ends, which stacked stale wake-ups during long runs (regression-tested). An armed timer claims pending work so a child session isn't reported as finished while it waits; the claim is released on evidence the wake-up run started (not on a guess), and a wake-up stranded by the settle race is re-sent (up to 3×) instead of lost. **Headless (`print`/`json`/`rpc`, and any unknown mode — fail-safe)**: the tool call itself blocks for the wait and returns "continue your task", never "end your turn". `pi -p` awaits a single `session.prompt()` and disposes the runtime right after, so a timer armed for after the turn wakes nothing and the run exits 0 mid-task; blocking keeps the run — and the process — alive. The requested duration is honoured in full — an hour is one call, one result: chopping it into re-callable chunks would bill a whole LLM round-trip at full context per chunk, and nothing in pi times a tool call out (`pi-agent-core` `dist/agent-loop.js:453` awaits `tool.execute()` bare). Instead the call reports progress on the `onUpdate` channel ("Ns elapsed, Ms remaining", ~20 ticks spread over the wait, floor 30s / ceiling 5min) so it never looks frozen, and aborting the tool call ends the wait at once. `PI_TIMER_MAX_WAIT_S` opts into a cap (unset/0 = none): a longer request then returns after the cap with how much time is left and asks to be called again |
 | `wsstate.ts` | report pi agent busy/idle to WezTerm workspace status via OSC 1337. Main session only: child sessions (Agent/Explore) load this file too but share the parent's stdout — a child's `agent_end` would flip the terminal to "idle" mid-parent-run, so children register nothing (`inChildSession()` guard at bind time) |
+
+### Agent dashboard (`pi-dash` daemon)
+
+One standalone daemon per machine serves the browser dashboard for ALL projects
+(every session dir under `~/.pi/agent/sessions/`): `pi/dashboard-daemon.mjs`,
+run under plain node as the systemd user unit `pi-dash.service`, installed and
+kept current by `install-pi.sh` (re-run after pulling code changes — it
+restarts the daemon). Port `7357` (`PI_AGENT_DASH_PORT`), binds `0.0.0.0`.
+pi sessions only write index rows and print the URL; they never serve
+(spec decisions 5–7). If the port is squatted (say, by a stray ssh tunnel),
+the daemon exits and systemd retries every 30s until the port frees up.
+
+**Watching remote machines — two-tab ssh convention.** Each machine's daemon
+binds 7357 locally. To watch a remote machine alongside the local one, forward
+it to a DIFFERENT local port — never onto your own dashboard port:
+
+```bash
+ssh -L 7358:localhost:7357 remote
+```
+
+Tab 1 `http://localhost:7357/` = this machine, tab 2 `http://localhost:7358/` =
+remote; the header's host badge (`hostname · sessionsRoot`, from `/api/meta`)
+and the tab title identify each. Forwarding onto 7357 while your own daemon
+holds it just fails; binding it while the daemon is down makes the daemon
+fail+retry until the tunnel closes.
 
 ### Subagents (`subagent.ts`)
 

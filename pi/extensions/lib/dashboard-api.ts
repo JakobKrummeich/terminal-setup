@@ -37,11 +37,49 @@ export interface SessionFileStats {
 }
 export type StatsFor = (sessionFile: string) => SessionFileStats | null;
 
+// --- GET /api/meta -----------------------------------------------------------
+
+/** Daemon identity — the UI's host badge and agent-dash's probe read this. */
+export interface MetaResponse {
+	hostname: string;
+	/** Absolute sessions root this daemon serves (all projects live under it). */
+	sessionsRoot: string;
+	pid: number;
+	/** Epoch ms when the daemon bound its port. */
+	startedAt: number;
+}
+
+// --- projects ----------------------------------------------------------------
+
+/** Which project dir a row came from. `projectId` is the raw dir name (stable id). */
+export interface ProjectRef {
+	projectId: string;
+	/** Display string, decoded best-effort — see decodeProjectDirName. */
+	project: string;
+}
+
+/**
+ * Best-effort display decode of an encoded-cwd session dir name. pi encodes
+ * `/home/a/x` as `--home-a-x--` (leading slash dropped, `/ \ :` → `-`), which
+ * is NOT reversible: a dash in a path segment is indistinguishable from a
+ * separator (`terminal-setup` decodes as `terminal/setup`). Display only —
+ * grouping and identity always use the raw dir name (ProjectRef.projectId).
+ */
+export function decodeProjectDirName(name: string): string {
+	const match = /^--(.*)--$/.exec(name);
+	if (!match) return name; // foreign dir name: show verbatim
+	return `/${match[1].replaceAll("-", "/")}`;
+}
+
 // --- GET /api/sessions -------------------------------------------------------
 
 /** One landing-page row per tree root (main session). */
 export interface SessionRow {
 	sid: string;
+	/** Raw session-dir name under the sessions root (stable project id). */
+	projectId: string;
+	/** Best-effort decoded display path for the project (may be ambiguous). */
+	project: string;
 	startTs: number;
 	/** ACTIVE_WINDOW_MS heuristic above. Pinning running rows on top is the client's job. */
 	running: boolean;
@@ -55,7 +93,7 @@ export interface SessionRow {
 	resetCount: number;
 }
 
-/** Sorted newest first (startTs desc). */
+/** All projects merged, sorted newest first (startTs desc). */
 export interface SessionsResponse {
 	sessions: SessionRow[];
 }
@@ -215,7 +253,7 @@ function treeLastActivity(agg: RootAgg, mtimeMs: number | null): number {
 	return last;
 }
 
-function summarizeRoot(agg: RootAgg, now: number, statsFor: StatsFor): SessionRow {
+function summarizeRoot(agg: RootAgg, now: number, statsFor: StatsFor, project: ProjectRef): SessionRow {
 	const rootAgg = agg.sids.get(agg.root);
 	const file = rootAgg?.sessionStart?.sessionFile;
 	const stats = file ? statsFor(file) : null;
@@ -232,6 +270,8 @@ function summarizeRoot(agg: RootAgg, now: number, statsFor: StatsFor): SessionRo
 	const running = now - lastActivity < ACTIVE_WINDOW_MS;
 	return {
 		sid: agg.root,
+		projectId: project.projectId,
+		project: project.project,
 		startTs,
 		running,
 		durationMs: Math.max(0, (running ? now : lastActivity) - startTs),
@@ -241,11 +281,12 @@ function summarizeRoot(agg: RootAgg, now: number, statsFor: StatsFor): SessionRo
 	};
 }
 
-/** GET /api/sessions body. */
-export function deriveSessions(events: AgentRunEvent[], now: number, statsFor: StatsFor): SessionsResponse {
-	const sessions = [...indexByRoot(events).values()].map((agg) => summarizeRoot(agg, now, statsFor));
-	sessions.sort((a, b) => b.startTs - a.startTs);
-	return { sessions };
+/**
+ * Rows for ONE project dir; the server merges rows across projects and sorts
+ * the combined list (startTs desc) before responding.
+ */
+export function deriveSessions(events: AgentRunEvent[], now: number, statsFor: StatsFor, project: ProjectRef): SessionRow[] {
+	return [...indexByRoot(events).values()].map((agg) => summarizeRoot(agg, now, statsFor, project));
 }
 
 /** The root's own row: no finish events exist for it, so status is running|done by tree activity. */

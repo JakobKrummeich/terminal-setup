@@ -1,0 +1,17 @@
+# pi-dash.service — machine-global pi agent dashboard daemon (TEMPLATE).
+# install-pi.sh substitutes @NODE@/@REPO@ and COPIES this to
+# ~/.config/systemd/user/pi-dash.service (copy, not symlink: `systemctl enable`
+# on symlinked units is flaky). Edit here, re-run install-pi.sh to deploy.
+#
+# RestartSec=30 is deliberate: a squatter on port 7357 (e.g. a misdirected
+# ssh -L tunnel) makes the daemon exit 1 — this retries calmly, no crash-loop.
+[Unit]
+Description=pi agent dashboard daemon (terminal-setup)
+
+[Service]
+ExecStart="@NODE@" "@REPO@/pi/dashboard-daemon.mjs"
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

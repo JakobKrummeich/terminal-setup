@@ -1,18 +1,20 @@
 /**
- * dashboard-server — HTTP API over a synthetic project dir.
+ * dashboard-server — HTTP API over a synthetic sessions root (multi-project).
  *
- * Contract under test (lib/dashboard-api.ts shapes): /api/sessions rows,
- * /api/tree node derivation (done / running / abandoned), /api/transcript
- * parsing + anchors, parameter/unknown-id errors, static-file traversal
- * rejection, and SSE change notification. Everything runs against temp dirs
+ * Contract under test (lib/dashboard-api.ts shapes): project-dir enumeration,
+ * /api/sessions rows (with project identity), /api/tree node derivation
+ * (done / running / abandoned) with cross-dir sid resolution, /api/transcript
+ * parsing + anchors, /api/meta identity, vanished-dir pruning, parameter/
+ * unknown-id errors, static-file traversal rejection, and SSE change
+ * notification (root + per-dir watches). Everything runs against temp roots
  * with hand-written agent-runs.jsonl + session JSONL fixtures; servers bind
  * port 0 on 127.0.0.1 and are closed in finally blocks (their sockets are
  * unref'd, so a leak would not hang the suite — but don't leak anyway).
  */
 import assert from "node:assert/strict";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import http from "node:http";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -25,18 +27,25 @@ process.env.PI_OFFLINE = "1";
 
 import * as agentDashModule from "../agent-dash.ts";
 import { appendEvent } from "../lib/agent-runs.ts";
-import type { SessionsResponse, TranscriptResponse, TreeResponse } from "../lib/dashboard-api.ts";
+import type { MetaResponse, SessionsResponse, TranscriptResponse, TreeResponse } from "../lib/dashboard-api.ts";
 import { type DashboardServer, startDashboardServer } from "../lib/dashboard-server.ts";
 
 /** The repo's real static UI (also sanity-checked by a test below). */
 const REAL_UI_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "../lib/dashboard-ui");
 
-function tempProjectDir(): string {
-	return mkdtempSync(path.join(tmpdir(), "pi-dash-project-"));
+function tempSessionsRoot(): string {
+	return mkdtempSync(path.join(tmpdir(), "pi-dash-root-"));
 }
 
-async function startServer(dir: string, extra: { uiDir?: string; sseDebounceMs?: number } = {}): Promise<DashboardServer> {
-	const result = await startDashboardServer({ dir, port: 0, host: "127.0.0.1", uiDir: REAL_UI_DIR, ...extra });
+/** One encoded-cwd project dir under a sessions root (default name decodes to "/tmp/project"). */
+function projectDir(root: string, name = "--tmp-project--"): string {
+	const dir = path.join(root, name);
+	mkdirSync(dir, { recursive: true });
+	return dir;
+}
+
+async function startServer(root: string, extra: { uiDir?: string; sseDebounceMs?: number } = {}): Promise<DashboardServer> {
+	const result = await startDashboardServer({ sessionsRoot: root, port: 0, host: "127.0.0.1", uiDir: REAL_UI_DIR, ...extra });
 	assert.ok(result.started, "server must bind an ephemeral port");
 	return result.server;
 }
@@ -217,12 +226,13 @@ function buildFinishedTree(dir: string): { T0: number } {
 // --- /api/sessions -----------------------------------------------------------
 
 test("GET /api/sessions: rows aggregate cost/agents/resets; newest first; recent activity → running", async () => {
-	const dir = tempProjectDir();
+	const root = tempSessionsRoot();
+	const dir = projectDir(root);
 	const { T0 } = buildFinishedTree(dir);
 	const now = Date.now();
 	const root2File = writeMinimalSession(dir, "root-2.jsonl", "root-2", now - 30_000);
 	appendEvent(dir, { ts: now - 30_000, event: "session-start", sid: "root-2", sessionFile: root2File });
-	const server = await startServer(dir);
+	const server = await startServer(root);
 	try {
 		const { sessions } = await getJson<SessionsResponse>(server.port, "/api/sessions");
 		assert.equal(sessions.length, 2);
@@ -237,6 +247,8 @@ test("GET /api/sessions: rows aggregate cost/agents/resets; newest first; recent
 		assertClose(row.costUsd, 0.2 + 0.3 + 0.42 + 0.05, "own JSONL cost + children finish costs");
 		assert.equal(row.agentCount, 2, "agent + explorer spawns");
 		assert.equal(row.resetCount, 1);
+		assert.equal(row.projectId, "--tmp-project--", "raw dir name is the stable project id");
+		assert.equal(row.project, "/tmp/project", "display path decoded from the dir name");
 	} finally {
 		await server.close();
 	}
@@ -245,9 +257,9 @@ test("GET /api/sessions: rows aggregate cost/agents/resets; newest first; recent
 // --- /api/tree ---------------------------------------------------------------
 
 test("GET /api/tree: root + child nodes with status done, parent links, costs, turns", async () => {
-	const dir = tempProjectDir();
-	const { T0 } = buildFinishedTree(dir);
-	const server = await startServer(dir);
+	const root = tempSessionsRoot();
+	const { T0 } = buildFinishedTree(projectDir(root));
+	const server = await startServer(root);
 	try {
 		const tree = await getJson<TreeResponse>(server.port, "/api/tree?root=root-1");
 		assert.equal(tree.root, "root-1");
@@ -287,7 +299,8 @@ test("GET /api/tree: root + child nodes with status done, parent links, costs, t
 });
 
 test("GET /api/tree: unsettled children are running when fresh, abandoned when stale", async () => {
-	const dir = tempProjectDir();
+	const sessionsRoot = tempSessionsRoot();
+	const dir = projectDir(sessionsRoot);
 	const now = Date.now();
 	const old = now - 10 * 60_000;
 	const rootFile = writeMinimalSession(dir, "root-3.jsonl", "root-3", now - 60_000);
@@ -331,7 +344,7 @@ test("GET /api/tree: unsettled children are running when fresh, abandoned when s
 	});
 	// Activity AFTER the finish (resume) that never settled again → abandoned once stale.
 	appendEvent(dir, { ts: old + 2000, event: "progress", sid: "child-ab", turn: 5 });
-	const server = await startServer(dir);
+	const server = await startServer(sessionsRoot);
 	try {
 		const tree = await getJson<TreeResponse>(server.port, "/api/tree?root=root-3");
 		const bySid = new Map(tree.nodes.map((node) => [node.sid, node]));
@@ -356,9 +369,9 @@ test("GET /api/tree: unsettled children are running when fresh, abandoned when s
 // --- /api/transcript ---------------------------------------------------------
 
 test("GET /api/transcript: entries, tool output truncation, handoff + spawn anchors", async () => {
-	const dir = tempProjectDir();
-	const { T0 } = buildFinishedTree(dir);
-	const server = await startServer(dir);
+	const root = tempSessionsRoot();
+	const { T0 } = buildFinishedTree(projectDir(root));
+	const server = await startServer(root);
 	try {
 		const transcript = await getJson<TranscriptResponse>(server.port, "/api/transcript?sid=root-1");
 		assert.equal(transcript.sid, "root-1");
@@ -404,12 +417,11 @@ test("GET /api/transcript: entries, tool output truncation, handoff + spawn anch
 
 // --- errors ------------------------------------------------------------------
 
-test("API errors: missing params 400, unknown ids 404, non-GET 405, empty project ok", async () => {
-	const dir = tempProjectDir();
-	const server = await startServer(dir);
+test("API errors: missing params 400, unknown ids 404, non-GET 405, empty root ok", async () => {
+	const server = await startServer(tempSessionsRoot());
 	try {
 		const empty = await getJson<SessionsResponse>(server.port, "/api/sessions");
-		assert.deepEqual(empty.sessions, [], "no index yet → empty list, not an error");
+		assert.deepEqual(empty.sessions, [], "no project dirs yet → empty list, not an error");
 		assert.equal((await get(server.port, "/api/tree")).status, 400);
 		assert.equal((await get(server.port, "/api/tree?root=nope")).status, 404);
 		assert.equal((await get(server.port, "/api/transcript")).status, 400);
@@ -425,7 +437,7 @@ test("API errors: missing params 400, unknown ids 404, non-GET 405, empty projec
 
 test("static: serves the repo UI shell at /", async () => {
 	assert.ok(existsSync(path.join(REAL_UI_DIR, "index.html")), "repo must ship lib/dashboard-ui/index.html");
-	const server = await startServer(tempProjectDir());
+	const server = await startServer(tempSessionsRoot());
 	try {
 		const res = await get(server.port, "/");
 		assert.equal(res.status, 200);
@@ -443,7 +455,7 @@ test("static: path traversal (raw, encoded, absolute) is rejected; unknown files
 	writeFileSync(path.join(uiDir, "index.html"), "<html>ok</html>");
 	writeFileSync(path.join(uiDir, "app.js"), "console.log(1);");
 	writeFileSync(path.join(base, "secret.txt"), "MUST-NOT-LEAK");
-	const server = await startServer(tempProjectDir(), { uiDir });
+	const server = await startServer(tempSessionsRoot(), { uiDir });
 	try {
 		assert.equal((await get(server.port, "/app.js")).contentType, "text/javascript; charset=utf-8");
 		for (const attempt of ["/../secret.txt", "/%2e%2e/secret.txt", "/..%2fsecret.txt", "//etc/passwd", "/sub/../../secret.txt"]) {
@@ -491,7 +503,8 @@ function sseExpectChange(port: number, rawPath: string, trigger: () => void): Pr
 }
 
 test("GET /api/events: index append emits a debounced change; ?sid= also watches that session file", async () => {
-	const dir = tempProjectDir();
+	const sessionsRoot = tempSessionsRoot();
+	const dir = projectDir(sessionsRoot);
 	const now = Date.now();
 	const rootFile = writeMinimalSession(dir, "root-sse.jsonl", "root-sse", now);
 	const childFile = writeMinimalSession(dir, "child-sse.jsonl", "child-sse", now);
@@ -507,7 +520,7 @@ test("GET /api/events: index append emits a debounced change; ?sid= also watches
 		sessionFile: childFile,
 		description: "sse fixture",
 	});
-	const server = await startServer(dir, { sseDebounceMs: 50 });
+	const server = await startServer(sessionsRoot, { sseDebounceMs: 50 });
 	try {
 		await sseExpectChange(server.port, "/api/events", () =>
 			appendEvent(dir, { ts: Date.now(), event: "reset", sid: "root-sse" }),
@@ -520,11 +533,113 @@ test("GET /api/events: index append emits a debounced change; ?sid= also watches
 	}
 });
 
+test("GET /api/events: a project dir born after connect notifies, and its later appends are watched", async () => {
+	const sessionsRoot = tempSessionsRoot();
+	projectDir(sessionsRoot, "--existing--");
+	const server = await startServer(sessionsRoot, { sseDebounceMs: 50 });
+	try {
+		// Dir creation alone must notify (the root watcher): /api/sessions changed.
+		await sseExpectChange(server.port, "/api/events", () => {
+			const born = projectDir(sessionsRoot, "--born-later--");
+			appendEvent(born, { ts: Date.now(), event: "reset", sid: "any" });
+		});
+		// A fresh connection scans the new dir; an append inside it (no root-level
+		// event at all) must still notify via the per-dir watcher.
+		await sseExpectChange(server.port, "/api/events", () =>
+			appendEvent(path.join(sessionsRoot, "--born-later--"), { ts: Date.now(), event: "reset", sid: "other" }),
+		);
+	} finally {
+		await server.close();
+	}
+});
+
+/** Persistent SSE client: counts change events, reports stream close, destroyable. */
+function sseConnect(port: number): {
+	count: () => number;
+	isClosed: () => boolean;
+	connected: Promise<void>;
+	destroy: () => void;
+} {
+	let buffer = "";
+	let closed = false;
+	let onConnected = (): void => {};
+	const connected = new Promise<void>((resolve) => (onConnected = resolve));
+	const req = http.request({ host: "127.0.0.1", port, path: "/api/events", method: "GET", agent: false }, (res) => {
+		res.setEncoding("utf8");
+		res.on("data", (chunk: string) => {
+			buffer += chunk;
+			if (buffer.includes(":connected")) onConnected();
+		});
+		res.on("close", () => (closed = true));
+		res.on("error", () => {});
+	});
+	req.on("error", () => {}); // our destroy() / server close may reset the socket
+	req.end();
+	return {
+		count: () => buffer.split('data: {"changed":true}').length - 1,
+		isClosed: () => closed,
+		connected,
+		destroy: () => req.destroy(),
+	};
+}
+
+async function waitFor(cond: () => boolean, what: string): Promise<void> {
+	const deadline = Date.now() + 8000;
+	while (!cond() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+	assert.ok(cond(), `timed out waiting for ${what}`);
+}
+
+test("GET /api/events: appends in a deleted-then-recreated project dir still notify the same stream", async () => {
+	const sessionsRoot = tempSessionsRoot();
+	const dir = projectDir(sessionsRoot, "--reborn--");
+	appendEvent(dir, { ts: Date.now(), event: "reset", sid: "seed" });
+	const server = await startServer(sessionsRoot, { sseDebounceMs: 50 });
+	const client = sseConnect(server.port);
+	try {
+		await client.connected;
+		rmSync(dir, { recursive: true, force: true });
+		await waitFor(() => client.count() >= 1, "dir-delete notification (root watcher)");
+		projectDir(sessionsRoot, "--reborn--");
+		// Let the recreate notification (and its debounce window) fully drain so the
+		// next count bump can only come from the append below.
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		const base = client.count();
+		appendEvent(dir, { ts: Date.now(), event: "reset", sid: "again" });
+		// Before the stale-watcher fix this timed out: the dead dir watcher
+		// (bound to the deleted inode) blocked re-watching the recreated dir.
+		await waitFor(() => client.count() > base, "append notification from the recreated dir");
+	} finally {
+		client.destroy();
+		await server.close();
+	}
+});
+
+test("GET /api/events: the stream folds when the sessions root vanishes; reconnect fails clean", async () => {
+	const sessionsRoot = tempSessionsRoot();
+	projectDir(sessionsRoot, "--doomed--");
+	const server = await startServer(sessionsRoot, { sseDebounceMs: 50 });
+	const client = sseConnect(server.port);
+	try {
+		await client.connected;
+		rmSync(sessionsRoot, { recursive: true, force: true });
+		// fs.watch on Linux emits only 'rename' (no 'error') when the watched root
+		// vanishes — the server must fold the stream itself, not go silently dead.
+		await waitFor(() => client.isClosed(), "stream close after sessions-root deletion");
+		// Reconnect while the root is missing: clean 500 (EventSource then falls
+		// back to polling), never a dead-air stream.
+		assert.equal((await get(server.port, "/api/events")).status, 500);
+	} finally {
+		client.destroy();
+		await server.close();
+	}
+});
+
 test("GET /api/events: client disconnect during the debounce window raises nothing", async () => {
-	const dir = tempProjectDir();
+	const sessionsRoot = tempSessionsRoot();
+	const dir = projectDir(sessionsRoot);
 	// Long debounce: the client hangs up while the change emit is still pending.
 	// An unhandled write-after-destroy would crash this (shared) test process.
-	const server = await startServer(dir, { sseDebounceMs: 200 });
+	const server = await startServer(sessionsRoot, { sseDebounceMs: 200 });
 	try {
 		await new Promise<void>((resolve) => {
 			const req = http.request({ host: "127.0.0.1", port: server.port, path: "/api/events", method: "GET", agent: false }, (res) => {
@@ -547,10 +662,90 @@ test("GET /api/events: client disconnect during the debounce window raises nothi
 	}
 });
 
-// --- extension auto-start gating --------------------------------------------
+// --- multi-project -----------------------------------------------------------
 
-test("agent-dash: PI_OFFLINE gates the server; the session-start row is still written", async () => {
-	const dir = tempProjectDir();
+test("multi-project: /api/sessions merges all indexed dirs (skipping index-less ones); sids resolve across dirs", async () => {
+	const root = tempSessionsRoot();
+	const dirA = projectDir(root, "--home-a-proj--");
+	const { T0 } = buildFinishedTree(dirA); // root-1 tree, ~10min old
+	const dirB = projectDir(root, "--home-a-other--");
+	const now = Date.now();
+	const freshFile = writeMinimalSession(dirB, "fresh.jsonl", "fresh-root", now - 20_000);
+	appendEvent(dirB, { ts: now - 20_000, event: "session-start", sid: "fresh-root", sessionFile: freshFile });
+	projectDir(root, "--no-index-yet--"); // dir without agent-runs.jsonl: not a project (yet)
+	writeFileSync(path.join(root, "stray-file"), "not a dir"); // junk directly under the root
+	const server = await startServer(root);
+	try {
+		const { sessions } = await getJson<SessionsResponse>(server.port, "/api/sessions");
+		assert.deepEqual(
+			sessions.map((row) => [row.sid, row.projectId, row.project]),
+			[
+				["fresh-root", "--home-a-other--", "/home/a/other"],
+				["root-1", "--home-a-proj--", "/home/a/proj"],
+			],
+			"both projects merged, newest first, index-less dir and stray file skipped",
+		);
+		// Sid resolution scans dirs: root-1/agent-1 live in dirA, fresh-root in dirB.
+		const tree = await getJson<TreeResponse>(server.port, "/api/tree?root=root-1");
+		assert.equal(tree.nodes.length, 3, "tree resolved in its own dir");
+		const freshTree = await getJson<TreeResponse>(server.port, "/api/tree?root=fresh-root");
+		assert.equal(freshTree.nodes.length, 1);
+		const transcript = await getJson<TranscriptResponse>(server.port, "/api/transcript?sid=agent-1");
+		assert.equal(transcript.sid, "agent-1");
+		assert.equal(transcript.entries.length, 1, "child transcript from dirA");
+		assert.equal(sessions[1].startTs, T0, "dirA row keeps its own tree's start time");
+	} finally {
+		await server.close();
+	}
+});
+
+test("multi-project: a project dir vanishing between requests is pruned from /api/sessions", async () => {
+	const root = tempSessionsRoot();
+	const keepDir = projectDir(root, "--keep--");
+	const goneDir = projectDir(root, "--gone--");
+	const now = Date.now();
+	const keepFile = writeMinimalSession(keepDir, "keep.jsonl", "keep-root", now);
+	appendEvent(keepDir, { ts: now, event: "session-start", sid: "keep-root", sessionFile: keepFile });
+	const goneFile = writeMinimalSession(goneDir, "gone.jsonl", "gone-root", now);
+	appendEvent(goneDir, { ts: now, event: "session-start", sid: "gone-root", sessionFile: goneFile });
+	const server = await startServer(root);
+	try {
+		const before = await getJson<SessionsResponse>(server.port, "/api/sessions");
+		assert.deepEqual(before.sessions.map((row) => row.sid).sort(), ["gone-root", "keep-root"]);
+		rmSync(goneDir, { recursive: true, force: true });
+		const after = await getJson<SessionsResponse>(server.port, "/api/sessions");
+		assert.deepEqual(
+			after.sessions.map((row) => row.sid),
+			["keep-root"],
+			"stateless re-enumeration drops the vanished dir",
+		);
+		assert.equal((await get(server.port, "/api/tree?root=gone-root")).status, 404, "its sids stop resolving");
+	} finally {
+		await server.close();
+	}
+});
+
+// --- /api/meta ---------------------------------------------------------------
+
+test("GET /api/meta: daemon identity — hostname, resolved sessionsRoot, pid, startedAt", async () => {
+	const root = tempSessionsRoot();
+	const before = Date.now();
+	const server = await startServer(root);
+	try {
+		const meta = await getJson<MetaResponse>(server.port, "/api/meta");
+		assert.equal(meta.hostname, hostname());
+		assert.equal(meta.sessionsRoot, path.resolve(root));
+		assert.equal(meta.pid, process.pid, "embedded server: our own pid");
+		assert.ok(meta.startedAt >= before && meta.startedAt <= Date.now(), "startedAt is the bind time");
+	} finally {
+		await server.close();
+	}
+});
+
+// --- extension probe gating --------------------------------------------------
+
+test("agent-dash: PI_OFFLINE gates the daemon probe; the session-start row is still written", async () => {
+	const dir = projectDir(tempSessionsRoot());
 	const sessionFile = writeMinimalSession(dir, "main.jsonl", "main-sid", Date.now());
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
 	const fakePi = { on: (name: string, handler: never) => void handlers.set(name, handler) };
@@ -569,7 +764,7 @@ test("agent-dash: PI_OFFLINE gates the server; the session-start row is still wr
 	assert.equal(process.env.PI_OFFLINE, "1", "suite precondition");
 	handlers.get("session_start")!({ type: "session_start", reason: "startup" }, ctx);
 	await new Promise((resolve) => setTimeout(resolve, 100));
-	assert.deepEqual(notifications, [], "gated start must neither bind a port nor notify");
+	assert.deepEqual(notifications, [], "gated probe must neither touch sockets nor notify");
 	const index = readFileSync(path.join(dir, "agent-runs.jsonl"), "utf8");
-	assert.match(index, /"session-start"/, "index row is written regardless of the server gate");
+	assert.match(index, /"session-start"/, "index row is written regardless of the probe gate");
 });

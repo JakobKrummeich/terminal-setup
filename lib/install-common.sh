@@ -76,6 +76,46 @@ install_pi() {
 
 }
 
+install_pi_dash_service() {
+    # ── pi-dash: machine-global dashboard daemon (systemd user unit) ─
+    # Template-copied (not symlinked — `systemctl enable` on symlinked units is
+    # flaky) with absolute node/repo paths baked in. Idempotent: re-runs
+    # re-copy the unit and restart the daemon so code updates take effect.
+    # Degrades to a warning wherever node or the systemd user bus is missing
+    # (containers): pi then notifies "daemon not running" and everything else
+    # still works.
+    local unit_dest="$HOME/.config/systemd/user/pi-dash.service"
+    local node_bin
+    if ! node_bin="$(command -v node)"; then
+        echo "WARN: node not found; pi-dash dashboard daemon not installed"
+        return 0
+    fi
+    node_bin="$(readlink -f "$node_bin")"
+    mkdir -p "$(dirname "$unit_dest")"
+    # Bash substitution, not sed: the paths may contain sed metacharacters
+    # (|, &, \). The quoted replacement keeps bash 5.2's patsub `&` literal.
+    # The template quotes the ExecStart args, so spaces in paths survive
+    # systemd's word splitting too.
+    local unit_content
+    unit_content="$(<"$REPO/pi/pi-dash.service")"
+    unit_content="${unit_content//@NODE@/"$node_bin"}"
+    unit_content="${unit_content//@REPO@/"$REPO"}"
+    printf '%s\n' "$unit_content" > "$unit_dest"
+    echo "COPIED: $unit_dest (ExecStart: $node_bin $REPO/pi/dashboard-daemon.mjs)"
+    if ! command -v systemctl >/dev/null || ! systemctl --user daemon-reload 2>/dev/null; then
+        echo "WARN: systemd user bus unavailable; run manually: $node_bin $REPO/pi/dashboard-daemon.mjs"
+        return 0
+    fi
+    # enable (no --now) + restart: restart also starts a stopped unit, and —
+    # unlike `enable --now` — picks up new code when the daemon already runs.
+    # Port squatters are the unit's problem: Restart=on-failure/RestartSec=30.
+    if systemctl --user enable pi-dash.service >/dev/null 2>&1 && systemctl --user restart pi-dash.service 2>/dev/null; then
+        echo "ENABLED: pi-dash.service (dashboard on port 7357; PI_AGENT_DASH_PORT overrides)"
+    else
+        echo "WARN: could not enable/start pi-dash.service; check: systemctl --user status pi-dash"
+    fi
+}
+
 install_pi_azure_response_retry_patch() {
     # Temporary fail-closed workaround for Pi 0.83.0/0.84.1/0.84.2 Azure Responses failed SSE events.
     if ! command -v pi >/dev/null; then

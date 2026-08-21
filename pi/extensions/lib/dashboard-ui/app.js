@@ -3,9 +3,14 @@
  * (docs/agent-dashboard-spec.md "Browser UI"; API shapes in lib/dashboard-api.ts).
  *
  * Hash routes — literal table in renderRoute():
- *   #/                        landing: one row per session tree
+ *   #/                        landing: collapsible per-project sections, one row per session tree
  *   #/session/<root>          collapsible tree + Gantt for one tree
  *   #/view/<sid>?root=<root>  transcript of one node
+ *
+ * The server is the machine-global daemon (all projects under one sessions
+ * root); /api/meta identifies it — host badge in the header, hostname in
+ * document.title. Sids are globally unique, so session/view routes need no
+ * project component.
  *
  * Safety rule: EVERY server-derived string reaches the DOM via textContent
  * (the el() helper) — never innerHTML. Transcripts contain arbitrary markup
@@ -78,6 +83,25 @@ function badge(running) {
 	const span = el("span", "badge", running ? "running" : "finished");
 	span.dataset.status = running ? "running" : "finished";
 	return span;
+}
+
+// --- daemon identity (/api/meta) ---------------------------------------------
+
+/** MetaResponse payload; null until loaded (badge stays empty, titles fall back). */
+let meta = null;
+
+function baseTitle() {
+	return meta ? `pi dash · ${meta.hostname}` : "pi dash";
+}
+
+/** One fetch at boot — daemon identity doesn't change while the tab lives. */
+async function loadMeta() {
+	try {
+		meta = await fetchJson("/api/meta");
+		document.getElementById("host-badge").textContent = `${meta.hostname} · ${meta.sessionsRoot}`;
+	} catch {
+		// no /api/meta (daemon restarting?): badge stays empty, pages still work
+	}
 }
 
 /** parts: [{ text, href|null }] — null href renders the current (plain) crumb. */
@@ -166,7 +190,7 @@ function pageError(error, vanishedNote) {
 // --- #/ landing --------------------------------------------------------------
 
 function renderLandingPage() {
-	document.title = "pi agent dashboard";
+	document.title = baseTitle();
 	const token = navToken;
 	onPageLeave(startLive(null, refresh));
 	refresh();
@@ -186,8 +210,48 @@ function drawLanding(sessions) {
 	if (pendingNotice) page.append(el("div", "notice", pendingNotice));
 	page.append(el("h1", "page-title", "sessions"));
 	if (sessions.length === 0) page.append(el("div", "empty", "no sessions recorded yet"));
-	else page.append(buildSessionTable(sessions));
+	for (const group of groupByProject(sessions)) page.append(buildProjectSection(group));
 	app.replaceChildren(page);
+}
+
+/** Collapsed project sections (by projectId) — survives SSE-driven redraws. */
+const collapsedProjects = new Set();
+
+/** Group rows by projectId; groups with running sessions first, then by newest session. */
+function groupByProject(sessions) {
+	const groups = new Map();
+	for (const row of sessions) {
+		let group = groups.get(row.projectId);
+		if (!group) {
+			group = { projectId: row.projectId, project: row.project, sessions: [] };
+			groups.set(row.projectId, group);
+		}
+		group.sessions.push(row);
+	}
+	const list = [...groups.values()];
+	for (const group of list) {
+		group.runningCount = group.sessions.filter((row) => row.running).length;
+		group.newestTs = Math.max(...group.sessions.map((row) => row.startTs));
+	}
+	list.sort((a, b) => Number(b.runningCount > 0) - Number(a.runningCount > 0) || b.newestTs - a.newestTs);
+	return list;
+}
+
+function buildProjectSection(group) {
+	const details = el("details", "project");
+	details.open = !collapsedProjects.has(group.projectId);
+	details.addEventListener("toggle", () => {
+		if (details.open) collapsedProjects.delete(group.projectId);
+		else collapsedProjects.add(group.projectId);
+	});
+	const summary = el("summary", "project-head");
+	summary.title = group.projectId; // raw dir name — the unambiguous id (decode is best-effort)
+	summary.append(el("span", "project-name", group.project));
+	let countText = `${group.sessions.length} session${group.sessions.length === 1 ? "" : "s"}`;
+	if (group.runningCount > 0) countText += ` · ${group.runningCount} running`;
+	summary.append(el("span", "project-count", countText));
+	details.append(summary, buildSessionTable(group.sessions));
+	return details;
 }
 
 function buildSessionTable(sessions) {
@@ -228,7 +292,7 @@ function buildSessionRow(row) {
 
 function renderSessionPage(hash) {
 	const root = safeDecode(hash.slice("#/session/".length).split("?")[0]);
-	document.title = `session ${shortSid(root)} — pi agent dashboard`;
+	document.title = `session ${shortSid(root)} — ${baseTitle()}`;
 	const token = navToken;
 	const state = { collapsed: new Set(), lastTree: null, growTimer: null };
 	onPageLeave(startLive(null, refresh));
@@ -366,7 +430,7 @@ function renderTranscriptPage(hash) {
 	const [rawSid, rawQuery] = hash.slice("#/view/".length).split("?");
 	const sid = safeDecode(rawSid);
 	const root = new URLSearchParams(rawQuery ?? "").get("root");
-	document.title = `${shortSid(sid)} — pi agent dashboard`;
+	document.title = `${shortSid(sid)} — ${baseTitle()}`;
 	const token = navToken;
 	const state = { liveStarted: false };
 	refresh();
@@ -506,4 +570,6 @@ function buildAnchor(anchor, root) {
 // --- boot --------------------------------------------------------------------
 
 window.addEventListener("hashchange", renderRoute);
-renderRoute();
+// Meta first so the first render already has the hostname title; loadMeta
+// never rejects, and a dead daemon still renders (with fetch errors inline).
+loadMeta().then(renderRoute);

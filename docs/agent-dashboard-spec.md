@@ -1,7 +1,10 @@
 # Agent Dashboard — Spec
 
-Status: agreed 2026-08 (conversation-driven requirements). Not yet built.
-Scope owner: `pi/extensions/` (subagent, explore, child-session, context-cap).
+Status: v1 built. Amended: serving moved from per-pi-instance auto-start to a
+machine-global standalone daemon (decisions 5–7 reworked; the per-project,
+pi-serves-itself originals live in git history).
+Scope owner: `pi/extensions/` (subagent, explore, child-session, context-cap)
+plus `pi/dashboard-daemon.mjs` + `pi/pi-dash.service` (daemon entry + unit).
 
 ## Problem
 
@@ -23,9 +26,9 @@ children only. Missing:
 | 2 | Keep the F2 TUI overlay (quick glance + control). Add a browser dashboard; don't replace the TUI. |
 | 3 | Browser is read-only in v1. Input later (see phases). |
 | 4 | Source of truth on disk: per-project events index `agent-runs.jsonl` beside the session files. Transcripts are NOT duplicated — the existing session JSONLs are read lazily. |
-| 5 | Scope: per-project (per encoded cwd). Matches docker-localized workflows. A cross-project view later would just read multiple dirs — no schema change. |
-| 6 | Server auto-starts with pi, binds `0.0.0.0`, fixed default port `7357`, override `PI_AGENT_DASH_PORT`. User controls container port mappings. |
-| 7 | Server is a stateless disk reader (index + session files + file-watch + SSE). Any pi instance can serve the whole project history. First instance binds the port; later instances detect it and just print the URL. |
+| 5 | Scope: machine-global. ONE daemon serves ALL projects by enumerating the session dirs (one per encoded cwd) under `~/.pi/agent/sessions/` on every request. The on-disk index stays per-project (decision 4) — the cross-project view needed no schema change, as predicted. Landing page groups sessions per project. |
+| 6 | The server is a standalone daemon — `pi/dashboard-daemon.mjs` under plain node (its import chain is pi-free by contract) — run as the systemd user unit `pi-dash.service`, installed idempotently by `install-pi.sh` (`Restart=on-failure`, `RestartSec=30`: a port squatter, e.g. a misdirected ssh tunnel, causes calm retries, not a crash-loop). Binds `0.0.0.0`, fixed default port `7357`, override `PI_AGENT_DASH_PORT`. User controls container port mappings. **pi never serves the dashboard.** |
+| 7 | Server is a stateless disk reader (indexes + session files + file-watch + SSE) — restart-safe, nothing in memory worth losing. pi instances probe `GET /api/meta` once per process and print the daemon's URL (or an install hint when it is down); `PI_OFFLINE` / `PI_AGENT_DASH_DISABLE` skip the probe. |
 | 8 | Timeline = Gantt (rows = agents grouped under parents, x = time, bars = run duration, labels = cost/resets). Clicking a bar opens that agent's session view. |
 | 9 | Landing page = session list, newest first, active sessions pinned on top. Click → that session's Gantt + tree. |
 | 10 | Retention follows the session JSONLs: no separate limit; index rows whose session file has vanished are pruned. |
@@ -60,8 +63,14 @@ tool change, throttled), not per token.
 
 ## Browser UI (v1)
 
-1. **Landing** — table of main sessions: start time, duration, total cost, agent
-   count, running/finished. Newest first, running pinned top. SSE-refreshed.
+1. **Landing** — collapsible per-project sections (host badge
+   `hostname · sessionsRoot` in the header, from `/api/meta`;
+   `document.title` = `pi dash · <hostname>`). Within each project: table of
+   main sessions — start time, duration, total cost, agent count,
+   running/finished — newest first, running pinned top. Groups with running
+   sessions sort first. SSE-refreshed. Project display names are decoded
+   best-effort from the dir name (ambiguous around dashes); the raw dir name
+   is the stable id.
 2. **Session page** — Gantt + collapsible tree (main → agents → explorers).
    Bars show duration; labels: cost, resets, turns. Running bars grow live.
 3. **Session view (any node)** — scrollable transcript rendered from its JSONL:
@@ -100,24 +109,37 @@ Gate: ship v1, use it for ~2 weeks, only then decide on v2/v3.
 
 ## API (v1, implemented)
 
-Server: `pi/extensions/lib/dashboard-server.ts`, auto-started by `agent-dash.ts`
-(main session only; skipped when `PI_OFFLINE` or `PI_AGENT_DASH_DISABLE` is set —
-the test suite sets `PI_OFFLINE`). Binds `0.0.0.0:$PI_AGENT_DASH_PORT` (default
-7357); on EADDRINUSE another pi instance owns the port and we only print the
-URL. Listening + accepted sockets are `unref()`ed, so the server never keeps a
-pi process alive. Stateless: every request re-reads `agent-runs.jsonl` and the
-session JSONLs.
+Server: `pi/extensions/lib/dashboard-server.ts`, run machine-globally by
+`pi/dashboard-daemon.mjs` (systemd user unit `pi-dash.service`; see decision 6).
+It takes a `sessionsRoot` (default `~/.pi/agent/sessions`, override
+`PI_AGENT_DASH_SESSIONS_ROOT`) and enumerates, per request, the subdirs that
+contain an `agent-runs.jsonl` — dirs whose index vanished are skipped, new ones
+appear immediately. Sids are session uuids (globally unique), so sid-addressed
+endpoints resolve by scanning the enumerated indexes. Stateless: every request
+re-reads from disk. In the daemon the listening socket stays ref'd
+(`keepProcessAlive`); embedded in tests everything is `unref()`ed. On
+EADDRINUSE the daemon exits 1 and systemd retries (RestartSec=30).
+
+`agent-dash.ts` (main session only) writes the `session-start` index rows and
+probes `GET /api/meta` once per process (~1s timeout): daemon up → notify the
+URL + hostname; down → notify “re-run install-pi.sh”. `PI_OFFLINE` or
+`PI_AGENT_DASH_DISABLE` skips the probe (the test suite sets `PI_OFFLINE`).
 
 Response types live in `pi/extensions/lib/dashboard-api.ts`; all pi-session-JSONL
 parsing in `pi/extensions/lib/session-transcript.ts` (re-verify after `pi update`).
 
 | Endpoint | Response type | Notes |
 |---|---|---|
-| `GET /api/sessions` | `SessionsResponse` | One `SessionRow` per tree root, newest first. `running` flag; pinning is the client's job. |
-| `GET /api/tree?root=<sid>` | `TreeResponse` | `TreeNode[]` for Gantt + tree; 400 without `root`, 404 for unknown sid. |
-| `GET /api/transcript?sid=<sid>` | `TranscriptResponse` | Entries + `TranscriptAnchor[]` (handoff / agent-spawn / explorer-spawn, spawn anchors carry `targetSid`). |
-| `GET /api/events[?sid=<sid>]` | SSE | `data: {"changed":true}` (debounced ~500ms) on index changes (+ that sid's file); clients refetch. No replay. |
-| `GET /` + assets | static | `lib/dashboard-ui/` (placeholder page until phase 3), traversal-safe. |
+| `GET /api/meta` | `MetaResponse` | Daemon identity: `hostname`, `sessionsRoot`, `pid`, `startedAt`. Feeds the UI host badge/title and agent-dash's probe. |
+| `GET /api/sessions` | `SessionsResponse` | One `SessionRow` per tree root across ALL projects, newest first; rows carry `projectId` (raw dir name, stable) + `project` (best-effort decoded display path). Pinning/grouping is the client's job. |
+| `GET /api/tree?root=<sid>` | `TreeResponse` | `TreeNode[]` for Gantt + tree; sid found by scanning project indexes; 400 without `root`, 404 for unknown sid. |
+| `GET /api/transcript?sid=<sid>` | `TranscriptResponse` | Entries + `TranscriptAnchor[]` (handoff / agent-spawn / explorer-spawn, spawn anchors carry `targetSid`). Cross-project by the same sid scan. |
+| `GET /api/events[?sid=<sid>]` | SSE | `data: {"changed":true}` (debounced ~500ms). Watches the sessions root (project dirs appearing/vanishing) + every project dir filtered to `agent-runs.jsonl` (+ that sid's session file); clients refetch. No replay. |
+| `GET /` + assets | static | `lib/dashboard-ui/`, traversal-safe. |
+
+Future idea (NOT implemented): peers links on the landing page — a
+`dash-peers.json` listing other machines' dashboards to cross-link. Today the
+convention is ssh tunnels to distinct local ports (README, “Agent dashboard”).
 
 Liveness heuristic (`ACTIVE_WINDOW_MS`, 120 s): a tree is *running* iff its
 newest index-event ts or the root session file's mtime is younger than the

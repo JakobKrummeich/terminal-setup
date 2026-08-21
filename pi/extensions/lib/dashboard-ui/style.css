@@ -43,6 +43,7 @@ header.top {
 .brand { color: var(--fg); font-weight: 700; }
 .brand:hover { text-decoration: none; color: var(--accent); }
 .tagline { color: var(--fg-dim); font-size: 11px; }
+.host-badge { margin-left: auto; color: var(--fg-dim); font-size: 11px; } /* daemon identity (/api/meta) */
 
 #app { padding: 1rem 1.2rem 4rem; }
 .page { max-width: 1400px; margin: 0 auto; }
@@ -76,7 +77,23 @@ header.top {
 .crumb-sep { margin: 0 0.45em; color: var(--fg-dim); }
 .crumb.current { color: var(--fg); }
 
-/* --- landing table ----------------------------------------------------------- */
+/* --- landing: project sections + session tables ------------------------------ */
+
+details.project { border: 1px solid var(--border); border-radius: 4px; margin-bottom: 0.8rem; }
+details.project > summary.project-head {
+	cursor: pointer;
+	display: flex;
+	align-items: baseline;
+	gap: 0.9em;
+	padding: 0.42rem 0.7rem;
+	background: var(--bg-raised);
+	list-style-position: inside;
+}
+details.project > summary.project-head:hover .project-name { color: var(--accent); }
+details.project[open] > summary.project-head { border-bottom: 1px solid var(--border); }
+.project-name { font-weight: 700; }
+.project-count { color: var(--fg-dim); font-size: 11px; }
+details.project > table.sessions { margin: 0.2rem 0.7rem 0.5rem; width: calc(100% - 1.4rem); }
 
 table.sessions { border-collapse: collapse; width: 100%; }
 table.sessions th {

@@ -181,7 +181,7 @@ function get(port: number, rawPath: string): Promise<{ status: number; contentTy
 
 test("dashboard-ui: server serves shell + assets with correct content types; wiring is intact", async () => {
 	const result = await startDashboardServer({
-		dir: mkdtempSync(path.join(tmpdir(), "pi-dashui-project-")),
+		sessionsRoot: mkdtempSync(path.join(tmpdir(), "pi-dashui-root-")),
 		port: 0,
 		host: "127.0.0.1",
 		uiDir: UI_DIR,
