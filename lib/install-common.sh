@@ -122,11 +122,21 @@ install_pi_azure_response_retry_patch() {
         echo "SKIPPED: Pi Azure retry patch (pi is not installed)"
         return 0
     fi
-    local pi_bin pi_root pi_ai_root
+    # Pi's CLI bundle location changes between releases. Search upward from its
+    # resolved executable so the dependency lookup follows Node's package tree.
+    local pi_bin pi_ai_root pi_search_dir
     pi_bin="$(readlink -f "$(command -v pi)")"
-    pi_root="$(cd "$(dirname "$pi_bin")/.." && pwd)"
-    pi_ai_root="$pi_root/node_modules/@earendil-works/pi-ai"
-    PI_AI_ROOT="$pi_ai_root" node "$REPO/pi/patches/pi-azure-response-failed-retry.cjs"
+    pi_search_dir="$(dirname "$pi_bin")"
+    while [ "$pi_search_dir" != / ]; do
+        pi_ai_root="$pi_search_dir/node_modules/@earendil-works/pi-ai"
+        if [ -f "$pi_ai_root/package.json" ]; then
+            PI_AI_ROOT="$pi_ai_root" node "$REPO/pi/patches/pi-azure-response-failed-retry.cjs"
+            return
+        fi
+        pi_search_dir="$(dirname "$pi_search_dir")"
+    done
+    echo "ERROR: Pi AI package not found from Pi executable $pi_bin; patch not applied." >&2
+    return 1
 }
 
 install_wezterm() {
