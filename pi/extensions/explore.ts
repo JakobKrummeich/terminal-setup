@@ -46,8 +46,8 @@ Structure the final message as:
 1. Findings — specific: paths, line numbers, snippets.
 2. Summary: one sentence the caller can relay.`;
 
-// grep/find/ls are pi builtins that the allowlist activates even without the rtk-tools
-// extension; context_handoff keeps the context-cap machinery working. An allowlist
+// grep/find/ls are pi builtins the allowlist activates; context_handoff keeps the
+// context-cap machinery working. An allowlist
 // enables only what it lists, so bash/edit/write and Agent/Explore are structurally out.
 export const EXPLORER_TOOLS = ["read", "grep", "find", "ls", CONTEXT_CAP_TOOL_NAME] as const;
 
