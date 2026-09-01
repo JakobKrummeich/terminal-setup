@@ -21,7 +21,9 @@ run_patch() {
 RETRY_083="$(run_patch 0.83.0 pi-ai-0.83.0-retry.js)"
 RETRY_0841="$(run_patch 0.84.1 pi-ai-0.83.0-retry.js)"
 RETRY_0842="$(run_patch 0.84.2 pi-ai-0.84.2-retry.js)"
-node --input-type=module - "$RETRY_083" "$RETRY_0841" "$RETRY_0842" <<'NODE'
+RETRY_0843="$(run_patch 0.84.3 pi-ai-0.84.2-retry.js)"
+RETRY_0844="$(run_patch 0.84.4 pi-ai-0.84.2-retry.js)"
+node --input-type=module - "$RETRY_083" "$RETRY_0841" "$RETRY_0842" "$RETRY_0843" "$RETRY_0844" <<'NODE'
 import assert from "node:assert/strict";
 for (const retryPath of process.argv.slice(2)) {
   const { isRetryableAssistantError } = await import(`file://${retryPath}`);
@@ -36,5 +38,5 @@ for (const retryPath of process.argv.slice(2)) {
   assert.equal(isRetryableAssistantError({ ...unknownAzureFailure, rawStopReason: "completed" }), false);
   assert.equal(isRetryableAssistantError({ ...unknownAzureFailure, errorMessage: "insufficient_quota" }), false);
 }
-console.log("PASS: scoped Azure hidden-response retry patch for 0.83.0, 0.84.1, and 0.84.2");
+console.log("PASS: scoped Azure hidden-response retry patch for 0.83.0 through 0.84.4");
 NODE

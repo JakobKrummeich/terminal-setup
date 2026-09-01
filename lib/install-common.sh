@@ -117,7 +117,7 @@ install_pi_dash_service() {
 }
 
 install_pi_azure_response_retry_patch() {
-    # Temporary fail-closed workaround for Pi 0.83.0/0.84.1/0.84.2 Azure Responses failed SSE events.
+    # Temporary fail-closed workaround for Pi 0.83.0/0.84.1–0.84.4 Azure Responses failed SSE events.
     if ! command -v pi >/dev/null; then
         echo "SKIPPED: Pi Azure retry patch (pi is not installed)"
         return 0

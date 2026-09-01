@@ -67,7 +67,7 @@ installs + starts the `pi-dash` dashboard daemon as a systemd user unit
 (skipped with a warning where systemd/user-bus is unavailable — see “Agent
 dashboard” below), installs/links `rtk`, and installs the shell `wsstate.sh`
 hook. For Pi
-`0.83.0`, `0.84.1`, and `0.84.2`, it also applies a version-and-hash-guarded
+`0.83.0` and `0.84.1`–`0.84.4`, it also applies a version-and-hash-guarded
 Azure Responses hidden-error retry workaround. Installer fails after a Pi upgrade until patch is
 reviewed or removed. It does not install/link WezTerm or tmux.
 

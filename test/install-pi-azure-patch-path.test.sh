@@ -5,9 +5,10 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 FIXTURE="$(mktemp -d)"
 trap 'rm -rf "$FIXTURE"' EXIT
 
-mkdir -p "$FIXTURE/pi-root/dist" "$FIXTURE/bin"
+mkdir -p "$FIXTURE/pi-root/dist" "$FIXTURE/pi-root/node_modules/@earendil-works/pi-ai" "$FIXTURE/bin"
 printf '#!/usr/bin/env bash\n' > "$FIXTURE/pi-root/dist/cli.js"
 chmod +x "$FIXTURE/pi-root/dist/cli.js"
+printf '{"version":"fixture"}\n' > "$FIXTURE/pi-root/node_modules/@earendil-works/pi-ai/package.json"
 ln -s "$FIXTURE/pi-root/dist/cli.js" "$FIXTURE/bin/pi"
 cat > "$FIXTURE/bin/node" <<'NODE'
 #!/usr/bin/env bash

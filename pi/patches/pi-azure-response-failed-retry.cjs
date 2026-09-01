@@ -25,6 +25,11 @@ const expectedHashesByVersion = new Map([
     baseline: "72f0a6f7271841f24154b87c368024a779cd77436be4fb163276ca21849490a3",
     patched: "04ccf92f92f9d669cd6dd77ce47faacbadb34cf73fe73ac9fc39439ec5365931",
   }],
+  ["0.84.4", {
+    // Verified identical to 0.84.2 before patch; keep an explicit upgrade guard.
+    baseline: "72f0a6f7271841f24154b87c368024a779cd77436be4fb163276ca21849490a3",
+    patched: "04ccf92f92f9d669cd6dd77ce47faacbadb34cf73fe73ac9fc39439ec5365931",
+  }],
 ]);
 const before = `    if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage))\n        return false;\n    return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);`;
 const after = `    if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage))\n        return false;\n    // Azure may emit response.failed without error details for a transient throttle.\n    if (message.provider === "azure-openai-responses"\n        && message.rawStopReason === "failed"\n        && errorMessage === "Unknown error (no error details in response)")\n        return true;\n    return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);`;
