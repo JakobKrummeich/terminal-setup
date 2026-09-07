@@ -11,5 +11,9 @@ so this fixture tests both supported versions.
 Versions `0.84.3` and `0.84.4` have identical bytes, so this fixture tests all
 three versions.
 
+`pi-ai-0.85.1-retry.js` is unmodified `dist/utils/retry.js` from
+`@earendil-works/pi-ai@0.85.1` (SHA-256
+`9e344f7662b334de0cbc7e7eccf0faa5f3c645a50b5fd8383495df700841f81e`).
+
 Source: <https://github.com/earendil-works/pi>, `packages/ai`.
 License: MIT. Copyright Mario Zechner and contributors.
