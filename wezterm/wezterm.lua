@@ -146,6 +146,15 @@ config.keys = {
       window:set_config_overrides(overrides)
     end),
   },
+  -- ── Alt+Enter → pi follow-up queueing ────────────────────────
+  -- WezTerm binds Alt/Option+Enter to ToggleFullScreen by default, which
+  -- swallows the key before the TUI sees it. Send the CSI-u encoding
+  -- (Kitty keyboard protocol) pi listens for instead.
+  {
+    key = 'Enter',
+    mods = 'ALT',
+    action = wezterm.action.SendString('\x1b[13;3u'),
+  },
 }
 
 -- ── Workspace status prototype (tabs = workspaces) ────────────
