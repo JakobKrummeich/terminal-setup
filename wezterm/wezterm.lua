@@ -156,7 +156,9 @@ local ws_ok, ws = pcall(require, 'workspace-status')
 
 -- ── Chrome off: uniform field, minimal stimulus ────────────────
 config.enable_tab_bar = false
-config.window_decorations = 'TITLE | RESIZE'
+-- Nightly + GNOME Wayland: no SSD; TITLE|RESIZE renders nothing there.
+-- INTEGRATED_BUTTONS puts close/max/min into the tab bar instead.
+config.window_decorations = 'INTEGRATED_BUTTONS|RESIZE'
 config.audible_bell = 'Disabled'
 
 -- ── Scrollback ─────────────────────────────────────────────────
