@@ -35,6 +35,12 @@ const expectedHashesByVersion = new Map([
     baseline: "9e344f7662b334de0cbc7e7eccf0faa5f3c645a50b5fd8383495df700841f81e",
     patched: "ca288d102a4525c05ac3b731823f6f398b96bc562793e84decb73e27d0ab3492",
   }],
+  ["0.86.1", {
+    // Upstream still maps Azure response.failed without details to the same
+    // hidden error, and retry.js has no Azure-specific classifier yet.
+    baseline: "292e2a6654fdd48d6f020eedb2084a70b3ccceb289c37c65ad2d41c45dc664dc",
+    patched: "10121b3f352678884b2841d09e3578581b874964577db706c387d471bed9fce4",
+  }],
 ]);
 const before = `    if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage))\n        return false;\n    return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);`;
 const after = `    if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage))\n        return false;\n    // Azure may emit response.failed without error details for a transient throttle.\n    if (message.provider === "azure-openai-responses"\n        && message.rawStopReason === "failed"\n        && errorMessage === "Unknown error (no error details in response)")\n        return true;\n    return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);`;

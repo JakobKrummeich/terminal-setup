@@ -20,7 +20,7 @@ NODE_ENV_CAPTURE="$FIXTURE/pi-ai-root" PATH="$FIXTURE/bin:$PATH" REPO="$REPO" ba
   . "$REPO/lib/install-common.sh"
   install_pi_azure_response_retry_patch
 '
-expected="$FIXTURE/pi-root/node_modules/@earendil-works/pi-ai"
+expected="$(readlink -f "$FIXTURE/pi-root/node_modules/@earendil-works/pi-ai")"
 actual="$(cat "$FIXTURE/pi-ai-root")"
 [ "$actual" = "$expected" ] || {
   echo "expected PI_AI_ROOT=$expected, got $actual" >&2
