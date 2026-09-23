@@ -26,6 +26,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { conversationMessages } from "./context-compat.ts";
 import { createTestSession, textStep, toolStep, type TestSession } from "./harness.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
@@ -48,7 +49,7 @@ function captureContexts(t: TestSession): CapturedContext[] {
 	const seen: CapturedContext[] = [];
 	const inner = t.session.agent.streamFunction;
 	t.session.agent.streamFunction = ((model: unknown, llmContext: any, options: unknown) => {
-		seen.push({ messages: llmContext?.messages ?? [] });
+		seen.push({ messages: conversationMessages(llmContext) });
 		return inner(model, llmContext, options);
 	}) as any;
 	return seen;

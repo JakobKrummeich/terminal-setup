@@ -34,6 +34,7 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { initTheme, ModelRuntime, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { liveChildren, runChildTool } from "../lib/child-session.ts";
+import { currentTools } from "./context-compat.ts";
 import { sleep, textStep, type ResponseStep } from "./harness.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
@@ -105,7 +106,7 @@ async function makeCtx(toolNames: string[][]): Promise<ExtensionContext> {
 	});
 	runtime.setRuntimeApiKey("anthropic", "test-key-not-used");
 	(runtime as unknown as { streamSimple: unknown }).streamSimple = (m: any, context: any) => {
-		toolNames.push((context?.tools ?? []).map((tool: { name: string }) => tool.name));
+		toolNames.push(currentTools(context).map((tool: { name: string }) => tool.name));
 		const scripted = textStep("done") as ResponseStep;
 		const stream = createAssistantMessageEventStream();
 		void (async () => {

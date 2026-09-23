@@ -43,6 +43,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { ChildView, liveChildren, runChildTool } from "../lib/child-session.ts";
 import { CONTEXT_CAP_TOOL_NAME } from "../lib/env.ts";
+import { conversationMessages } from "./context-compat.ts";
 import { type ResponseStep, type ScriptedStep, sleep, textStep, toolStep } from "./harness.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
@@ -102,7 +103,7 @@ async function makeCtx(script: ScriptedStep[], calls: CapturedCall[]): Promise<E
 	runtime.setRuntimeApiKey("anthropic", "test-key-not-used");
 	let step = 0;
 	(runtime as unknown as { streamSimple: unknown }).streamSimple = (m: any, context: any) => {
-		calls.push({ messages: JSON.stringify(context?.messages ?? []) });
+		calls.push({ messages: JSON.stringify(conversationMessages(context)) });
 		// This driver renders responses only (no error steps in child scripts).
 		const scripted = (script[step++] ?? textStep("(script exhausted)")) as ResponseStep;
 		const stream = createAssistantMessageEventStream();

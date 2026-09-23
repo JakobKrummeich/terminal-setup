@@ -24,6 +24,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { conversationMessages, currentTools } from "./context-compat.ts";
 import { createTestSession, textStep, toolStep, type TestSession } from "./harness.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
@@ -49,7 +50,7 @@ function captureContexts(t: TestSession): CapturedContext[] {
 	const seen: CapturedContext[] = [];
 	const inner = t.session.agent.streamFunction;
 	t.session.agent.streamFunction = ((model: unknown, llmContext: any, options: unknown) => {
-		seen.push({ messages: llmContext?.messages ?? [], tools: llmContext?.tools ?? [] });
+		seen.push({ messages: conversationMessages(llmContext), tools: currentTools(llmContext) });
 		return inner(model, llmContext, options);
 	}) as any;
 	return seen;
@@ -90,7 +91,7 @@ test("v2 reaches the tool spec, the agent instructions and the machine writer", 
 	const contexts = captureContexts(t);
 	const writerPrompts: string[] = [];
 	t.modelRuntime.complete = async (_model: unknown, context: any) => {
-		writerPrompts.push(String(context?.messages?.[0]?.content?.[0]?.text ?? ""));
+		writerPrompts.push(String(conversationMessages(context)[0]?.content?.[0]?.text ?? ""));
 		return {
 			role: "assistant",
 			content: [{ type: "text", text: MACHINE_DRAFT }],

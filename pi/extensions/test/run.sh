@@ -9,14 +9,39 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-PI_ROOT="$(dirname "$(readlink -f "$(command -v pi)")")/.."
-PI_ROOT="$(readlink -f "$PI_ROOT")"
-PI_DEPS="$PI_ROOT/node_modules"
-
-if [[ ! -d "$PI_DEPS" ]]; then
-	echo "pi dependencies not found at $PI_DEPS" >&2
+PI_COMMAND="$(command -v pi || true)"
+if [[ -z "$PI_COMMAND" ]]; then
+	echo "pi executable not found on PATH" >&2
 	exit 1
 fi
+PI_BIN="$(readlink -f "$PI_COMMAND")"
+search_dir="$(dirname "$PI_BIN")"
+PI_ROOT=""
+while true; do
+	package_json="$search_dir/package.json"
+	if [[ -f "$package_json" ]] && node -e '
+		const fs = require("node:fs");
+		const pkg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+		process.exit(pkg.name === "@earendil-works/pi-coding-agent" ? 0 : 1);
+	' "$package_json" 2>/dev/null; then
+		PI_ROOT="$search_dir"
+		break
+	fi
+	[[ "$search_dir" == / ]] && break
+	search_dir="$(dirname "$search_dir")"
+done
+
+if [[ -z "$PI_ROOT" ]]; then
+	echo "pi package root not found above executable $PI_BIN" >&2
+	exit 1
+fi
+PI_DEPS="$PI_ROOT/node_modules"
+for dependency in @earendil-works/pi-ai @earendil-works/pi-tui typebox @types; do
+	if [[ ! -e "$PI_DEPS/$dependency" ]]; then
+		echo "pi dependency not found at $PI_DEPS/$dependency" >&2
+		exit 1
+	fi
+done
 
 mkdir -p node_modules/@earendil-works
 ln -sfn "$PI_ROOT" node_modules/@earendil-works/pi-coding-agent

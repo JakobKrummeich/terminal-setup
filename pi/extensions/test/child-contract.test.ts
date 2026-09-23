@@ -40,6 +40,7 @@ import { getModel } from "@earendil-works/pi-ai/compat";
 import { initTheme, ModelRuntime, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { liveChildren, runChildTool } from "../lib/child-session.ts";
 import { CONTEXT_CAP_TOOL_NAME } from "../lib/env.ts";
+import { conversationMessages, currentSystemPrompt } from "./context-compat.ts";
 import { type ResponseStep, type ScriptedStep, sleep, textStep, toolStep } from "./harness.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
@@ -112,8 +113,8 @@ async function makeCtx(script: ScriptedStep[], calls: CapturedCall[]): Promise<E
 	let step = 0;
 	(runtime as unknown as { streamSimple: unknown }).streamSimple = (m: any, context: any) => {
 		calls.push({
-			systemPrompt: String(context?.systemPrompt ?? ""),
-			messages: JSON.stringify(context?.messages ?? []),
+			systemPrompt: currentSystemPrompt(context),
+			messages: JSON.stringify(conversationMessages(context)),
 		});
 		// This driver renders responses only (no error steps in child scripts).
 		const scripted = (script[step++] ?? textStep("(script exhausted)")) as ResponseStep;

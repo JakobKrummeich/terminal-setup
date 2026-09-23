@@ -57,16 +57,20 @@ test("soft-cap handoff cycle completes inside a single prompt() call", async () 
 		// already happened — the swap continuation never escapes the awaited run.
 		assert.equal(t.session.isIdle, true);
 		const texts = assistantTexts(t.session);
-		assert.ok(
-			texts.includes("continued after swap"),
-			`post-swap turn must complete inside prompt(), got: ${JSON.stringify(texts)}`,
+		assert.equal(
+			texts.filter((text) => text === "continued after swap").length,
+			1,
+			`exactly one post-swap continuation must run, got: ${JSON.stringify(texts)}`,
 		);
+		assert.equal(texts.includes("(script exhausted)"), false, "swap must not start a continuation loop");
 
-		// The swap really happened (marker entry persisted in the session).
-		const marker = (t.session.messages as Array<{ role: string; customType?: string }>).find(
-			(m) => m.role === "custom" && m.customType === "context-cap-swap",
-		);
-		assert.ok(marker, "swap marker must be in the session");
+		// Exactly one marker must be persisted. On Pi 0.87 it is returned through
+		// the actionable turn_end boundary; older Pi receives one legacy queued marker.
+		const sessionMessages = t.session.messages as Array<{ role: string; customType?: string }>;
+		const markers = sessionMessages.filter((m) => m.role === "custom" && m.customType === "context-cap-swap");
+		assert.equal(markers.length, 1, "swap marker must appear exactly once");
+		const lastToolResult = sessionMessages.map((m) => m.role).lastIndexOf("toolResult");
+		assert.ok(sessionMessages.indexOf(markers[0]) > lastToolResult, "swap marker must follow tool-result entries");
 
 		// The handoff file was written by the tool.
 		const files = fs.readdirSync(CAP_DIR).filter((n) => n.startsWith(`${sessionId}-`));

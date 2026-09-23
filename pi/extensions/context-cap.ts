@@ -504,6 +504,26 @@ interface SwapDetails {
 	capSource: TriggerSource;
 }
 
+interface StagedSwap {
+	content: string;
+	details: SwapDetails;
+	swapCaps: ResolvedTriggers;
+	/** Exact assistant object whose message_end prepared this marker. */
+	sourceMessage: unknown;
+}
+
+interface ActionableTurnBoundary {
+	entries: unknown[];
+	context: unknown;
+	continue: boolean;
+}
+
+function isActionableTurnBoundary(event: unknown): event is ActionableTurnBoundary {
+	if (!event || typeof event !== "object") return false;
+	const candidate = event as Partial<ActionableTurnBoundary>;
+	return Array.isArray(candidate.entries) && "context" in candidate && typeof candidate.continue === "boolean";
+}
+
 export default function contextCapExtension(pi: ExtensionAPI) {
 	let phase: Phase = "idle";
 	let expectedPath: string | undefined;
@@ -525,6 +545,8 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 	 * NOT re-resolved at swap time: the forensic question is "what fired this".
 	 */
 	let cycleCaps: ResolvedTriggers | null = null;
+	/** Marker prepared during message_end and committed at the imminent turn_end boundary. */
+	let stagedSwap: StagedSwap | null = null;
 	/**
 	 * Last LLM-visible message array (post-slice, i.e. exactly what the model saw).
 	 * Cached HERE, not in lib/: jiti gives each extension file its own module copy,
@@ -541,6 +563,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		handoffWritten = false;
 		hardGraceUsed = false;
 		cycleCaps = null;
+		stagedSwap = null;
 	}
 
 	function sessionId(ctx: ExtensionContext): string {
@@ -609,15 +632,16 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 	}
 
 	/**
-	 * Swap = append a persistent marker entry; the "context" handler slices at it.
-	 * filePath undefined = hard cap with no handoff file at all.
-	 * Instant and infallible past the file read — no compaction, no abort, no race.
+	 * Prepare a persistent marker for the imminent turn_end. Pi 0.87 makes that
+	 * boundary actionable, so injecting a steer from inside it loops; older Pi
+	 * still needs the legacy sendMessage transport after the boundary arrives.
 	 */
-	function doSwap(
+	function stageSwap(
 		ctx: ExtensionContext,
 		filePath: string | undefined,
 		stale: boolean,
 		trigger: SwapTrigger,
+		sourceMessage: unknown,
 		author: HandoffAuthor = "agent",
 	) {
 		let content: string;
@@ -632,44 +656,79 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			}
 		} else {
 			content = NO_FILE_SUMMARY;
-			ctx.ui.notify("context-cap: hard cap hit with no handoff file — swapping without summary", "warning");
 		}
 		const swapCaps = stampCaps(ctx);
-		const details: SwapDetails = {
-			seq: filePath ? fileSeq(sessionId(ctx), path.basename(filePath)) ?? null : null,
-			trigger,
-			tokensAtSwap: tokensAtTrigger,
-			handoffPath: filePath ?? null,
-			stale,
-			author: filePath ? author : null,
-			schema: SCHEMA,
-			tailTokens: TAIL_TOKENS,
-			tailKeptTokens: tailKeptEstimate(),
-			contextWindow: swapCaps.contextWindow,
-			softCap: swapCaps.soft,
-			hardCap: swapCaps.hard,
-			capSource: swapCaps.source,
+		stagedSwap = {
+			content,
+			swapCaps,
+			sourceMessage,
+			details: {
+				seq: filePath ? fileSeq(sessionId(ctx), path.basename(filePath)) ?? null : null,
+				trigger,
+				tokensAtSwap: tokensAtTrigger,
+				handoffPath: filePath ?? null,
+				stale,
+				author: filePath ? author : null,
+				schema: SCHEMA,
+				tailTokens: TAIL_TOKENS,
+				tailKeptTokens: tailKeptEstimate(),
+				contextWindow: swapCaps.contextWindow,
+				softCap: swapCaps.soft,
+				hardCap: swapCaps.hard,
+				capSource: swapCaps.source,
+			},
 		};
+	}
+
+	function commitStagedSwap(ctx: ExtensionContext, event: unknown) {
+		if (!stagedSwap) return undefined;
+		const swap = stagedSwap;
+		stagedSwap = null;
 		resetCycle();
-		// Idle (turn_end path): marker itself starts the next turn.
-		// Streaming (hard-cap path): steer. Verified in pi-agent-core agent-loop.js:
-		// the steering queue is drained only AFTER turn_end — tool results are already
-		// in context — and injected before the next assistant response, so the marker
-		// can never land between a toolCall and its toolResult (no orphan possible).
-		// If the run aborts before the queue drains, the marker is lost — harmless:
-		// the cycle is already reset, so the next message_end above the cap re-fires.
-		if (ctx.isIdle()) {
-			pi.sendMessage({ customType: MARKER_TYPE, content, display: true, details }, { triggerTurn: true });
+
+		let boundaryResult: { entries: unknown[]; continue: true } | undefined;
+		if (isActionableTurnBoundary(event)) {
+			boundaryResult = {
+				entries: [
+					...event.entries,
+					{
+						type: "custom_message",
+						customType: MARKER_TYPE,
+						content: swap.content,
+						display: true,
+						details: swap.details,
+					},
+				],
+				continue: true,
+			};
+		} else if (ctx.isIdle()) {
+			pi.sendMessage(
+				{ customType: MARKER_TYPE, content: swap.content, display: true, details: swap.details },
+				{ triggerTurn: true },
+			);
 		} else {
-			pi.sendMessage({ customType: MARKER_TYPE, content, display: true, details }, { deliverAs: "steer" });
+			pi.sendMessage(
+				{ customType: MARKER_TYPE, content: swap.content, display: true, details: swap.details },
+				{ deliverAs: "steer" },
+			);
 		}
-		// Dashboard index (agent-runs.jsonl): a swap happened in this session — main
-		// or child alike, the sid tells them apart. No-op for in-memory sessions.
+
+		// These effects belong to the commit, not preparation: exactly one reset is
+		// reported even when a hard-cap message stages before its tools finish.
+		if (swap.details.trigger === "hard-no-file") {
+			ctx.ui.notify("context-cap: hard cap hit with no handoff file — swapping without summary", "warning");
+		}
 		appendEvent(ctx.sessionManager.getSessionDir(), { ts: Date.now(), event: "reset", sid: sessionId(ctx) });
-		// Provider-reported usage is stale (pre-swap) until the next response lands;
-		// show an explicit transient instead of a misleading high number.
-		ctx.ui.setStatus(CONTEXT_CAP_STATUS_KEY, `swapped/${fmtTokens(swapCaps.soft)}`);
-		ctx.ui.notify(`context-cap: context swapped (${trigger}, ${fmtTokens(details.tokensAtSwap)} tokens)`, "info");
+		ctx.ui.setStatus(CONTEXT_CAP_STATUS_KEY, `swapped/${fmtTokens(swap.swapCaps.soft)}`);
+		ctx.ui.notify(
+			`context-cap: context swapped (${swap.details.trigger}, ${fmtTokens(swap.details.tokensAtSwap)} tokens)`,
+			"info",
+		);
+		return boundaryResult;
+	}
+
+	function continueActionableBoundary(event: unknown) {
+		return isActionableTurnBoundary(event) ? { entries: [...event.entries], continue: true as const } : undefined;
 	}
 
 	/**
@@ -720,7 +779,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		return expectedPath;
 	}
 
-	async function hardCap(ctx: ExtensionContext, tokens: number, capsNow: ResolvedTriggers, lastMessage?: unknown) {
+	async function hardCap(ctx: ExtensionContext, tokens: number, capsNow: ResolvedTriggers, lastMessage: unknown) {
 		if (!expectedPath) {
 			// Hard crossed without a cycle and without a rescuable next turn (the
 			// one-jump toolUse case is steered in message_end): derive path context anyway.
@@ -737,7 +796,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			// file (or nothing at all), spend one LLM call on a current one.
 			const written = await machineHandoff(ctx, lastMessage);
 			if (written) {
-				doSwap(ctx, written, false, "hard", "machine");
+				stageSwap(ctx, written, false, "hard", lastMessage, "machine");
 				return;
 			}
 			// The draft failed because the user hit ESC mid-call — a window that only
@@ -753,7 +812,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		}
 		const fallback = fresh ?? latestPath(sessionId(ctx));
 		const stale = !fresh && fallback !== undefined; // older seq file substituted
-		doSwap(ctx, fallback, stale, fallback ? "hard" : "hard-no-file", "agent");
+		stageSwap(ctx, fallback, stale, fallback ? "hard" : "hard-no-file", lastMessage, "agent");
 	}
 
 	// -- handoff tool -----------------------------------------------------------
@@ -844,8 +903,8 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 	//  1. Warnings behind the latest marker belong to a swapped-away cycle —
 	//     only reachable via the recency-tail lever — and are always scrubbed.
 	//  2. With no cycle armed, ANY warning is a stranded delivery (pi's queues
-	//     can deliver steers arbitrarily late, e.g. after an errored run; doSwap
-	//     and the shrink guard in message_end reset the cycle): scrubbed. The
+	//     can deliver steers arbitrarily late, e.g. after an errored run; a committed
+	//     swap and the shrink guard in message_end reset the cycle): scrubbed. The
 	//     clause-bearing case — a warning landing in a fresh post-swap window —
 	//     is covered structurally: post-swap means marker present and phase
 	//     reset, so the warning is invisible on the very first call.
@@ -913,7 +972,11 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		// Re-read per check: the model (and with it the window) can change mid-session
 		// and pi has no model-switch event.
 		const usage = ctx.getContextUsage();
-		const tokens = usage?.tokens;
+		// Pi 0.87 persists the assistant after message_end listeners, so context usage
+		// can still describe the pre-response marker. Prefer this event's provider
+		// usage; older Pi reports the same value through getContextUsage().
+		const messageTokens = (msg as { usage?: { totalTokens?: unknown } }).usage?.totalTokens;
+		const tokens = typeof messageTokens === "number" && Number.isFinite(messageTokens) ? messageTokens : usage?.tokens;
 		const capsNow = capsFrom(ctx, usage);
 		updateStatus(ctx, tokens, capsNow);
 		// Network-errored / user-aborted messages are synthesized by pi's failure
@@ -991,7 +1054,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("turn_end", (event, ctx) => {
+	const handleTurnEnd = (event: any, ctx: ExtensionContext) => {
 		// Errored/aborted turns never reached the agent (the message is synthetic,
 		// toolResults always []). Treating them as refusals burned reminder retries
 		// during network flakes — two blips flipped the cycle to "exhausted" with
@@ -999,7 +1062,30 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		// aborted run un-aborted it via pi's queued-message rescue (continue()).
 		// Skip; the cycle stays armed and the next real turn re-evaluates.
 		const stopReason = (event.message as { stopReason?: string }).stopReason;
-		if (stopReason === "error" || stopReason === "aborted") return;
+		const outcome = (event as { outcome?: string }).outcome;
+		if (
+			stopReason === "error" ||
+			stopReason === "aborted" ||
+			outcome === "error" ||
+			outcome === "aborted" ||
+			ctx.signal?.aborted
+		) {
+			// A hard swap may already be staged from this turn's message_end. Drop
+			// only that draft: the armed cycle and any written handoff remain usable.
+			stagedSwap = null;
+			return;
+		}
+
+		// Hard-cap paths run in message_end, before tools execute. Commit only for
+		// their own turn: a delayed boundary must never apply another assistant's
+		// destructive marker. The active cycle stays armed after a stale discard.
+		if (stagedSwap) {
+			if (stagedSwap.sourceMessage !== event.message) {
+				stagedSwap = null;
+				return;
+			}
+			return commitStagedSwap(ctx, event);
+		}
 
 		const usage = ctx.getContextUsage();
 		const tokens = usage?.tokens;
@@ -1011,13 +1097,14 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		// Verification (both steer and silent-stop paths): swap as soon as the file exists.
 		if ((phase === "steered" || phase === "prompted" || phase === "exhausted") && expectedPath) {
 			if (handoffWritten) {
-				doSwap(ctx, expectedPath, false, "soft");
-				return;
+				stageSwap(ctx, expectedPath, false, "soft", event.message);
+				return commitStagedSwap(ctx, event);
 			}
 			if (phase === "exhausted" || hasToolCalls) return; // still working / already gave up
 			if (retries < MAX_RETRIES) {
 				retries++;
 				send(reminderMessage(retries));
+				return continueActionableBoundary(event);
 			} else {
 				phase = "exhausted";
 				updateStatus(ctx, tokens, capsNow);
@@ -1034,8 +1121,12 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			updateStatus(ctx, tokens, capsNow);
 			send(silentStopMessage(tokens, capsNow));
 			ctx.ui.notify(`context-cap: soft cap (${fmtTokens(tokens)}) — last-turn handoff requested`, "info");
+			return continueActionableBoundary(event);
 		}
-	});
+	};
+	// Cast only at registration: Pi <=0.86 types require void, while Pi 0.87
+	// accepts the boundary result. Runtime shape detection above selects behavior.
+	pi.on("turn_end", handleTurnEnd as any);
 
 	// -- pi's own compaction: last ditch ---------------------------------------
 
