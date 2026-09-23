@@ -6,9 +6,24 @@
  *
  * The default prompt starts with:
  *   "You are an expert coding assistant operating inside pi..."
- * This extension replaces everything before "Available tools:" with the
- * caveman preamble, preserving the dynamic tools/guidelines/context/skills
- * sections that pi appends.
+ * This extension replaces everything before the tool list with the caveman
+ * preamble, preserving the dynamic tools/rules/context/skills sections that
+ * pi appends.
+ *
+ * Two prompt shapes exist, and both are handled because the marker set covers
+ * both (the repo is expected to run on either pi version):
+ *   - pi <= 0.85: one flat string — "Available tools:", "Guidelines:",
+ *     "Pi documentation ..." as plain prose blocks.
+ *   - pi >= 0.86: ordered XML sections joined by blank lines — an untagged
+ *     preamble followed by <tools>, <rules>, <docs>, <project_context>,
+ *     <skills>, <cwd>. Matching only "Available tools:" silently disabled
+ *     this extension on 0.86 (no marker -> no-op -> no caveman rules).
+ *
+ * Returning `systemPrompt` still means "replace the whole prompt for this run"
+ * on 0.86 (pi sets it as `systemPromptOptions.forceSystemPrompt` and projects
+ * it as the provider's leading system prompt; the transcript keeps the
+ * structured sections). The transform is idempotent, so re-running it over an
+ * already-cavemanized prompt is a no-op.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -56,19 +71,41 @@ Code/commits/PRs: write normal. Tool invocations: normal parameters.
 
 `;
 
-// Marker that separates the intro prose from the dynamic sections
-const TOOLS_MARKER = "Available tools:";
+// Markers that start the dynamic part, i.e. end the intro prose: flat prompt
+// (pi <= 0.85) and sectioned prompt (pi >= 0.86). The earliest match wins, so a
+// context file quoting the other marker cannot move the cut.
+const TOOLS_MARKERS = ["Available tools:", "<tools>"];
 
-// Regex to strip the "Pi documentation" section (header + all bullet lines)
-const PI_DOCS_RE = /\n\nPi documentation[^\n]*(\n- [^\n]+)*/g;
+// Strip the pi-documentation block: flat prose (header + bullets) on pi <= 0.85,
+// the <docs> section on pi >= 0.86.
+const PI_DOCS_RES = [
+  /\n\nPi documentation[^\n]*(\n- [^\n]+)*/g,
+  /\n*<docs>\nPi documentation[\s\S]*?\n<\/docs>/g,
+];
+
+/** Index where pi's dynamic sections start, or -1 for an unknown prompt shape. */
+export function findToolsMarker(prompt: string): number {
+  let found = -1;
+  for (const marker of TOOLS_MARKERS) {
+    const idx = prompt.indexOf(marker);
+    if (idx !== -1 && (found === -1 || idx < found)) found = idx;
+  }
+  return found;
+}
+
+/** Caveman preamble + pi's dynamic sections, or undefined to leave the prompt alone. */
+export function cavemanize(prompt: string): string | undefined {
+  const markerIdx = findToolsMarker(prompt);
+  if (markerIdx === -1) return undefined; // custom prompt or unexpected shape — don't touch
+
+  let dynamicPart = prompt.slice(markerIdx);
+  for (const re of PI_DOCS_RES) dynamicPart = dynamicPart.replace(re, "");
+  return CAVEMAN_PREAMBLE + dynamicPart;
+}
 
 export default function (pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event, _ctx) => {
-    const prompt = event.systemPrompt;
-    const markerIdx = prompt.indexOf(TOOLS_MARKER);
-    if (markerIdx === -1) return; // custom prompt or unexpected shape — don't touch
-
-    const dynamicPart = prompt.slice(markerIdx).replace(PI_DOCS_RE, "");
-    return { systemPrompt: CAVEMAN_PREAMBLE + dynamicPart };
+    const systemPrompt = cavemanize(event.systemPrompt);
+    return systemPrompt ? { systemPrompt } : undefined;
   });
 }

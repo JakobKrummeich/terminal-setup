@@ -31,6 +31,20 @@ Read `README.md` first — layout, install, known issues live there. Don't dupli
 - wezterm config: save + watch the running terminal (auto-reload); syntax errors show
   as a wezterm error overlay.
 - pi extensions: restart pi to reload.
+- against a pi version that is NOT installed (e.g. before upgrading): `npm pack` the
+  target `@earendil-works/pi-coding-agent` + `pi-ai` + `pi-tui` + `pi-agent-core`
+  into a `/tmp` farm, point a scratch tsconfig's `paths` at it with absolute repo
+  `include`s, and run the same `command npx -y -p typescript tsc`. Never install the
+  new version to test it. Extension-visible shapes that moved in >=0.86: the system
+  prompt is ordered XML sections (`<tools>`/`<rules>`/`<docs>`/`<cwd>`), and the
+  prompt + tool declarations ride as `system` messages inside the provider
+  `context.messages` (0.87 filters them out of extension `context` events).
+  To also RUN repo code against the uninstalled version, add third-party deps from
+  the installed pi into the farm and use
+  `node --experimental-strip-types --preserve-symlinks --preserve-symlinks-main`
+  from a /tmp dir whose `node_modules` points at the farm — `--preserve-symlinks`
+  is what makes the repo's bare imports resolve to the NEW libs instead of the
+  installed ones.
 - extension tests: `cd pi/extensions/test && timeout 150 ./run.sh` (builds a
   node_modules symlink farm; run it before typecheck; exports `PI_OFFLINE=1` —
   without it pi's model-catalog refresh holds keep-alive sockets and hangs the
