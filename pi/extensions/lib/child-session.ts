@@ -211,6 +211,10 @@ export class ChildView {
 	 * the F2 view shows a handoff tool call with no visible cause and no visible
 	 * post-swap injection. The child's own prompt() delivery re-emits the prompt
 	 * already shown by addUserMessage; pendingManualPrompts swallows exactly those.
+	 * Two transports reach here: message_start (queued/steered messages) and, on
+	 * Pi >=0.87, entry_appended — context-cap commits its swap marker as a turn_end
+	 * boundary entry, which pi persists WITHOUT any message_start. Each delivery
+	 * emits exactly one of the two, so handling both never double-renders.
 	 */
 	private addInjectedMessage(message: { role: string; content?: unknown; display?: boolean }) {
 		if (message.role === "user" && this.pendingManualPrompts > 0) {
@@ -271,6 +275,13 @@ export class ChildView {
 				if (event.type === "message_end") {
 					for (const tool of this.pendingTools.values()) tool.setArgsComplete();
 					this.streaming = undefined;
+				}
+				break;
+			}
+			case "entry_appended": {
+				const entry = event.entry as { type: string; content?: unknown; display?: boolean };
+				if (entry.type === "custom_message") {
+					this.addInjectedMessage({ role: "custom", content: entry.content, display: entry.display });
 				}
 				break;
 			}

@@ -218,6 +218,17 @@ test("one-jump hard-cap crossing: emergency steer, handoff survives into the swa
 			(m) => m.role === "toolResult" && JSON.stringify(m.content ?? "").includes("Refused: no handoff was requested"),
 		);
 		assert.equal(refused, false, "the handoff tool must not be refused");
+
+		// F2 watch view, fed by the REAL child event stream: the marker must be
+		// visible whichever transport pi used to deliver it (Pi >=0.87 commits it
+		// as a turn_end boundary entry — entry_appended, no message_start).
+		const watched = liveChildren.get(childId)!.view.render(200).join("\n");
+		assert.ok(watched.includes("Survive-the-jump-SENTINEL"), "F2 view must render the swap marker's handoff body");
+		assert.equal(
+			watched.split("Survive-the-jump-SENTINEL").length - 1,
+			1,
+			"F2 view must render the handoff body exactly once",
+		);
 	} finally {
 		cleanup(childId);
 	}
@@ -235,11 +246,22 @@ test("ChildView renders injected steers and swap markers; prompt renders once", 
 	view.handle(
 		event({ role: "custom", customType: "context-cap-swap", content: "MARKER-SENTINEL", display: true }),
 	);
+	// Pi >=0.87 boundary-committed marker: entry_appended only, no message_start.
+	const appended = (entry: Record<string, unknown>) =>
+		({ type: "entry_appended", entry }) as unknown as AgentSessionEvent;
+	view.handle(
+		appended({ type: "custom_message", customType: "context-cap-swap", content: "BOUNDARY-MARKER-SENTINEL", display: true }),
+	);
+	view.handle(
+		appended({ type: "custom_message", customType: "other", content: "HIDDEN-ENTRY-SENTINEL", display: false }),
+	);
 	// Non-display custom messages stay hidden.
 	view.handle(event({ role: "custom", customType: "other", content: "HIDDEN-SENTINEL", display: false }));
 	const out = view.render(200).join("\n");
 	assert.ok(out.includes("STEER-SENTINEL"), "steer message must render");
 	assert.ok(out.includes("MARKER-SENTINEL"), "swap marker must render");
+	assert.ok(out.includes("BOUNDARY-MARKER-SENTINEL"), "boundary-committed swap marker must render");
 	assert.ok(!out.includes("HIDDEN-SENTINEL"), "display:false custom messages must not render");
+	assert.ok(!out.includes("HIDDEN-ENTRY-SENTINEL"), "display:false custom entries must not render");
 	assert.equal(out.split("TASK-PROMPT-SENTINEL").length - 1, 1, "prompt must render exactly once");
 });
