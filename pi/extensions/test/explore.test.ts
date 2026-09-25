@@ -639,7 +639,8 @@ test("old finished children are evicted beyond the cap; running children survive
 	}
 	const running = [...liveChildren.values()].filter((r) => r.running);
 	assert.equal(running.length, 1, "the running child must survive eviction despite being oldest");
-	// Evicted ids fall back to the existing unknown-resume error.
+	// Eviction is lossless: an evicted id is reopened from its session file
+	// (details in child-reopen.test.ts).
 	const resumed = await runChildTool(
 		{ prompt: "follow-up", resume_id: fastIds[0] },
 		options,
@@ -647,8 +648,9 @@ test("old finished children are evicted beyond the cap; running children survive
 		undefined,
 		ctx,
 	);
-	assert.equal((resumed.details as { error?: string }).error, "unknown_resume_id");
-	assert.match(resultText(resumed), /No live explorer session/);
+	assert.equal((resumed.details as { error?: string }).error, undefined, resultText(resumed));
+	assert.match(resultText(resumed), /fast child done/);
+	assert.ok(liveChildren.has(fastIds[0]), "reopened child must be live again");
 	const slow = await slowPromise;
 	assert.equal(isBusyError(slow), false, "the running child must be unaffected by evictions");
 	assert.match(resultText(slow), /slow child done/);

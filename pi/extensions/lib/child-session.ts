@@ -4,7 +4,7 @@
 // (core/package-manager.js collectAutoExtensionEntries), so files under lib/ are
 // never loaded as extensions and need no default export.
 import { AsyncLocalStorage } from "node:async_hooks";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
@@ -25,7 +25,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Container, type KeyId, matchesKey, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import { renderFooterLines } from "../custom-footer.ts";
-import { appendEvent, type RunStatus } from "./agent-runs.ts";
+import { appendEvent, findSpawnsByLabel, type RunStatus } from "./agent-runs.ts";
 import { cancelPendingWork } from "./pending-work.ts";
 import { waitForSessionQuiet } from "./session-quiet.ts";
 import {
@@ -77,6 +77,23 @@ export interface ChildRecord {
 	lastProgressAt?: number;
 }
 
+/**
+ * Where an evicted (or pre-restart) child lives on disk, plus the record fields
+ * to restore when it is reopened. Built from an eviction tombstone or from the
+ * child's agent-runs.jsonl spawn/finish rows.
+ */
+export interface ChildSource {
+	id: string;
+	kind: string;
+	sid: string;
+	rootSid: string;
+	/** undefined for in-memory sessions (never persisted). */
+	sessionFile: string | undefined;
+	description: string;
+	turns: number;
+	elapsedMs: number;
+}
+
 export interface RunMeta {
 	id: string;
 	kind: string;
@@ -111,10 +128,23 @@ interface SharedState {
 	 * All children of this pi session: running/settling entries plus at most
 	 * MAX_FINISHED_CHILDREN finished ones. Older finished children are evicted
 	 * when a fresh child spawns (memory cap: each record holds a full AgentSession
-	 * plus a rendered ChildView) and can no longer be resumed — callers then get
-	 * the "No live … session" error.
+	 * — whose SessionManager keeps the whole transcript in memory — plus a
+	 * rendered ChildView). Eviction is lossless: a later resume_id reopens the
+	 * child from its session file (see reopenChild).
 	 */
 	liveChildren: Map<string, ChildRecord>;
+	/**
+	 * Tombstones of evicted children, keyed by child id: everything needed to
+	 * reopen one from disk. Deleted when the child is reopened. Small records, so
+	 * unbounded for the pi session's lifetime (cleared by resetChildState).
+	 */
+	evicted: Map<string, ChildSource>;
+	/**
+	 * Ids currently being reopened (reserved synchronously before the first await).
+	 * Never placeholders in liveChildren — the record appears there only once the
+	 * session exists, so eviction/watch/picker code never sees half-built entries.
+	 */
+	reopening: Set<string>;
 	busyGroups: Map<string, BusyGroup>;
 	childSessionStore: AsyncLocalStorage<ChildSessionInfo>;
 	/** F2 watch cursor: id of the last watched child, advanced per watchTarget() call. */
@@ -124,10 +154,12 @@ interface SharedState {
 // module on every session bind (moduleCache: false), so in a long-lived pi process an
 // old code copy may still hold the previous shape under the previous symbol — old and
 // new copies must never share a mis-shaped state object.
-const STATE_KEY = Symbol.for("terminal-setup.child-session.v5");
+const STATE_KEY = Symbol.for("terminal-setup.child-session.v6");
 const globals = globalThis as unknown as Record<symbol, SharedState | undefined>;
 const state: SharedState = (globals[STATE_KEY] ??= {
 	liveChildren: new Map(),
+	evicted: new Map(),
+	reopening: new Set(),
 	busyGroups: new Map(),
 	childSessionStore: new AsyncLocalStorage<ChildSessionInfo>(),
 	watchCursor: undefined,
@@ -136,6 +168,8 @@ const state: SharedState = (globals[STATE_KEY] ??= {
 /** Session teardown: drop child records and busy-latch counters (see subagent.ts). */
 export function resetChildState(): void {
 	state.liveChildren.clear();
+	state.evicted.clear();
+	state.reopening.clear();
 	state.busyGroups.clear();
 	state.watchCursor = undefined;
 }
@@ -201,8 +235,68 @@ export class ChildView {
 	}
 	addUserMessage(text: string) {
 		this.pendingManualPrompts++;
+		this.addUserBlock(text);
+		this.requestRender();
+	}
+	private addUserBlock(text: string) {
 		this.container.addChild(new Spacer(1));
 		this.container.addChild(new UserMessageComponent(text, getMarkdownTheme()));
+	}
+	/** User/custom message block, as live delivery and replay render it (no prompt dedupe). */
+	private addMessageBlock(message: { role: string; content?: unknown; display?: boolean }) {
+		if (message.role === "custom" && message.display === false) return;
+		const text = messageText(message.content);
+		if (!text.trim()) return;
+		this.addUserBlock(text);
+	}
+	/**
+	 * Render a reopened child's saved history (session.sessionManager.getBranch():
+	 * the FULL branch, including messages from before a context-cap swap and the
+	 * swap markers — not the trimmed LLM context). Mirrors pi's own
+	 * renderSessionEntries (interactive-mode.js renderSessionItems). Must run before
+	 * the new prompt's addUserMessage and before any live event: it leaves no
+	 * pending tools behind and never touches pendingManualPrompts.
+	 */
+	replay(entries: readonly unknown[]) {
+		for (const raw of entries) {
+			const entry = raw as { type?: string; message?: unknown; content?: unknown; display?: boolean };
+			if (entry.type === "custom_message") {
+				this.addMessageBlock({ role: "custom", content: entry.content, display: entry.display });
+				continue;
+			}
+			if (entry.type !== "message" || !entry.message) continue;
+			const message = entry.message as { role: string; content?: unknown; toolCallId?: string };
+			if (message.role === "user") {
+				this.addMessageBlock(message);
+			} else if (message.role === "assistant") {
+				const assistant = message as unknown as AssistantMessage;
+				this.container.addChild(new AssistantMessageComponent(assistant, false, getMarkdownTheme()));
+				const before = new Set(this.pendingTools.keys());
+				this.syncToolCalls(assistant);
+				if (assistant.stopReason === "aborted" || assistant.stopReason === "error") {
+					// Same as pi: tool calls of a failed message never ran — show why.
+					const text =
+						assistant.stopReason === "aborted" ? "Operation aborted" : assistant.errorMessage || "Error";
+					for (const [id, tool] of this.pendingTools) {
+						if (before.has(id)) continue;
+						tool.updateResult({ content: [{ type: "text", text }], isError: true });
+						this.pendingTools.delete(id);
+					}
+				}
+			} else if (message.role === "toolResult" && message.toolCallId) {
+				const tool = this.pendingTools.get(message.toolCallId);
+				if (!tool) continue;
+				tool.updateResult(message as unknown as Parameters<ToolExecutionComponent["updateResult"]>[0]);
+				this.pendingTools.delete(message.toolCallId);
+			}
+		}
+		for (const tool of this.tools) tool.setArgsComplete();
+		// A call without a saved result was cut off (abort mid-tool, pi killed mid-run).
+		// Nothing will ever complete it: no live events exist for past calls.
+		for (const tool of this.pendingTools.values()) {
+			tool.updateResult({ content: [{ type: "text", text: "(interrupted — no result recorded)" }], isError: true });
+		}
+		this.pendingTools.clear();
 		this.requestRender();
 	}
 	/**
@@ -221,11 +315,7 @@ export class ChildView {
 			this.pendingManualPrompts--;
 			return;
 		}
-		if (message.role === "custom" && message.display === false) return;
-		const text = messageText(message.content);
-		if (!text.trim()) return;
-		this.container.addChild(new Spacer(1));
-		this.container.addChild(new UserMessageComponent(text, getMarkdownTheme()));
+		this.addMessageBlock(message);
 	}
 	private syncToolCalls(message: AssistantMessage) {
 		const content = (message as { content?: unknown }).content;
@@ -561,15 +651,72 @@ async function childResourceLoader(
 	return loader;
 }
 
+/** SessionManager.open failed: the saved transcript is unreadable (not a config problem). */
+class ReopenError extends Error {}
+
+/**
+ * The dir children's session files (and thus their agent-runs.jsonl rows) land
+ * in — the same computation createChildSession's SessionManager.create does.
+ * pi's getDefaultSessionDir is not exported from the package root, so ask a
+ * throwaway manager (no file is written before a first assistant message).
+ */
+function childSessionDir(cwd: string): string {
+	return SessionManager.create(cwd, process.env.PI_CODING_AGENT_SESSION_DIR).getSessionDir();
+}
+
+/**
+ * Model and thinking level saved in a reopened child's session, resolved the way
+ * pi's createAgentSession restores them (sdk.js): the branch's last model
+ * (model_change or assistant message) via the registry, only if its provider has
+ * auth configured; the thinking level only if the branch recorded one (pi's
+ * buildSessionContext otherwise reports a placeholder "off"). Each field is
+ * undefined when absent or unresolvable — the caller falls back.
+ */
+function savedModelSettings(
+	ctx: ExtensionContext,
+	sessionManager: SessionManager,
+): { model?: ChildModel; thinkingLevel?: ChildThinkingLevel } {
+	const context = sessionManager.buildSessionContext();
+	const found = context.model
+		? ctx.modelRegistry.find(context.model.provider, context.model.modelId)
+		: undefined;
+	const model = found && ctx.modelRegistry.hasConfiguredAuth(found) ? found : undefined;
+	const hasThinkingEntry = sessionManager
+		.getBranch()
+		.some((entry) => (entry as { type?: string }).type === "thinking_level_change");
+	const thinkingLevel = hasThinkingEntry ? (context.thinkingLevel as ChildThinkingLevel) : undefined;
+	return { model, thinkingLevel };
+}
+
+/**
+ * Create a child session — fresh, or reopened from `sessionFile` (an evicted or
+ * pre-restart child): SessionManager.open loads the saved entries, createAgentSession
+ * restores them into the agent, and new entries keep appending to the same file.
+ * A reopened child runs on its saved model/thinking level (savedModelSettings);
+ * the options/parent ones are only the fallback when those cannot be resolved.
+ */
 async function createChildSession(
 	ctx: ExtensionContext,
 	options: RunChildOptions,
+	sessionFile?: string,
 ): Promise<AgentSession> {
 	const cwd = ctx.cwd;
+	let sessionManager: SessionManager;
+	try {
+		sessionManager = sessionFile
+			? SessionManager.open(sessionFile)
+			: SessionManager.create(cwd, process.env.PI_CODING_AGENT_SESSION_DIR);
+	} catch (error) {
+		if (!sessionFile) throw error;
+		throw new ReopenError(error instanceof Error ? error.message : String(error));
+	}
+	// A reopened child keeps ITS model and thinking level, exactly like a live
+	// resume does — not the parent's current ones, nor RunChildOptions' (the
+	// explorer model may have been reconfigured since).
+	const saved = sessionFile ? savedModelSettings(ctx, sessionManager) : {};
 	const agentDir = getAgentDir();
 	const settingsManager = SettingsManager.create(cwd, agentDir);
 	const resourceLoader = await childResourceLoader(cwd, agentDir, settingsManager);
-	const sessionManager = SessionManager.create(cwd, process.env.PI_CODING_AGENT_SESSION_DIR);
 	const modelRuntime = (ctx.modelRegistry as unknown as { runtime?: unknown }).runtime;
 	// The ALS payload lets extensions loading inside the child know they are in a
 	// child and which contract it carries (subagent.ts appends it to the system
@@ -579,8 +726,8 @@ async function createChildSession(
 		createAgentSession({
 			cwd,
 			agentDir,
-			model: options.model ?? ctx.model,
-			thinkingLevel: options.thinkingLevel ?? ctx.thinkingLevel,
+			model: saved.model ?? options.model ?? ctx.model,
+			thinkingLevel: saved.thinkingLevel ?? options.thinkingLevel ?? ctx.thinkingLevel,
 			...(options.tools && { tools: options.tools }),
 			excludeTools: options.excludeTools,
 			sessionManager,
@@ -973,13 +1120,19 @@ export function prevChild(currentId: string): ChildRecord | undefined {
 	return target;
 }
 
-/** Finished children kept for resume; oldest beyond this are evicted on spawn. */
+/**
+ * Finished children kept in memory; the oldest beyond this are evicted on spawn
+ * or reopen. Memory cap only — evicted children stay resumable (reopened from
+ * their session file, see reopenChild).
+ */
 const MAX_FINISHED_CHILDREN = 8;
 
 /**
  * Evict the oldest finished children beyond MAX_FINISHED_CHILDREN. Running or
  * settling children (not idle yet) are never evicted. Map iteration order is
- * insertion order, so the first finished entries are the oldest.
+ * insertion order, so the first finished entries are the oldest (a reopened
+ * child re-enters at the end). Each evicted child leaves a tombstone in
+ * state.evicted so a later resume_id can reopen it.
  */
 function evictFinishedChildren(): void {
 	let finished = 0;
@@ -991,9 +1144,138 @@ function evictFinishedChildren(): void {
 		if (record.running || !record.session.isIdle) continue;
 		state.liveChildren.delete(id);
 		finished--;
+		state.evicted.set(id, {
+			id,
+			kind: record.kind,
+			sid: record.sid,
+			rootSid: record.rootSid,
+			sessionFile: record.session.sessionManager.getSessionFile(),
+			description: record.description,
+			turns: record.turns,
+			elapsedMs: record.elapsedMs,
+		});
 		try {
 			record.session.dispose();
 		} catch {}
+	}
+}
+
+const freshHint = (kind: string) => `Start a fresh ${kind} with a self-contained prompt.`;
+
+/**
+ * Where to reopen a child that is not in liveChildren, or why it cannot be.
+ * Synchronous on purpose: runChildToolInSlot reserves the id right after this,
+ * before its first await.
+ *  1. Eviction tombstone (this pi session).
+ *  2. After a pi restart (`pi -c` clears in-memory state): the child's
+ *     agent-runs.jsonl spawn row — accepted only when its `root` is the root a
+ *     fresh spawn from this ctx would get (rootSidFor), so a child of another main
+ *     session (e.g. before /new) is never picked up. The label only narrows the
+ *     search: it is display-only, and `${kind}#${id}` is ambiguous once a kind or
+ *     a (caller-supplied) resume id contains "#" — so `spawn.kind` is still checked.
+ *  Known loss: after a restart the description is the spawn row's; a newer one
+ *  passed on a later resume is not persisted anywhere (finish rows carry none).
+ */
+function findChildSource(id: string, kind: string, ctx: ExtensionContext): ChildSource | { error: string } {
+	let source: ChildSource | undefined;
+	const tombstone = state.evicted.get(id);
+	if (tombstone?.kind === kind) source = tombstone;
+	else {
+		const spawnerSid = ctx.sessionManager?.getSessionId();
+		if (spawnerSid) {
+			const root = rootSidFor(spawnerSid);
+			const match = findSpawnsByLabel(childSessionDir(ctx.cwd), `${kind}#${id}`)
+				.filter(({ spawn }) => spawn.root === root && spawn.kind === kind)
+				.at(-1);
+			if (match) {
+				source = {
+					id,
+					kind,
+					sid: match.spawn.sid,
+					rootSid: match.spawn.root,
+					sessionFile: match.spawn.sessionFile,
+					description: match.spawn.description,
+					turns: match.finish?.turns ?? 0,
+					elapsedMs: match.finish?.durationMs ?? 0,
+				};
+			}
+		}
+	}
+	if (!source) {
+		return {
+			error: `No ${kind} session with id "${id}" in this pi session (unknown id, or it belongs to another main session, e.g. one before /new). ${freshHint(kind)}`,
+		};
+	}
+	// Empty counts as missing: SessionManager.open would rewrite it as a NEW session.
+	const file = source.sessionFile;
+	let present = false;
+	try {
+		present = !!file && statSync(file).size > 0;
+	} catch {}
+	if (!present) {
+		return {
+			error: `${kind} "${id}" cannot be resumed: its session file is missing (${
+				file ?? "never persisted"
+			}) — it likely ended before its first reply, or the file was deleted. ${freshHint(kind)}`,
+		};
+	}
+	return source;
+}
+
+/**
+ * Reopen an evicted/pre-restart child from its session file and register it in
+ * liveChildren (newest entry). Restores the record fields from `source`; writes
+ * no spawn row (same sid — the dashboard already knows it) and keeps the
+ * persisted session name. The view replays the saved branch first, so the
+ * caller's addUserMessage(newPrompt) lands after the history.
+ * The record enters liveChildren already `running: true`: the caller's
+ * reservation (state.reopening) is released a microtask after this returns, and
+ * in that window a second resume must see the child as running — not as an
+ * idle finished child it may prompt (or eviction may dispose). From here on the
+ * caller owns resetting `running` on failure (runChildToolInSlot's finally).
+ * Returns an error text when the file cannot be reopened as this child.
+ */
+async function reopenChild(
+	ctx: ExtensionContext,
+	options: RunChildOptions,
+	source: ChildSource,
+): Promise<ChildRecord | { error: string }> {
+	const unreadable = (why: string) => ({
+		error: `${source.kind} "${source.id}" cannot be resumed: its session file could not be reopened (${source.sessionFile}: ${why}). ${freshHint(source.kind)}`,
+	});
+	let session: AgentSession;
+	try {
+		session = await createChildSession(ctx, options, source.sessionFile);
+	} catch (error) {
+		if (error instanceof ReopenError) return unreadable(error.message);
+		throw error;
+	}
+	try {
+		if (session.sessionManager.getSessionId() !== source.sid) {
+			session.dispose();
+			return unreadable(`it holds session ${session.sessionManager.getSessionId()}, expected ${source.sid}`);
+		}
+		if (!session.sessionName) session.setSessionName(`${source.kind}#${source.id}`);
+		const view = new ChildView(session, ctx.cwd);
+		view.replay(session.sessionManager.getBranch());
+		const record: ChildRecord = {
+			id: source.id,
+			kind: source.kind,
+			sid: source.sid,
+			rootSid: source.rootSid,
+			session,
+			view,
+			description: source.description,
+			turns: source.turns,
+			elapsedMs: source.elapsedMs,
+			running: true,
+		};
+		liveChildren.set(record.id, record);
+		state.evicted.delete(record.id);
+		return record;
+	} catch (error) {
+		session.dispose();
+		throw error;
 	}
 }
 
@@ -1134,25 +1416,48 @@ async function runChildToolInSlot(
 	const resumeId = params.resume_id;
 	let record: ChildRecord;
 	if (resumeId) {
-		const existing = liveChildren.get(resumeId);
-		if (!existing || existing.kind !== options.kind) {
-			return textResult(
-				`No live ${options.kind} session with id "${resumeId}". It may have ended with the pi session. Start a fresh ${options.kind} with a self-contained prompt.`,
-				{ error: "unknown_resume_id" },
-				true,
-			);
-		}
-		record = existing;
-		// With explorers running in parallel, two calls can pass the semaphore and
-		// resume the same child at once — session.prompt() on a busy session throws,
-		// and the loser's wind-down would mark the winner's record as not running and
-		// cancel its pending work. Also covers a session still draining after an abort.
-		if (record.running || !record.session.isIdle) {
-			return textResult(
+		const unknownResume = (text: string) => textResult(text, { error: "unknown_resume_id" }, true);
+		const stillRunning = () =>
+			textResult(
 				`${options.kind} "${resumeId}" is still running. Wait for its result, then resume it.`,
 				{ error: "child_running" },
 				true,
 			);
+		// Reservation first: a reopen in flight is running even once its record is
+		// already in liveChildren (inserted with running: true, see reopenChild).
+		if (state.reopening.has(resumeId)) return stillRunning();
+		const existing = liveChildren.get(resumeId);
+		if (existing) {
+			if (existing.kind !== options.kind) {
+				return unknownResume(
+					`No ${options.kind} session with id "${resumeId}" (that id is a ${existing.kind}). ${freshHint(options.kind)}`,
+				);
+			}
+			record = existing;
+			// With explorers running in parallel, two calls can pass the semaphore and
+			// resume the same child at once — session.prompt() on a busy session throws,
+			// and the loser's wind-down would mark the winner's record as not running and
+			// cancel its pending work. Also covers a session still draining after an abort.
+			if (record.running || !record.session.isIdle) return stillRunning();
+		} else {
+			// Evicted (or from before a pi restart): reopen it from its session file.
+			// Another call already reopening the same id counted as running above —
+			// two SessionManagers appending to one file would corrupt it.
+			const source = findChildSource(resumeId, options.kind, ctx);
+			if ("error" in source) return unknownResume(source.error);
+			// Reserved synchronously (no await since the has() check above); released
+			// on every path. The record reaches liveChildren before the release, and
+			// record.running is set below without an intervening await.
+			state.reopening.add(resumeId);
+			let reopened: ChildRecord | { error: string };
+			try {
+				evictFinishedChildren();
+				reopened = await reopenChild(ctx, options, source);
+			} finally {
+				state.reopening.delete(resumeId);
+			}
+			if ("error" in reopened) return unknownResume(reopened.error);
+			record = reopened;
 		}
 		if (params.description) record.description = params.description;
 	} else {
@@ -1182,10 +1487,18 @@ async function runChildToolInSlot(
 	}
 	onSession(record.session);
 	record.running = true;
-	// The child gets the task verbatim: the delegate contract rides the system
-	// prompt (options.contract, injected per turn by subagent.ts), not the prompt.
-	record.view.addUserMessage(params.prompt);
-	const watcher = watchChild(record, onUpdate);
+	let watcher: ReturnType<typeof watchChild>;
+	try {
+		// The child gets the task verbatim: the delegate contract rides the system
+		// prompt (options.contract, injected per turn by subagent.ts), not the prompt.
+		record.view.addUserMessage(params.prompt);
+		watcher = watchChild(record, onUpdate);
+	} catch (error) {
+		// Before the run's own finally: never leave a stale running=true record
+		// (it would block every later resume and be exempt from eviction).
+		record.running = false;
+		throw error;
+	}
 	const onAbort = () => void record.session.abort();
 	signal?.addEventListener("abort", onAbort, { once: true });
 	const startedAt = Date.now();

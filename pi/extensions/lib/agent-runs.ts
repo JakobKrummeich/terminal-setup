@@ -218,6 +218,52 @@ export function readRuns(dir: string): AgentRunEvent[] {
 	return pruneVanished(events);
 }
 
+/** A spawn row plus the last finish row of the same sid (cumulative numbers), if any. */
+export interface SpawnLookup {
+	spawn: RunSpawn;
+	finish: RunFinish | undefined;
+}
+
+/**
+ * All spawn rows carrying `label` (e.g. "agent#3ce02a1b"), in file order, each
+ * paired with its sid's LAST finish row. Unlike readRuns this does NOT prune rows
+ * whose session file vanished: the caller (child resume after a pi restart —
+ * lib/child-session.ts) needs to tell "file missing" apart from "unknown id".
+ * Labels carry a random 8-char id, so several rows are a (rare) collision across
+ * spawn trees; the caller picks by root.
+ */
+export function findSpawnsByLabel(dir: string, label: string): SpawnLookup[] {
+	let content: string;
+	try {
+		content = readFileSync(runsFilePath(dir), "utf8");
+	} catch {
+		return [];
+	}
+	// Runs on every resume miss, and the file grows forever: JSON.parse only lines
+	// that can match. Rows are written by JSON.stringify (appendEvent), so a row
+	// whose field equals X contains X's JSON-escaped form verbatim — the substring
+	// test never drops a match; parseLine + the field checks stay authoritative.
+	const escaped = (s: string) => JSON.stringify(s).slice(1, -1);
+	const lines = content.split("\n");
+	const labelText = escaped(label);
+	const spawns: RunSpawn[] = [];
+	for (const line of lines) {
+		if (!line.includes(labelText)) continue;
+		const event = parseLine(line);
+		if (event?.event === "spawn" && event.label === label) spawns.push(event);
+	}
+	if (spawns.length === 0) return [];
+	// Second pass for the matched sids' finish rows (they carry no label).
+	const sidTexts = [...new Set(spawns.map((spawn) => escaped(spawn.sid)))];
+	const lastFinish = new Map<string, RunFinish>();
+	for (const line of lines) {
+		if (!sidTexts.some((sid) => line.includes(sid))) continue;
+		const event = parseLine(line);
+		if (event?.event === "finish") lastFinish.set(event.sid, event);
+	}
+	return spawns.map((spawn) => ({ spawn, finish: lastFinish.get(spawn.sid) }));
+}
+
 /**
  * Drop rows whose session transcript is gone (and orphan rows with no intro).
  * "Gone" includes never-created: a child aborted before its first assistant

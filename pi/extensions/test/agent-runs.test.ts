@@ -32,6 +32,7 @@ import * as agentDashModule from "../agent-dash.ts";
 import {
 	type AgentRunEvent,
 	appendEvent,
+	findSpawnsByLabel,
 	readRuns,
 	type RunFinish,
 	type RunProgress,
@@ -177,6 +178,39 @@ test("readRuns prunes rows whose session file vanished, and orphan rows without 
 });
 
 // --- agent-dash session-start writer ----------------------------------------
+
+test("findSpawnsByLabel: every spawn row for the label (unpruned), each with its sid's LAST finish row", () => {
+	const dir = tempIndexDir();
+	const finish = (sid: string, turns: number): RunFinish => ({
+		ts: turns,
+		event: "finish",
+		sid,
+		status: "done",
+		turns,
+		costUsd: 0,
+		contextTokens: null,
+		contextPercent: null,
+		resets: 0,
+		durationMs: turns * 1000,
+	});
+	// Label collision across trees: same label, different sids/roots; files never exist.
+	const first = { ...spawnRow(dir, "s1", path.join(dir, "gone-1.jsonl")), label: "agent#dup" };
+	const second = { ...spawnRow(dir, "s2", path.join(dir, "gone-2.jsonl")), label: "agent#dup", root: "other" };
+	appendEvent(dir, first);
+	appendEvent(dir, finish("s1", 1));
+	appendFileSync(runsFilePath(dir), '{"broken": agent#dup s1\n');
+	appendEvent(dir, spawnRow(dir, "s3", path.join(dir, "gone-3.jsonl"))); // other label
+	appendEvent(dir, finish("s3", 7));
+	appendEvent(dir, second);
+	appendEvent(dir, finish("s1", 2)); // last finish for s1 wins
+	appendEvent(dir, { ts: 9, event: "progress", sid: "s1", turn: 3 }); // rows may trail a finish
+	assert.deepEqual(findSpawnsByLabel(dir, "agent#dup"), [
+		{ spawn: first, finish: finish("s1", 2) },
+		{ spawn: second, finish: undefined },
+	]);
+	assert.deepEqual(findSpawnsByLabel(dir, "agent#none"), []);
+	assert.deepEqual(findSpawnsByLabel(tempIndexDir(), "agent#dup"), [], "no index file");
+});
 
 test("agent-dash writes a session-start row for the main session", async () => {
 	const dir = tempIndexDir();

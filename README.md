@@ -246,6 +246,10 @@ nesting at one layer (structural, not a counter — nothing to configure).
   the session picker and audited.
 - A child that needs a decision just asks; the main agent answers by calling `Agent` again
   with `resume_id`, continuing the same session. It stands in for the human.
+  Only the 8 most recent finished children stay in memory; an older one (or any child of
+  the same main session after `pi -c`, found via `agent-runs.jsonl`) is reopened from its
+  session file on resume, and F2 replays its saved history. Only a missing session file
+  (child aborted before its first reply) or a child of another main session fails.
 - One child at a time: a second `Agent` call while one runs is rejected with an error result
   (`childBusy`, set synchronously before the first `await`, so two calls in one assistant
   message can't both pass). The latch is released only once the child is actually quiet
