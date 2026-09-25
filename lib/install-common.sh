@@ -116,25 +116,76 @@ install_pi_dash_service() {
     fi
 }
 
+find_pi_ai_root_from() { # <pi-executable-or-cli-path> [package-tree-root]
+    # Follow the executable into its package tree, then mirror Node's ancestor lookup.
+    local resolved_path search_root="${2-}" pi_search_dir pi_ai_root
+    resolved_path="$(readlink -f "$1")" || return 1
+    if [ -n "$search_root" ]; then
+        search_root="$(readlink -f "$search_root")" || return 1
+        case "$resolved_path" in
+            "$search_root"/*) ;;
+            *) return 1 ;;
+        esac
+    fi
+    pi_search_dir="$(dirname "$resolved_path")"
+    while [ "$pi_search_dir" != / ]; do
+        pi_ai_root="$pi_search_dir/node_modules/@earendil-works/pi-ai"
+        if [ -f "$pi_ai_root/package.json" ]; then
+            printf '%s\n' "$pi_ai_root"
+            return 0
+        fi
+        [ -n "$search_root" ] && [ "$pi_search_dir" = "$search_root" ] && break
+        pi_search_dir="$(dirname "$pi_search_dir")"
+    done
+    return 1
+}
+
 install_pi_azure_response_retry_patch() {
     # Temporary fail-closed workaround for Pi 0.83.0/0.84.1–0.84.4/0.85.1/0.86.1/0.87.1 Azure Responses failed SSE events.
     if ! command -v pi >/dev/null; then
         echo "SKIPPED: Pi Azure retry patch (pi is not installed)"
         return 0
     fi
-    # Pi's CLI bundle location changes between releases. Search upward from its
-    # resolved executable so the dependency lookup follows Node's package tree.
-    local pi_bin pi_ai_root pi_search_dir
+    local pi_bin pi_ai_root managed_root managed_marker current_file current_version managed_pi_bin
     pi_bin="$(readlink -f "$(command -v pi)")"
-    pi_search_dir="$(dirname "$pi_bin")"
-    while [ "$pi_search_dir" != / ]; do
-        pi_ai_root="$pi_search_dir/node_modules/@earendil-works/pi-ai"
-        if [ -f "$pi_ai_root/package.json" ]; then
+    managed_root="$(dirname "$(dirname "$pi_bin")")/install"
+    managed_marker="$managed_root/managed-install.json"
+
+    # Managed Pi uses a regular launcher at <agent>/bin/pi, not a symlink to
+    # the active release. Its marker must win over any unrelated ancestor package.
+    if [ -f "$managed_marker" ]; then
+        if ! node -e '
+const fs = require("node:fs");
+const marker = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+if (marker.kind !== "pi-managed-install" || marker.schemaVersion !== 1 || marker.layout !== "releases-v1") process.exit(1);
+' "$managed_marker" 2>/dev/null; then
+            echo "ERROR: Managed Pi marker is invalid: $managed_marker; patch not applied." >&2
+            return 1
+        fi
+        current_file="$managed_root/current-version"
+        if ! IFS= read -r current_version < "$current_file" 2>/dev/null \
+            || [[ ! "$current_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "ERROR: Managed Pi current version is missing or invalid: $current_file; patch not applied." >&2
+            return 1
+        fi
+        managed_pi_bin="$managed_root/releases/$current_version/node_modules/.bin/pi"
+        if [ ! -x "$managed_pi_bin" ]; then
+            echo "ERROR: Managed Pi executable is missing: $managed_pi_bin; patch not applied." >&2
+            return 1
+        fi
+        if pi_ai_root="$(find_pi_ai_root_from "$managed_pi_bin" "$managed_root/releases/$current_version")"; then
             PI_AI_ROOT="$pi_ai_root" node "$REPO/pi/patches/pi-azure-response-failed-retry.cjs"
             return
         fi
-        pi_search_dir="$(dirname "$pi_search_dir")"
-    done
+        echo "ERROR: Pi AI package not found from managed Pi executable $managed_pi_bin; patch not applied." >&2
+        return 1
+    fi
+
+    # Legacy/npm installs resolve directly into the active package tree.
+    if pi_ai_root="$(find_pi_ai_root_from "$pi_bin")"; then
+        PI_AI_ROOT="$pi_ai_root" node "$REPO/pi/patches/pi-azure-response-failed-retry.cjs"
+        return
+    fi
     echo "ERROR: Pi AI package not found from Pi executable $pi_bin; patch not applied." >&2
     return 1
 }
