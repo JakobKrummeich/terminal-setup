@@ -31,16 +31,8 @@ import {
 	resolveExplorerConfig,
 	resolveExplorerParallel,
 } from "../explore.ts";
-import {
-	type ChildRecord,
-	liveChildren,
-	movePickerSelection,
-	nextChild,
-	prevChild,
-	resetChildState,
-	runChildTool,
-	watchTarget,
-} from "../lib/child-session.ts";
+import { type ChildRecord, liveChildren, resetChildState, runChildTool } from "../lib/child-session.ts";
+import { movePickerSelection, nextChild, prevChild, resetWatchCursor, watchTarget } from "../lib/child-watch.ts";
 import { sleep } from "./harness.ts";
 
 // --- resolveExplorerConfig (pure) ---
@@ -316,6 +308,7 @@ const fakeRecord = (id: string, running: boolean) =>
 
 test("watchTarget cycles ALL children in spawn order; unset cursor starts at first running", () => {
 	resetChildState();
+	resetWatchCursor();
 	for (const r of [fakeRecord("a", false), fakeRecord("b", true), fakeRecord("c", false)])
 		liveChildren.set(r.id, r);
 	assert.equal(watchTarget()?.id, "b", "unset cursor must start at the first running child");
@@ -330,10 +323,12 @@ test("watchTarget cycles ALL children in spawn order; unset cursor starts at fir
 	assert.equal(nextChild("a")?.id, "c");
 	assert.equal(watchTarget()?.id, "d", "outer F2 must continue from the in-view cursor");
 	resetChildState();
+	resetWatchCursor();
 });
 
 test("watchTarget with no running children falls back to the most recent, then cycles", () => {
 	resetChildState();
+	resetWatchCursor();
 	liveChildren.set("a", fakeRecord("a", false));
 	liveChildren.set("b", fakeRecord("b", false));
 	assert.equal(watchTarget()?.id, "b", "all finished → most recent child first");
@@ -341,10 +336,12 @@ test("watchTarget with no running children falls back to the most recent, then c
 	assert.equal(watchTarget()?.id, "b");
 	assert.equal(nextChild("zzz-gone")?.id, "a", "unknown id falls back to the first child");
 	resetChildState();
+	resetWatchCursor();
 });
 
 test("prevChild cycles backward in spawn order and moves the shared cursor", () => {
 	resetChildState();
+	resetWatchCursor();
 	for (const r of [fakeRecord("a", false), fakeRecord("b", true), fakeRecord("c", false)])
 		liveChildren.set(r.id, r);
 	assert.equal(prevChild("c")?.id, "b");
@@ -357,6 +354,7 @@ test("prevChild cycles backward in spawn order and moves the shared cursor", () 
 	liveChildren.clear();
 	assert.equal(prevChild("a"), undefined, "no children → undefined");
 	resetChildState();
+	resetWatchCursor();
 });
 
 test("movePickerSelection wraps and clamps stale indices", () => {
@@ -491,8 +489,9 @@ test("child-session state is shared across module copies (jiti moduleCache: fals
 	assert.equal(isBusyError(viaCopy2), true, "copy2 must see copy1's explorer latch");
 	// The record lands in liveChildren only after the child session is created — the
 	// latch is synchronous, the record is not — so poll briefly instead of racing it.
-	let target: ReturnType<typeof copy2.watchTarget>;
-	for (let i = 0; i < 100 && !(target = copy2.watchTarget())?.running; i++) await sleep(20);
+	const watchCopy2 = (await import("../lib/child-watch.ts?copy2" as string)) as typeof import("../lib/child-watch.ts");
+	let target: ReturnType<typeof watchCopy2.watchTarget>;
+	for (let i = 0; i < 100 && !(target = watchCopy2.watchTarget())?.running; i++) await sleep(20);
 	assert.ok(target?.running, "copy2's watch must find copy1's running child");
 	await firstPromise;
 	disposeChildren();

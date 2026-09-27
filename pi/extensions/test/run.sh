@@ -70,5 +70,5 @@ trap 'rm -rf "$PI_CODING_AGENT_DIR"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# transform (not strip): lib/child-session.ts uses TS parameter properties.
+# transform (not strip): lib/child-view.ts uses TS parameter properties.
 node --test --experimental-transform-types --no-warnings "$@" ./*.test.ts

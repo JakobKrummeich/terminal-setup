@@ -52,7 +52,7 @@ export function envEnum<T extends string>(name: string, allowed: readonly T[], f
 }
 
 /** Soft context cap (tokens) — the CEILING on context-cap.ts's steer trigger, and
- * the static fallback when the model's context window is unknown. child-session.ts
+ * the static fallback when the model's context window is unknown. lib/child-watch.ts
  * shows it in the F2 watch footer. Resolved at import time; the trigger actually in
  * force is resolveTriggers() below, which is model-aware and resolved per check. */
 export const CONTEXT_CAP_SOFT_TRIGGER = envInt("CONTEXT_CAP_SOFT", 260_000);
@@ -233,5 +233,5 @@ export const CONTEXT_CAP_TAIL_TOKENS = envInt("CONTEXT_CAP_TAIL_TOKENS", 0);
 /** Tool name registered by context-cap.ts; child-session.ts and explore.ts reference it. */
 export const CONTEXT_CAP_TOOL_NAME = "context_handoff";
 
-/** ctx.ui.setStatus key used by context-cap.ts; child-session.ts fakes it in the child footer. */
+/** ctx.ui.setStatus key used by context-cap.ts; lib/child-watch.ts fakes it in the child footer. */
 export const CONTEXT_CAP_STATUS_KEY = "context-cap";

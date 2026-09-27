@@ -1,6 +1,6 @@
 /**
  * lib/message-text.ts: the one "text of a message's content" helper used by
- * timer.ts, handoff.ts and lib/child-session.ts. Pins the exact output those
+ * timer.ts, handoff.ts, lib/child-session.ts and lib/child-view.ts. Pins the exact output those
  * call sites had before they shared it ("\n" join, text blocks only).
  */
 

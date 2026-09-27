@@ -4,14 +4,17 @@ import { childSessionInfo, inChildSession } from "./lib/child-context.ts";
 import {
 	AGENT_TOOL,
 	liveChildren,
-	openChildPicker,
-	openChildView,
 	renderChildResult,
 	resetChildState,
 	runChildTool,
+} from "./lib/child-session.ts";
+import {
+	openChildPicker,
+	openChildView,
+	resetWatchCursor,
 	WATCH_KEY,
 	watchTarget,
-} from "./lib/child-session.ts";
+} from "./lib/child-watch.ts";
 
 const TOOL_DESCRIPTION = `Delegate a task to a fresh agent session that works autonomously and reports back.
 
@@ -159,5 +162,6 @@ export default function (pi: ExtensionAPI) {
 		// Counters too, not just records: the busy latch is normally released by each
 		// tool call's finally, but a shutdown mid-call must not strand a slot forever.
 		resetChildState();
+		resetWatchCursor();
 	});
 }

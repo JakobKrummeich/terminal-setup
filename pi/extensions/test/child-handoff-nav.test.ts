@@ -34,15 +34,14 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { ChildView, handoffDividerText } from "../lib/child-view.ts";
+import { liveChildren, runChildTool } from "../lib/child-session.ts";
 import {
 	handoffContextIndex,
 	handoffHeaderLine,
 	handoffJumpTarget,
 	handoffViewContext,
-	liveChildren,
 	liveElapsedMs,
-	runChildTool,
-} from "../lib/child-session.ts";
+} from "../lib/child-watch.ts";
 import { CONTEXT_CAP_TOOL_NAME } from "../lib/env.ts";
 import { type ResponseStep, type ScriptedStep, sleep, textStep, toolStep } from "./harness.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";

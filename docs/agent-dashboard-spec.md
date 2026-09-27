@@ -8,7 +8,7 @@ plus `pi/dashboard-daemon.mjs` + `pi/pi-dash.service` (daemon entry + unit).
 
 ## Problem
 
-The F2 overlay (`lib/child-session.ts`) shows a flat list of this process's
+The F2 overlay (`lib/child-watch.ts`) shows a flat list of this process's
 children only. Missing:
 
 - **Hierarchy.** A subagent's explorers register in the subagent's own context;

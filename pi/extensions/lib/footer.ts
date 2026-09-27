@@ -1,5 +1,5 @@
-// Footer layout shared by the main session (custom-footer.ts) and the F2 child
-// watch view, which renders each child's footer with it.
+// Footer layout (renderFooterLines) shared by the main session's footer extension
+// and the F2 child watch view, which renders each child's footer with it.
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { CONTEXT_CAP_STATUS_KEY } from "./env.ts";
