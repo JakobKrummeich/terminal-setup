@@ -22,13 +22,27 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Markdown } from "@earendil-works/pi-tui";
 
+/**
+ * Holds the unpatched render on the (shared) prototype. Exported for tests only.
+ * Bump the version suffix if the stored shape ever changes.
+ */
+export const ORIGINAL_RENDER = Symbol.for("terminal-setup.markdown-no-padding.v1");
+
+type PatchableProto = {
+	paddingX: number;
+	render(width: number): string[];
+	[ORIGINAL_RENDER]?: (width: number) => string[];
+};
+
 export default function (_pi: ExtensionAPI) {
-	const proto = Markdown.prototype as unknown as {
-		paddingX: number;
-		render(width: number): string[];
-	};
+	const proto = Markdown.prototype as unknown as PatchableProto;
+	// WHY the guard: pi loads this file once per session bind AND per child spawn,
+	// each via its own jiti instance, but the pi-tui prototype is shared — without
+	// it every load stacked another wrapper around render. Patch exactly once.
+	if (proto[ORIGINAL_RENDER]) return;
 	const origRender = proto.render;
-	proto.render = function (this: typeof proto, width: number): string[] {
+	proto[ORIGINAL_RENDER] = origRender;
+	proto.render = function (this: PatchableProto, width: number): string[] {
 		this.paddingX = 0;
 		return origRender.call(this, width);
 	};
