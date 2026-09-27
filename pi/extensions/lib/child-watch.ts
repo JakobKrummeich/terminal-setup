@@ -113,6 +113,132 @@ export function handoffJumpTarget(
 	return anchors.filter((anchor) => anchor < top).at(-1);
 }
 
+/**
+ * Scroll state of one watch view: which body lines the viewport shows. One
+ * instance per open overlay (created in watchOverlay) — never module state.
+ * `offset` is the top body line; while `follow` is set, layout() pins it to the
+ * tail so a live run scrolls along. `viewport` and `maxOffset` are those of the
+ * LATEST layout(): input handlers act on what the user currently sees.
+ */
+export class WatchViewport {
+	offset = 0;
+	follow = true;
+	viewport = 1;
+	/** Largest top offset of the latest layout (the Shift+↓ tail bound). */
+	maxOffset = 0;
+
+	/**
+	 * Settle the offset for a `bodyLength`-line body in `viewport` rows. Following →
+	 * the tail; a paused offset at or past the tail (scrolled down onto it, or the
+	 * body shrank) re-follows, so scrolling to the end resumes live tracking.
+	 */
+	layout(bodyLength: number, viewport: number): void {
+		this.viewport = viewport;
+		this.maxOffset = Math.max(0, bodyLength - viewport);
+		if (this.follow) this.offset = this.maxOffset;
+		else if (this.offset >= this.maxOffset) {
+			this.offset = this.maxOffset;
+			this.follow = true;
+		}
+	}
+
+	/** Pause and move the top by `delta` lines; the tail clamp happens in layout(). */
+	scrollBy(delta: number): void {
+		this.follow = false;
+		this.offset = Math.max(0, this.offset + delta);
+	}
+
+	home(): void {
+		this.follow = false;
+		this.offset = 0;
+	}
+
+	end(): void {
+		this.follow = true;
+	}
+
+	/**
+	 * Shift+↑/↓: move the top to the next/previous handoff anchor (handoffJumpTarget).
+	 * `offset` is the effective top even while following: layout() pins it to
+	 * maxOffset, and anchors and maxOffset come from the same (latest) render.
+	 * Returns false when there is nowhere to go (nothing changed, no redraw needed).
+	 */
+	jumpHandoff(anchors: readonly number[], dir: -1 | 1): boolean {
+		const target = handoffJumpTarget(anchors, this.offset, dir, this.maxOffset);
+		if (target === undefined) return false;
+		if (target === "tail") this.follow = true;
+		else {
+			this.follow = false;
+			this.offset = target;
+		}
+		return true;
+	}
+
+	/** The visible body lines, padded with blanks to exactly `viewport` rows. */
+	window(body: readonly string[]): string[] {
+		const lines = body.slice(this.offset, this.offset + this.viewport);
+		while (lines.length < this.viewport) lines.push("");
+		return lines;
+	}
+
+	/** The header's `context k` for the current layout (handoffViewContext). */
+	contextIndex(anchors: readonly number[], bodyLength: number): number {
+		return handoffViewContext(anchors, this.offset, this.viewport, bodyLength);
+	}
+}
+
+/** ` (i/N)` of `current` among the children; empty for a lone or evicted child. */
+export function watchPositionLabel(all: readonly ChildRecord[], current: ChildRecord): string {
+	const idx = all.indexOf(current);
+	return all.length > 1 && idx >= 0 ? ` (${idx + 1}/${all.length})` : "";
+}
+
+/**
+ * The watch view's two header lines (untruncated): live status or final summary
+ * plus `pos`, then the handoff line for context `k` (handoffHeaderLine).
+ */
+export function watchHeaderLines(record: ChildRecord, pos: string, k: number): [string, string] {
+	const header = record.running
+		? `▶ ${statusLine(record)}${pos}`
+		: `■ ${record.kind}#${record.id} · ${record.description} · ${record.turns} turns · finished${pos}`;
+	return [header, `  ${handoffHeaderLine(record.view.handoffCount, k, liveElapsedMs(record))}`];
+}
+
+/** The watch view's key hint (untruncated). */
+export function watchHintLine(follow: boolean, handoffs: number, pos: string): string {
+	// `paused` first: a narrow terminal clips the hint's tail, not the state.
+	return `${follow ? "" : "paused · "}esc back · wheel/↑↓/pgup/pgdn scroll${handoffs > 0 ? " · shift+↑↓ handoff" : ""} · end follow · ${EXPAND_KEY} expand${
+		pos ? ` · ←/→ agents · ${WATCH_KEY} next${pos}` : ""
+	}`;
+}
+
+/**
+ * Lines to scroll for an SGR mouse report: ±WHEEL_LINES for wheel up/down, 0 for
+ * any other mouse event (swallowed), undefined when `data` is not a mouse report.
+ */
+export function sgrWheelDelta(data: string): number | undefined {
+	const mouse = SGR_MOUSE.exec(data);
+	if (!mouse) return undefined;
+	const button = Number(mouse[1]);
+	if (button === 64) return -WHEEL_LINES;
+	if (button === 65) return WHEEL_LINES;
+	return 0;
+}
+
+/**
+ * An ordered key table: the first entry whose key matches wins. Order is the
+ * contract — WATCH_KEY / EXPAND_KEY are env-configurable, so their position
+ * decides which action a colliding key gets.
+ */
+type KeyTable = ReadonlyArray<readonly [KeyId, () => void]>;
+
+/** Run the first matching action; false when no key in the table matched. */
+function dispatchKey(data: string, table: KeyTable): boolean {
+	const hit = table.find(([key]) => matchesKey(data, key));
+	hit?.[1]();
+	return hit !== undefined;
+}
+
 function gitBranch(cwd: string): string | null {
 	try {
 		let gitDir = join(cwd, ".git");
@@ -292,14 +418,9 @@ async function watchOverlay(ctx: ExtensionContext, initial: ChildRecord | undefi
 			// when no view renderer is attached; a coarse tick beats subscribing to
 			// every child session just for a redraw.
 			const ticker = setInterval(() => tui.requestRender(), 1000);
-			let offset = 0;
-			let follow = true;
-			let viewport = 1;
-			// Largest top offset of the latest view render (the Shift+↓ tail bound).
-			let maxOffset = 0;
+			const scroll = new WatchViewport();
 			const scrollBy = (delta: number) => {
-				follow = false;
-				offset = Math.max(0, offset + delta);
+				scroll.scrollBy(delta);
 				tui.requestRender();
 			};
 			const switchTo = (next: ChildRecord) => {
@@ -307,7 +428,7 @@ async function watchOverlay(ctx: ExtensionContext, initial: ChildRecord | undefi
 				record?.view.setRenderer(() => {});
 				record = next;
 				record.view.setRenderer(() => tui.requestRender());
-				follow = true; // fresh child: jump to the tail and follow it
+				scroll.end(); // fresh child: jump to the tail and follow it
 				tui.requestRender();
 			};
 			const enterView = (target: ChildRecord) => {
@@ -345,103 +466,93 @@ async function watchOverlay(ctx: ExtensionContext, initial: ChildRecord | undefi
 			};
 			const renderView = (width: number): string[] => {
 				const current = record!;
-				const all = [...liveChildren.values()];
-				const idx = all.indexOf(current);
-				const pos = all.length > 1 && idx >= 0 ? ` (${idx + 1}/${all.length})` : "";
+				const pos = watchPositionLabel([...liveChildren.values()], current);
 				const footerLines = childFooter(width, current);
 				// Two header lines + blank + hint around the body.
-				viewport = Math.max(1, tui.terminal.rows - 4 - footerLines.length);
+				const viewportRows = Math.max(1, tui.terminal.rows - 4 - footerLines.length);
 				const body = current.view.render(width);
-				maxOffset = Math.max(0, body.length - viewport);
-				if (follow) offset = maxOffset;
-				else if (offset >= maxOffset) {
-					offset = maxOffset;
-					follow = true;
-				}
+				scroll.layout(body.length, viewportRows);
 				// After the offset settles: line 2's `context k/N+1` depends on the viewport.
-				const handoffs = current.view.handoffCount;
-				const header = current.running
-					? `▶ ${statusLine(current)}${pos}`
-					: `■ ${current.kind}#${current.id} · ${current.description} · ${current.turns} turns · finished${pos}`;
-				const header2 = `  ${handoffHeaderLine(
-					handoffs,
-					handoffViewContext(current.view.handoffAnchors, offset, viewport, body.length),
-					liveElapsedMs(current),
-				)}`;
-				// `paused` first: a narrow terminal clips the hint's tail, not the state.
-				const hint = `${follow ? "" : "paused · "}esc back · wheel/↑↓/pgup/pgdn scroll${handoffs > 0 ? " · shift+↑↓ handoff" : ""} · end follow · ${EXPAND_KEY} expand${
-					pos ? ` · ←/→ agents · ${WATCH_KEY} next${pos}` : ""
-				}`;
-				const window = body.slice(offset, offset + viewport);
-				while (window.length < viewport) window.push("");
+				const k = scroll.contextIndex(current.view.handoffAnchors, body.length);
+				const [header, header2] = watchHeaderLines(current, pos, k);
+				const hint = watchHintLine(scroll.follow, current.view.handoffCount, pos);
 				return [
 					truncateToWidth(header, width),
 					truncateToWidth(header2, width),
-					...window,
+					...scroll.window(body),
 					"",
 					truncateToWidth(hint, width),
 					...footerLines,
 				].slice(0, tui.terminal.rows);
 			};
-			const handlePickerInput = (data: string) => {
+			const movePicker = (delta: number) => {
+				selected = movePickerSelection(selected, delta, liveChildren.size);
+				tui.requestRender();
+			};
+			const openSelected = () => {
 				const all = [...liveChildren.values()];
-				if (matchesKey(data, "escape")) done();
-				else if (matchesKey(data, "up")) {
-					selected = movePickerSelection(selected, -1, all.length);
-					tui.requestRender();
-				} else if (matchesKey(data, "down") || matchesKey(data, WATCH_KEY)) {
-					// WATCH_KEY too: tapping F2 repeatedly still walks through the children.
-					selected = movePickerSelection(selected, 1, all.length);
-					tui.requestRender();
-				} else if (matchesKey(data, "enter")) {
-					const target = all[Math.min(selected, all.length - 1)];
-					if (target) enterView(target);
-				} else if (data.length === 1 && data >= "1" && data <= "9") {
-					const target = all[Number(data) - 1];
+				const target = all[Math.min(selected, all.length - 1)];
+				if (target) enterView(target);
+			};
+			const pickerKeys: KeyTable = [
+				["escape", () => done()],
+				["up", () => movePicker(-1)],
+				["down", () => movePicker(1)],
+				// WATCH_KEY too: tapping F2 repeatedly still walks through the children.
+				[WATCH_KEY, () => movePicker(1)],
+				["enter", openSelected],
+			];
+			const handlePickerInput = (data: string) => {
+				if (dispatchKey(data, pickerKeys)) return;
+				// 1-9: jump straight into that row's child.
+				if (data.length === 1 && data >= "1" && data <= "9") {
+					const target = [...liveChildren.values()][Number(data) - 1];
 					if (target) enterView(target);
 				}
 			};
+			const jumpHandoff = (dir: -1 | 1) => {
+				if (scroll.jumpHandoff(record!.view.handoffAnchors, dir)) tui.requestRender();
+			};
+			const scrollHome = () => {
+				scroll.home();
+				tui.requestRender();
+			};
+			const scrollEnd = () => {
+				scroll.end();
+				tui.requestRender();
+			};
+			const showPrevChild = () => {
+				const prev = prevChild(record!.id);
+				if (prev) switchTo(prev);
+			};
+			const showNextChild = () => {
+				const next = nextChild(record!.id);
+				if (next) switchTo(next);
+			};
+			// Order matters: escape first; shift+↑/↓ before plain ↑/↓; the configurable
+			// EXPAND_KEY and WATCH_KEY after the fixed keys (see KeyTable), so a configured
+			// key that collides with a fixed one keeps the fixed key's action.
+			const viewKeys: KeyTable = [
+				["escape", leaveView],
+				["shift+up", () => jumpHandoff(-1)],
+				["shift+down", () => jumpHandoff(1)],
+				["up", () => scrollBy(-1)],
+				["down", () => scrollBy(1)],
+				["pageUp", () => scrollBy(-(scroll.viewport - 1))],
+				["pageDown", () => scrollBy(scroll.viewport - 1)],
+				["home", scrollHome],
+				["end", scrollEnd],
+				[EXPAND_KEY, () => record!.view.toggleExpanded()],
+				["left", showPrevChild],
+				["right", showNextChild],
+				[WATCH_KEY, showNextChild],
+			];
 			const handleViewInput = (data: string) => {
-				const current = record!;
-				const mouse = SGR_MOUSE.exec(data);
-				if (mouse) {
-					const button = Number(mouse[1]);
-					if (button === 64) scrollBy(-WHEEL_LINES);
-					else if (button === 65) scrollBy(WHEEL_LINES);
-					return;
-				}
-				if (matchesKey(data, "escape")) leaveView();
-				else if (matchesKey(data, "shift+up") || matchesKey(data, "shift+down")) {
-					// `offset` is the effective top even while following: renderView pins it
-					// to maxOffset. Anchors and maxOffset come from the same (latest) render.
-					const dir = matchesKey(data, "shift+up") ? -1 : 1;
-					const target = handoffJumpTarget(current.view.handoffAnchors, offset, dir, maxOffset);
-					if (target === undefined) return;
-					if (target === "tail") follow = true;
-					else {
-						follow = false;
-						offset = target;
-					}
-					tui.requestRender();
-				} else if (matchesKey(data, "up")) scrollBy(-1);
-				else if (matchesKey(data, "down")) scrollBy(1);
-				else if (matchesKey(data, "pageUp")) scrollBy(-(viewport - 1));
-				else if (matchesKey(data, "pageDown")) scrollBy(viewport - 1);
-				else if (matchesKey(data, "home")) {
-					follow = false;
-					offset = 0;
-					tui.requestRender();
-				} else if (matchesKey(data, "end")) {
-					follow = true;
-					tui.requestRender();
-				} else if (matchesKey(data, EXPAND_KEY)) current.view.toggleExpanded();
-				else if (matchesKey(data, "left")) {
-					const prev = prevChild(current.id);
-					if (prev) switchTo(prev);
-				} else if (matchesKey(data, "right") || matchesKey(data, WATCH_KEY)) {
-					const next = nextChild(current.id);
-					if (next) switchTo(next);
-				}
+				// Mouse reports first and always consumed: a click (non-wheel button) is
+				// swallowed rather than parsed as keys.
+				const wheel = sgrWheelDelta(data);
+				if (wheel === undefined) dispatchKey(data, viewKeys);
+				else if (wheel !== 0) scrollBy(wheel);
 			};
 			return {
 				dispose() {
