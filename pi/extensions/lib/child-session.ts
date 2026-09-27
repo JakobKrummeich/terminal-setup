@@ -16,6 +16,7 @@ import {
 	DefaultResourceLoader,
 	getAgentDir,
 	getMarkdownTheme,
+	type ModelRuntime,
 	SessionManager,
 	SettingsManager,
 	ToolExecutionComponent,
@@ -864,6 +865,19 @@ function savedModelSettings(
 }
 
 /**
+ * The parent session's ModelRuntime, for a child to share. pi keeps it in
+ * ModelRegistry's PRIVATE `runtime` field (no public getter), so this reads a
+ * private field on purpose: sharing it gives the child the parent's in-memory
+ * credentials — `pi --api-key` lands only there, via setRuntimeApiKey — and its
+ * already-loaded model catalog, instead of a fresh runtime rebuilt from agentDir
+ * files. If pi renames the field this yields undefined and children silently
+ * fall back to a default runtime; test/child-model-runtime.test.ts pins it.
+ */
+export function parentModelRuntime(ctx: Pick<ExtensionContext, "modelRegistry">): ModelRuntime | undefined {
+	return (ctx.modelRegistry as unknown as { runtime?: ModelRuntime }).runtime;
+}
+
+/**
  * Create a child session — fresh, or reopened from `sessionFile` (an evicted or
  * pre-restart child): SessionManager.open loads the saved entries, createAgentSession
  * restores them into the agent, and new entries keep appending to the same file.
@@ -892,7 +906,7 @@ async function createChildSession(
 	const agentDir = getAgentDir();
 	const settingsManager = SettingsManager.create(cwd, agentDir);
 	const resourceLoader = await childResourceLoader(cwd, agentDir, settingsManager);
-	const modelRuntime = (ctx.modelRegistry as unknown as { runtime?: unknown }).runtime;
+	const modelRuntime = parentModelRuntime(ctx);
 	// The ALS payload lets extensions loading inside the child know they are in a
 	// child and which contract it carries (subagent.ts appends it to the system
 	// prompt via before_agent_start — see the comment there).
