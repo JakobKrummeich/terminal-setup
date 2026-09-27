@@ -35,7 +35,7 @@ import {
 	type TUI,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import { renderFooterLines } from "../custom-footer.ts";
+import { renderFooterLines } from "./footer.ts";
 import { appendEvent, findSpawnsByLabel, type RunStatus } from "./agent-runs.ts";
 import { messageText } from "./message-text.ts";
 import { SWAP_MARKER_TYPE, type SwapTrigger } from "./message-types.ts";
