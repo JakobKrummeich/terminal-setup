@@ -50,13 +50,6 @@ ln -sfn "$PI_DEPS/@earendil-works/pi-tui" node_modules/@earendil-works/pi-tui
 ln -sfn "$PI_DEPS/typebox" node_modules/typebox
 ln -sfn "$PI_DEPS/@types" node_modules/@types
 
-# custom-footer.ts still imports the old @mariozechner/* names; pi's jiti loader
-# remaps them at runtime, so mirror that remap here (as tsconfig.json does for tsc).
-mkdir -p node_modules/@mariozechner
-ln -sfn "$PI_ROOT" node_modules/@mariozechner/pi-coding-agent
-ln -sfn "$PI_DEPS/@earendil-works/pi-ai" node_modules/@mariozechner/pi-ai
-ln -sfn "$PI_DEPS/@earendil-works/pi-tui" node_modules/@mariozechner/pi-tui
-
 # Tests that ESM-import extension files directly (explore.test.ts) need the bare
 # imports to resolve from the extensions dir too; the resolver walks up from there.
 ln -sfn "$PWD/node_modules" ../node_modules

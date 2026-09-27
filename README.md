@@ -286,7 +286,8 @@ nesting at one layer (structural, not a counter — nothing to configure).
 ```bash
 ./pi/extensions/test/run.sh          # all extension tests
 ./pi/extensions/test/run.sh --test-name-pattern=timer
-cd pi/extensions/test && npx -y -p typescript tsc -p .   # typecheck (run run.sh once first: it builds the node_modules symlink farm)
+cd pi/extensions/test && command npx -y -p typescript tsc -p .   # typecheck (run run.sh once first: it builds the node_modules symlink farm)
+for t in test/*.test.sh; do bash "$t" || echo "FAIL: $t"; done   # installer/patch shell tests (repo root; sandboxed in mktemp dirs)
 ```
 
 `node --test` with on-the-fly type transform (node >= 22), no build step. Tests drive a real
