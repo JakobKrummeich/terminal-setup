@@ -3,7 +3,6 @@
 // Not an extension: pi's loader only scans top-level *.ts in the extensions dir
 // (core/package-manager.js collectAutoExtensionEntries), so files under lib/ are
 // never loaded as extensions and need no default export.
-import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -37,6 +36,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { renderFooterLines } from "./footer.ts";
 import { appendEvent, findSpawnsByLabel, type RunStatus } from "./agent-runs.ts";
+import { type ChildSessionInfo, runInChildSession } from "./child-context.ts";
 import { messageText } from "./message-text.ts";
 import { SWAP_MARKER_TYPE, type SwapTrigger } from "./message-types.ts";
 import { cancelPendingWork } from "./pending-work.ts";
@@ -139,9 +139,8 @@ interface BusyGroup {
 // fresh jiti instance with `moduleCache: false` per extension file, so subagent.ts
 // and explore.ts each import their own *copy* of this module (same reasoning as
 // lib/pending-work.ts). Module-level state would split into per-copy islands:
-// explorers would be invisible to the F2 watch (registered via subagent.ts's copy),
-// session_shutdown would clear only agent children, and inChildSession() would be
-// false inside an explorer child.
+// explorers would be invisible to the F2 watch (registered via subagent.ts's copy)
+// and session_shutdown would clear only agent children.
 interface SharedState {
 	/**
 	 * All children of this pi session: running/settling entries plus at most
@@ -165,7 +164,6 @@ interface SharedState {
 	 */
 	reopening: Set<string>;
 	busyGroups: Map<string, BusyGroup>;
-	childSessionStore: AsyncLocalStorage<ChildSessionInfo>;
 	/** F2 watch cursor: id of the last watched child, advanced per watchTarget() call. */
 	watchCursor: string | undefined;
 }
@@ -175,13 +173,13 @@ interface SharedState {
 // new copies must never share a mis-shaped state object.
 // v7: ChildView gained handoffCount/handoffAnchors (read by the watch overlay);
 // ChildRecord gained the optional runStartedAt (readers treat undefined as "not running").
-const STATE_KEY = Symbol.for("terminal-setup.child-session.v7");
+// v8: the child-session ALS (childSessionStore) moved to lib/child-context.ts, under its own key.
+const STATE_KEY = Symbol.for("terminal-setup.child-session.v8");
 const state = sharedState<SharedState>(STATE_KEY, () => ({
 	liveChildren: new Map(),
 	evicted: new Map(),
 	reopening: new Set(),
 	busyGroups: new Map(),
-	childSessionStore: new AsyncLocalStorage<ChildSessionInfo>(),
 	watchCursor: undefined,
 }));
 
@@ -195,26 +193,6 @@ export function resetChildState(): void {
 }
 
 export const liveChildren = state.liveChildren;
-const childSessionStore = state.childSessionStore;
-
-/** What a child session is, seen from inside its own extension loading/binding. */
-export interface ChildSessionInfo {
-	/** RunChildOptions.kind, e.g. "agent" or "explorer". */
-	kind: string;
-	/** RunChildOptions.contract — undefined when the child gets no delegate contract. */
-	contract: string | undefined;
-}
-
-export const inChildSession = () => childSessionStore.getStore() !== undefined;
-/**
- * The ChildSessionInfo of the child currently being created, or undefined outside
- * a child. Only meaningful while createChildSession's ALS scope is active — i.e.
- * during extension load/bind of the child — so extensions must capture what they
- * need at bind time (the store is gone when later events fire).
- */
-export const childSessionInfo = (): ChildSessionInfo | undefined => childSessionStore.getStore();
-const runInChildSession = <T>(info: ChildSessionInfo, fn: () => Promise<T>) =>
-	childSessionStore.run(info, fn);
 
 /** Human label of each swap trigger. Typed per SwapTrigger: a new trigger without a label is a compile error. */
 const TRIGGER_LABELS: Record<SwapTrigger, string> = {

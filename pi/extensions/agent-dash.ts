@@ -18,7 +18,7 @@
 import http from "node:http";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { appendEvent } from "./lib/agent-runs.ts";
-import { inChildSession } from "./lib/child-session.ts";
+import { inChildSession } from "./lib/child-context.ts";
 import { sharedState } from "./lib/shared-state.ts";
 
 const DEFAULT_PORT = 7357;

@@ -1,9 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { childSessionInfo, inChildSession } from "./lib/child-context.ts";
 import {
 	AGENT_TOOL,
-	childSessionInfo,
-	inChildSession,
 	liveChildren,
 	openChildPicker,
 	openChildView,

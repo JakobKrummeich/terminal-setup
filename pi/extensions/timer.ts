@@ -51,7 +51,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { inChildSession } from "./lib/child-session.ts";
+import { inChildSession } from "./lib/child-context.ts";
 import { envInt } from "./lib/env.ts";
 import { messageText } from "./lib/message-text.ts";
 import { claimPendingWork, releasePendingWork } from "./lib/pending-work.ts";

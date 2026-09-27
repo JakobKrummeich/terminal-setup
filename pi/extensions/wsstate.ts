@@ -10,7 +10,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { inChildSession } from "./lib/child-session.ts";
+import { inChildSession } from "./lib/child-context.ts";
 
 function emit(state: "busy" | "idle") {
 	try {
