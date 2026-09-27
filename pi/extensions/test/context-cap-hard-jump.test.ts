@@ -41,7 +41,8 @@ import {
 	ModelRuntime,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { ChildView, liveChildren, runChildTool } from "../lib/child-session.ts";
+import { liveChildren, runChildTool } from "../lib/child-session.ts";
+import { ChildView } from "../lib/child-view.ts";
 import { CONTEXT_CAP_TOOL_NAME } from "../lib/env.ts";
 import { conversationMessages } from "./context-compat.ts";
 import { type ResponseStep, type ScriptedStep, sleep, textStep, toolStep } from "./harness.ts";

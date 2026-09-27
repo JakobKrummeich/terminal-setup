@@ -25,9 +25,9 @@ process.env.PI_OFFLINE = "1";
 
 import { type ExtensionContext, initTheme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { ChildView } from "../lib/child-view.ts";
 import {
 	type ChildRecord,
-	ChildView,
 	liveChildren,
 	openChildPicker,
 	openChildView,

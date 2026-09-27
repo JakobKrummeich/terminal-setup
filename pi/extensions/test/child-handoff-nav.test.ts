@@ -33,10 +33,9 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
+import { ChildView, handoffDividerText } from "../lib/child-view.ts";
 import {
-	ChildView,
 	handoffContextIndex,
-	handoffDividerText,
 	handoffHeaderLine,
 	handoffJumpTarget,
 	handoffViewContext,
