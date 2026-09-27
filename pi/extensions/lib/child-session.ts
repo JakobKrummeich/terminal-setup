@@ -23,7 +23,17 @@ import {
 	type ExtensionContext,
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { Container, type KeyId, matchesKey, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	Container,
+	type KeyId,
+	matchesKey,
+	Spacer,
+	Text,
+	truncateToWidth,
+	type TUI,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import { renderFooterLines } from "../custom-footer.ts";
 import { appendEvent, findSpawnsByLabel, type RunStatus } from "./agent-runs.ts";
 import { cancelPendingWork } from "./pending-work.ts";
@@ -73,6 +83,11 @@ export interface ChildRecord {
 	/** Reasons the child is between runs but not finished (timer, context handoff). */
 	waitingFor?: string;
 	running: boolean;
+	/**
+	 * Epoch ms the current run started (runChildToolInSlot); undefined between runs.
+	 * elapsedMs only grows when a run ends — liveElapsedMs adds the running part.
+	 */
+	runStartedAt?: number;
 	/** Epoch ms of the last agent-runs.jsonl progress row (write throttle). */
 	lastProgressAt?: number;
 }
@@ -154,7 +169,9 @@ interface SharedState {
 // module on every session bind (moduleCache: false), so in a long-lived pi process an
 // old code copy may still hold the previous shape under the previous symbol — old and
 // new copies must never share a mis-shaped state object.
-const STATE_KEY = Symbol.for("terminal-setup.child-session.v6");
+// v7: ChildView gained handoffCount/handoffAnchors (read by the watch overlay);
+// ChildRecord gained the optional runStartedAt (readers treat undefined as "not running").
+const STATE_KEY = Symbol.for("terminal-setup.child-session.v7");
 const globals = globalThis as unknown as Record<symbol, SharedState | undefined>;
 const state: SharedState = (globals[STATE_KEY] ??= {
 	liveChildren: new Map(),
@@ -206,8 +223,85 @@ function messageText(content: unknown): string {
 		.join("\n");
 }
 
+/** Swap-marker customType — MARKER_TYPE in context-cap.ts (not exported: that file is an extension). */
+const HANDOFF_MARKER_TYPE = "context-cap-swap";
+
+/** Human label of a swap trigger (context-cap.ts SwapTrigger); undefined for unknown/missing. */
+const TRIGGER_LABELS: Record<string, string> = {
+	soft: "soft cap",
+	hard: "hard cap",
+	"hard-no-file": "hard cap, no handoff file",
+};
+
+/** The swap-marker `details` fields the divider shows (context-cap.ts stageSwap). */
+interface HandoffDetails {
+	tokensAtSwap?: unknown;
+	trigger?: unknown;
+}
+
+/**
+ * Divider text for handoff `index` of `total`, `─`-padded (or truncated) to `width`:
+ * `── ⇄ handoff 2/3 · at 162k tokens · soft cap ─────…`. Parts whose detail is
+ * missing are omitted.
+ */
+export function handoffDividerText(
+	index: number,
+	total: number,
+	details: HandoffDetails | undefined,
+	width: number,
+): string {
+	const parts = [`\u21c4 handoff ${index}/${total}`];
+	if (typeof details?.tokensAtSwap === "number") parts.push(`at ${formatTokenCount(details.tokensAtSwap)} tokens`);
+	const trigger = typeof details?.trigger === "string" ? TRIGGER_LABELS[details.trigger] : undefined;
+	if (trigger) parts.push(trigger);
+	const label = `\u2500\u2500 ${parts.join(" \u00b7 ")} `;
+	const fill = width - visibleWidth(label);
+	return fill >= 0 ? label + "\u2500".repeat(fill) : truncateToWidth(label, width, "");
+}
+
+/**
+ * One-line divider in front of a context-cap swap marker's block. `index`
+ * (1-based) is fixed at creation; the total is read at render time because a
+ * live run keeps adding handoffs. ChildView.render records its line as an anchor.
+ */
+class HandoffDivider implements Component {
+	constructor(
+		private readonly index: number,
+		private readonly total: () => number,
+		private readonly details: HandoffDetails | undefined,
+	) {}
+	render(width: number): string[] {
+		return [getMarkdownTheme().heading(handoffDividerText(this.index, this.total(), this.details, width))];
+	}
+	invalidate() {}
+}
+
+/** A user/custom message as ChildView's block renderer sees it (live event or replayed entry). */
+interface MessageBlock {
+	role: string;
+	content?: unknown;
+	display?: boolean;
+	customType?: string;
+	details?: unknown;
+}
+
+/** A `custom_message` session entry as a message block (replay and entry_appended). */
+function customEntryBlock(entry: Omit<MessageBlock, "role">): MessageBlock {
+	return {
+		role: "custom",
+		content: entry.content,
+		display: entry.display,
+		customType: entry.customType,
+		details: entry.details,
+	};
+}
+
 export class ChildView {
 	private readonly container = new Container();
+	/** Handoff dividers in transcript order (their count is the `N` of `i/N`). */
+	private readonly dividers: HandoffDivider[] = [];
+	/** Line index of each handoff divider in the latest render() output. */
+	handoffAnchors: number[] = [];
 	private readonly pendingTools = new Map<string, ToolExecutionComponent>();
 	private readonly tools: ToolExecutionComponent[] = [];
 	private streaming: AssistantMessageComponent | undefined;
@@ -230,24 +324,50 @@ export class ChildView {
 		for (const tool of this.tools) tool.setExpanded(this.expanded);
 		this.requestRender();
 	}
+	/** Number of context-cap swap markers rendered so far. */
+	get handoffCount(): number {
+		return this.dividers.length;
+	}
+	/** Same output as Container.render, plus the handoff anchor line indexes. */
 	render(width: number): string[] {
-		return this.container.render(width);
+		const lines: string[] = [];
+		const anchors: number[] = [];
+		for (const child of this.container.children) {
+			if (child instanceof HandoffDivider) anchors.push(lines.length);
+			for (const line of child.render(width)) lines.push(line);
+		}
+		this.handoffAnchors = anchors;
+		return lines;
 	}
 	addUserMessage(text: string) {
 		this.pendingManualPrompts++;
 		this.addUserBlock(text);
 		this.requestRender();
 	}
-	private addUserBlock(text: string) {
+	private addUserBlock(text: string, divider?: HandoffDivider) {
 		this.container.addChild(new Spacer(1));
+		if (divider) this.container.addChild(divider);
 		this.container.addChild(new UserMessageComponent(text, getMarkdownTheme()));
 	}
-	/** User/custom message block, as live delivery and replay render it (no prompt dedupe). */
-	private addMessageBlock(message: { role: string; content?: unknown; display?: boolean }) {
+	/**
+	 * User/custom message block, as live delivery and replay render it (no prompt
+	 * dedupe). A context-cap swap marker gets a handoff divider as its first line.
+	 */
+	private addMessageBlock(message: MessageBlock) {
 		if (message.role === "custom" && message.display === false) return;
 		const text = messageText(message.content);
 		if (!text.trim()) return;
-		this.addUserBlock(text);
+		let divider: HandoffDivider | undefined;
+		if (message.role === "custom" && message.customType === HANDOFF_MARKER_TYPE) {
+			const details = message.details;
+			divider = new HandoffDivider(
+				this.dividers.length + 1,
+				() => this.dividers.length,
+				typeof details === "object" && details !== null ? (details as HandoffDetails) : undefined,
+			);
+			this.dividers.push(divider);
+		}
+		this.addUserBlock(text, divider);
 	}
 	/**
 	 * Render a reopened child's saved history (session.sessionManager.getBranch():
@@ -259,9 +379,9 @@ export class ChildView {
 	 */
 	replay(entries: readonly unknown[]) {
 		for (const raw of entries) {
-			const entry = raw as { type?: string; message?: unknown; content?: unknown; display?: boolean };
+			const entry = raw as { type?: string; message?: unknown } & Omit<MessageBlock, "role">;
 			if (entry.type === "custom_message") {
-				this.addMessageBlock({ role: "custom", content: entry.content, display: entry.display });
+				this.addMessageBlock(customEntryBlock(entry));
 				continue;
 			}
 			if (entry.type !== "message" || !entry.message) continue;
@@ -310,7 +430,7 @@ export class ChildView {
 	 * boundary entry, which pi persists WITHOUT any message_start. Each delivery
 	 * emits exactly one of the two, so handling both never double-renders.
 	 */
-	private addInjectedMessage(message: { role: string; content?: unknown; display?: boolean }) {
+	private addInjectedMessage(message: MessageBlock) {
 		if (message.role === "user" && this.pendingManualPrompts > 0) {
 			this.pendingManualPrompts--;
 			return;
@@ -347,7 +467,7 @@ export class ChildView {
 		switch (event.type) {
 			case "message_start": {
 				if (event.message.role === "user" || event.message.role === "custom") {
-					this.addInjectedMessage(event.message as { role: string; content?: unknown; display?: boolean });
+					this.addInjectedMessage(event.message as MessageBlock);
 					break;
 				}
 				if (event.message.role !== "assistant") break;
@@ -369,10 +489,8 @@ export class ChildView {
 				break;
 			}
 			case "entry_appended": {
-				const entry = event.entry as { type: string; content?: unknown; display?: boolean };
-				if (entry.type === "custom_message") {
-					this.addInjectedMessage({ role: "custom", content: entry.content, display: entry.display });
-				}
+				const entry = event.entry as { type: string } & Omit<MessageBlock, "role">;
+				if (entry.type === "custom_message") this.addInjectedMessage(customEntryBlock(entry));
 				break;
 			}
 			case "tool_execution_start":
@@ -575,6 +693,70 @@ export function metaLine(meta: RunMeta): string {
 		`$${meta.costUsd.toFixed(3)}`,
 		formatDuration(meta.durationMs),
 	].join(" \u00b7 ");
+}
+
+/** Total run time including the in-flight run (elapsedMs only grows when a run ends). */
+export function liveElapsedMs(
+	record: Pick<ChildRecord, "elapsedMs" | "running" | "runStartedAt">,
+	now = Date.now(),
+): number {
+	return record.elapsedMs + (record.running && record.runStartedAt ? Math.max(0, now - record.runStartedAt) : 0);
+}
+
+/**
+ * Second header line of the watch view: `⇄ N handoffs · context k/N+1 · duration`
+ * (`⇄ no handoffs · duration` without any). No ctx/cost: the child footer below
+ * shows those. `k` is the 1-based context the viewport shows (handoffViewContext).
+ */
+export function handoffHeaderLine(count: number, k: number, durationMs: number): string {
+	const handoffs =
+		count === 0
+			? ["\u21c4 no handoffs"]
+			: [`\u21c4 ${count} ${count === 1 ? "handoff" : "handoffs"}`, `context ${k}/${count + 1}`];
+	return [...handoffs, formatDuration(durationMs)].join(" \u00b7 ");
+}
+
+/** 1-based context index of body line `top`: 1 + handoff anchors at or above it. */
+export function handoffContextIndex(anchors: readonly number[], top: number): number {
+	return 1 + anchors.filter((anchor) => anchor <= top).length;
+}
+
+/**
+ * The context `k` the watch header shows for a viewport at `offset` (`viewport`
+ * lines of a `bodyLength`-line body): the top line's context — except at the
+ * tail (offset ≥ maxOffset, incl. following), where it is the LAST visible
+ * line's, so a live run shows the context it is currently in.
+ */
+export function handoffViewContext(
+	anchors: readonly number[],
+	offset: number,
+	viewport: number,
+	bodyLength: number,
+): number {
+	const maxOffset = Math.max(0, bodyLength - viewport);
+	if (offset < maxOffset) return handoffContextIndex(anchors, offset);
+	return handoffContextIndex(anchors, Math.min(offset + viewport, bodyLength) - 1);
+}
+
+/**
+ * Shift+↑/↓ target in the watch view: the first anchor strictly below `top`
+ * (dir 1) or the last anchor strictly above it (dir -1; undefined = stay put).
+ * Down returns "tail" (follow the end) when there is no such anchor or it lies
+ * beyond `maxOffset` — it is already on the final screen and can never become
+ * the top line, so re-targeting it would get stuck. Up from the tail skips
+ * anchors on the final screen by design (they are already visible).
+ */
+export function handoffJumpTarget(
+	anchors: readonly number[],
+	top: number,
+	dir: -1 | 1,
+	maxOffset: number,
+): number | "tail" | undefined {
+	if (dir === 1) {
+		const next = anchors.find((anchor) => anchor > top);
+		return next === undefined || next > maxOffset ? "tail" : next;
+	}
+	return anchors.filter((anchor) => anchor < top).at(-1);
 }
 
 function labelFromPrompt(prompt: string): string {
@@ -791,11 +973,23 @@ function childFooterData(ctx: ExtensionContext, record: ChildRecord, branch: str
 	};
 }
 
-/** One picker row (marker + live status / final meta). Selection styling is added by the caller. */
-function pickerRow(record: ChildRecord): string {
-	return record.running
-		? `▶ ${statusLine(record)}`
-		: `■ ${metaLine(collectMeta(record))} · ${record.description}`;
+/**
+ * One picker row (marker + live status / final meta), with `⇄N` right after the
+ * leading `kind#id` when the child had handoffs — early in the row, so narrow
+ * terminals clip the tail first. Selection styling is added by the caller.
+ */
+export function pickerRow(record: ChildRecord): string {
+	const line = record.running
+		? statusLine(record)
+		: `${metaLine(collectMeta(record))} · ${record.description}`;
+	const handoffs = record.view.handoffCount;
+	// statusLine and metaLine both start with `${kind}#${id}`.
+	const label = `${record.kind}#${record.id}`;
+	const tagged =
+		handoffs > 0 && line.startsWith(label)
+			? `${label} \u21c4${handoffs}${line.slice(label.length)}`
+			: line;
+	return `${record.running ? "▶" : "■"} ${tagged}`;
 }
 
 /**
@@ -925,6 +1119,8 @@ async function watchOverlay(ctx: ExtensionContext, initial: ChildRecord | undefi
 			let offset = 0;
 			let follow = true;
 			let viewport = 1;
+			// Largest top offset of the latest view render (the Shift+↓ tail bound).
+			let maxOffset = 0;
 			const scrollBy = (delta: number) => {
 				follow = false;
 				offset = Math.max(0, offset + delta);
@@ -959,14 +1155,14 @@ async function watchOverlay(ctx: ExtensionContext, initial: ChildRecord | undefi
 				mode = "picker";
 				tui.requestRender();
 			};
-			const renderPicker = (): string[] => {
+			const renderPicker = (width: number): string[] => {
 				const all = [...liveChildren.values()];
 				if (all.length === 0) return ["No agent sessions.", "", "esc close"];
 				selected = Math.min(selected, all.length - 1); // eviction clamp
 				const rows = all.map((r, i) =>
 					i === selected
-						? (theme as Theme).fg("accent", `> ${pickerRow(r)}`)
-						: `  ${pickerRow(r)}`,
+						? (theme as Theme).fg("accent", truncateToWidth(`> ${pickerRow(r)}`, width))
+						: truncateToWidth(`  ${pickerRow(r)}`, width),
 				);
 				const hint = "↑↓ select · enter open · 1-9 jump · esc close";
 				return [`Agent sessions (${all.length})`, "", ...rows, "", hint].slice(0, tui.terminal.rows);
@@ -976,24 +1172,40 @@ async function watchOverlay(ctx: ExtensionContext, initial: ChildRecord | undefi
 				const all = [...liveChildren.values()];
 				const idx = all.indexOf(current);
 				const pos = all.length > 1 && idx >= 0 ? ` (${idx + 1}/${all.length})` : "";
-				const header = current.running
-					? `▶ ${statusLine(current)}${pos}`
-					: `■ ${metaLine(collectMeta(current))} · ${current.description} · finished${pos}`;
-				const hint = `esc back · wheel/↑↓/pgup/pgdn scroll · end follow · ${EXPAND_KEY} expand${
-					pos ? ` · ←/→ agents · ${WATCH_KEY} next${pos}` : ""
-				}${follow ? "" : " · paused"}`;
 				const footerLines = childFooter(width, current);
-				viewport = Math.max(1, tui.terminal.rows - 3 - footerLines.length);
+				// Two header lines + blank + hint around the body.
+				viewport = Math.max(1, tui.terminal.rows - 4 - footerLines.length);
 				const body = current.view.render(width);
-				const maxOffset = Math.max(0, body.length - viewport);
+				maxOffset = Math.max(0, body.length - viewport);
 				if (follow) offset = maxOffset;
 				else if (offset >= maxOffset) {
 					offset = maxOffset;
 					follow = true;
 				}
+				// After the offset settles: line 2's `context k/N+1` depends on the viewport.
+				const handoffs = current.view.handoffCount;
+				const header = current.running
+					? `▶ ${statusLine(current)}${pos}`
+					: `■ ${current.kind}#${current.id} · ${current.description} · ${current.turns} turns · finished${pos}`;
+				const header2 = `  ${handoffHeaderLine(
+					handoffs,
+					handoffViewContext(current.view.handoffAnchors, offset, viewport, body.length),
+					liveElapsedMs(current),
+				)}`;
+				// `paused` first: a narrow terminal clips the hint's tail, not the state.
+				const hint = `${follow ? "" : "paused · "}esc back · wheel/↑↓/pgup/pgdn scroll${handoffs > 0 ? " · shift+↑↓ handoff" : ""} · end follow · ${EXPAND_KEY} expand${
+					pos ? ` · ←/→ agents · ${WATCH_KEY} next${pos}` : ""
+				}`;
 				const window = body.slice(offset, offset + viewport);
 				while (window.length < viewport) window.push("");
-				return [header, ...window, "", hint, ...footerLines].slice(0, tui.terminal.rows);
+				return [
+					truncateToWidth(header, width),
+					truncateToWidth(header2, width),
+					...window,
+					"",
+					truncateToWidth(hint, width),
+					...footerLines,
+				].slice(0, tui.terminal.rows);
 			};
 			const handlePickerInput = (data: string) => {
 				const all = [...liveChildren.values()];
@@ -1023,7 +1235,19 @@ async function watchOverlay(ctx: ExtensionContext, initial: ChildRecord | undefi
 					return;
 				}
 				if (matchesKey(data, "escape")) leaveView();
-				else if (matchesKey(data, "up")) scrollBy(-1);
+				else if (matchesKey(data, "shift+up") || matchesKey(data, "shift+down")) {
+					// `offset` is the effective top even while following: renderView pins it
+					// to maxOffset. Anchors and maxOffset come from the same (latest) render.
+					const dir = matchesKey(data, "shift+up") ? -1 : 1;
+					const target = handoffJumpTarget(current.view.handoffAnchors, offset, dir, maxOffset);
+					if (target === undefined) return;
+					if (target === "tail") follow = true;
+					else {
+						follow = false;
+						offset = target;
+					}
+					tui.requestRender();
+				} else if (matchesKey(data, "up")) scrollBy(-1);
 				else if (matchesKey(data, "down")) scrollBy(1);
 				else if (matchesKey(data, "pageUp")) scrollBy(-(viewport - 1));
 				else if (matchesKey(data, "pageDown")) scrollBy(viewport - 1);
@@ -1055,7 +1279,7 @@ async function watchOverlay(ctx: ExtensionContext, initial: ChildRecord | undefi
 				},
 				invalidate() {},
 				render(width: number): string[] {
-					return mode === "picker" ? renderPicker() : renderView(width);
+					return mode === "picker" ? renderPicker(width) : renderView(width);
 				},
 				handleInput(data: string) {
 					if (mode === "picker") handlePickerInput(data);
@@ -1502,6 +1726,7 @@ async function runChildToolInSlot(
 	const onAbort = () => void record.session.abort();
 	signal?.addEventListener("abort", onAbort, { once: true });
 	const startedAt = Date.now();
+	record.runStartedAt = startedAt;
 	let failed = false;
 	try {
 		await record.session.prompt(params.prompt);
@@ -1511,6 +1736,7 @@ async function runChildToolInSlot(
 		throw error;
 	} finally {
 		record.elapsedMs += Date.now() - startedAt;
+		record.runStartedAt = undefined;
 		watcher.stop();
 		record.running = false;
 		record.currentTool = undefined;
