@@ -10,10 +10,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as handoffModule from "../handoff.ts";
 import { handoffLineBudget, handoffSections } from "../lib/handoff-writer.ts";
+import { HANDOFF_PREAMBLE, HANDOFF_SUMMARY_TYPE, SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 
-const { HANDOFF_PROMPT, HANDOFF_PREAMBLE, extractHandoffSummary } = handoffModule as unknown as {
+const { HANDOFF_PROMPT, extractHandoffSummary } = handoffModule as unknown as {
 	HANDOFF_PROMPT: string;
-	HANDOFF_PREAMBLE: string;
 	extractHandoffSummary: (
 		branch: Array<{ type: string; message?: { role?: string; stopReason?: string; content?: unknown } }>,
 	) => { ok: true; text: string } | { ok: false; reason: string };
@@ -50,9 +50,12 @@ test("/handoff is reply-mode: document as reply, tools banned, no auto-continue 
 	assert.ok(!HANDOFF_PROMPT.includes("Continue your work."), "no auto-continue instruction");
 });
 
-test("preamble matches context-cap's swap preamble byte for byte", () => {
-	// Keep in sync with PREAMBLE in context-cap.ts: successors read the same
-	// opening line whether the handoff came from a cap swap or from /handoff.
+test("handoff wire format is pinned: preamble text and persisted customTypes", () => {
+	// All writers/readers import these from lib/message-types.ts; the literals here
+	// pin the persisted format itself. Session files on disk carry these strings —
+	// renaming one orphans the handoff markers of every existing session.
+	assert.equal(SWAP_MARKER_TYPE, "context-cap-swap");
+	assert.equal(HANDOFF_SUMMARY_TYPE, "handoff-summary");
 	assert.equal(
 		HANDOFF_PREAMBLE,
 		"You are continuing work from a previous session. The agent before you left you this information:",
@@ -96,4 +99,42 @@ test("extension registers the /handoff command", () => {
 		registerCommand: (name: string) => commands.push(name),
 	});
 	assert.deepEqual(commands, ["handoff"]);
+});
+
+test("/handoff harvests only after its own prompt entered a run, then seeds the successor", async () => {
+	type Handler = (event: unknown) => void;
+	const handlers = new Map<string, Handler>();
+	let command: ((args: string, ctx: unknown) => Promise<void>) | undefined;
+	const sentPrompts: string[] = [];
+	defaultExport(handoffModule)({
+		on: (name: string, handler: Handler) => handlers.set(name, handler),
+		registerCommand: (_name: string, spec: { handler: typeof command }) => (command = spec.handler),
+		sendUserMessage: (text: string) => sentPrompts.push(text),
+	});
+	const doc = "## Current Task\nship it";
+	const seeded: unknown[] = [];
+	const run = command!("", {
+		isIdle: () => false,
+		ui: { notify: () => {} },
+		sessionManager: { getBranch: () => [user(HANDOFF_PROMPT), assistant([{ type: "text", text: doc }])] },
+		newSession: async ({ withSession }: { withSession: (ctx: unknown) => Promise<void> }) =>
+			withSession({ sendMessage: async (message: unknown) => seeded.push(message) }),
+	});
+	assert.deepEqual(sentPrompts, [HANDOFF_PROMPT]);
+
+	// The run in flight when /handoff fired ends first: must NOT trigger the harvest.
+	handlers.get("agent_end")!({});
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(seeded.length, 0, "agent_end before the prompt was delivered must not harvest");
+
+	// Other user messages don't count as delivery; the prompt itself (text blocks) does.
+	handlers.get("message_start")!({ message: { role: "user", content: [{ type: "text", text: "unrelated" }] } });
+	handlers.get("agent_end")!({});
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(seeded.length, 0, "an unrelated user message is not the handoff prompt");
+
+	handlers.get("message_start")!({ message: { role: "user", content: [{ type: "text", text: HANDOFF_PROMPT }] } });
+	handlers.get("agent_end")!({});
+	await run;
+	assert.deepEqual(seeded, [{ customType: HANDOFF_SUMMARY_TYPE, content: `${HANDOFF_PREAMBLE}\n\n${doc}`, display: true }]);
 });

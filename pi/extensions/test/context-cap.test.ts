@@ -19,6 +19,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createTestSession, textStep, toolStep } from "./harness.ts";
 import { hasPendingWork } from "../lib/pending-work.ts";
+import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const CONTEXT_CAP_EXTENSION = path.join(EXT_DIR, "context-cap.ts");
@@ -67,7 +68,7 @@ test("soft-cap handoff cycle completes inside a single prompt() call", async () 
 		// Exactly one marker must be persisted. On Pi 0.87 it is returned through
 		// the actionable turn_end boundary; older Pi receives one legacy queued marker.
 		const sessionMessages = t.session.messages as Array<{ role: string; customType?: string }>;
-		const markers = sessionMessages.filter((m) => m.role === "custom" && m.customType === "context-cap-swap");
+		const markers = sessionMessages.filter((m) => m.role === "custom" && m.customType === SWAP_MARKER_TYPE);
 		assert.equal(markers.length, 1, "swap marker must appear exactly once");
 		const lastToolResult = sessionMessages.map((m) => m.role).lastIndexOf("toolResult");
 		assert.ok(sessionMessages.indexOf(markers[0]) > lastToolResult, "swap marker must follow tool-result entries");

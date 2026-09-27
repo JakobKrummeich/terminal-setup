@@ -7,7 +7,7 @@
  *  - silent-stop fallback: turn ends without tool calls above soft cap → followUp
  *  - turn-end verification on both paths: no handoff → bounded followUp reminders
  *  - swap = context-scrub: a persistent custom-message marker entry
- *    (customType "context-cap-swap", content = preamble + handoff body, details =
+ *    (customType SWAP_MARKER_TYPE = "context-cap-swap", content = preamble + handoff body, details =
  *    forensic metadata) is appended to the session, and a "context" event handler
  *    slices the LLM message array at the latest marker. The first post-swap LLM
  *    call sees ONLY the handoff (plus, if CONTEXT_CAP_TAIL_TOKENS > 0, the last
@@ -134,6 +134,7 @@ import {
 	type TriggerSource,
 } from "./lib/env.ts";
 import { draftHandoff, handoffLineBudget, handoffSections, type HandoffMessage } from "./lib/handoff-writer.ts";
+import { HANDOFF_PREAMBLE, SWAP_MARKER_TYPE, type SwapTrigger } from "./lib/message-types.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -144,7 +145,6 @@ const SCHEMA: HandoffSchema = CONTEXT_CAP_SCHEMA;
 const TAIL_TOKENS = CONTEXT_CAP_TAIL_TOKENS;
 const MAX_RETRIES = 2;
 const CAP_DIR = path.join(os.homedir(), ".pi", "agent", "context-cap");
-const MARKER_TYPE = "context-cap-swap";
 const TOOL_NAME = CONTEXT_CAP_TOOL_NAME;
 /** Read at call time (not import time) so it can be flipped per test / per run. */
 const COMPACT_HANDOFF_ENV = "CONTEXT_CAP_COMPACT_HANDOFF";
@@ -198,7 +198,7 @@ Call it now (see the earlier context-limit instructions), then end your turn. (r
 /**
  * A cap warning/reminder as it appears in the message array: a user message
  * whose text starts with WARNING_PREFIX. Only the four messages above match —
- * swap-marker content (PREAMBLE…) and handoff bodies never carry the prefix.
+ * swap-marker content (HANDOFF_PREAMBLE…) and handoff bodies never carry the prefix.
  */
 function isCapWarning(message: unknown): boolean {
 	const m = (message ?? {}) as { role?: string; content?: unknown };
@@ -208,9 +208,6 @@ function isCapWarning(message: unknown): boolean {
 	const first = (m.content.find((c) => (c as { type?: string })?.type === "text") ?? {}) as { text?: string };
 	return typeof first.text === "string" && first.text.startsWith(WARNING_PREFIX);
 }
-
-const PREAMBLE =
-	"You are continuing work from a previous session. The agent before you left you this information:";
 
 /** Machine-written handoff (hard-cap backstop): say so — its claims were never agent-verified. */
 const MACHINE_PREAMBLE =
@@ -475,7 +472,6 @@ export function selectContextTail(
 // ---------------------------------------------------------------------------
 
 type Phase = "idle" | "steered" | "prompted" | "exhausted";
-type SwapTrigger = "soft" | "hard" | "hard-no-file";
 /** Who wrote the handoff document: the agent via the tool, or the writer LLM call. */
 type HandoffAuthor = "agent" | "machine";
 
@@ -627,7 +623,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 	function buildSummary(filePath: string, stale: boolean, author: HandoffAuthor): string {
 		const body = stripFrontmatter(fs.readFileSync(filePath, "utf8")).trim();
 		const staleNote = stale ? `\n\n${STALE_NOTE}` : "";
-		const preamble = author === "machine" ? MACHINE_PREAMBLE : PREAMBLE;
+		const preamble = author === "machine" ? MACHINE_PREAMBLE : HANDOFF_PREAMBLE;
 		return `${preamble}\n\n${body}${staleNote}\n\n${CONTINUE_SUFFIX}`;
 	}
 
@@ -693,7 +689,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 					...event.entries,
 					{
 						type: "custom_message",
-						customType: MARKER_TYPE,
+						customType: SWAP_MARKER_TYPE,
 						content: swap.content,
 						display: true,
 						details: swap.details,
@@ -703,12 +699,12 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			};
 		} else if (ctx.isIdle()) {
 			pi.sendMessage(
-				{ customType: MARKER_TYPE, content: swap.content, display: true, details: swap.details },
+				{ customType: SWAP_MARKER_TYPE, content: swap.content, display: true, details: swap.details },
 				{ triggerTurn: true },
 			);
 		} else {
 			pi.sendMessage(
-				{ customType: MARKER_TYPE, content: swap.content, display: true, details: swap.details },
+				{ customType: SWAP_MARKER_TYPE, content: swap.content, display: true, details: swap.details },
 				{ deliverAs: "steer" },
 			);
 		}
@@ -919,7 +915,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		let markerIndex = -1;
 		for (let i = original.length - 1; i >= 0; i--) {
 			const m = original[i] as { role: string; customType?: string };
-			if (m.role === "custom" && m.customType === MARKER_TYPE) {
+			if (m.role === "custom" && m.customType === SWAP_MARKER_TYPE) {
 				markerIndex = i;
 				break;
 			}
@@ -934,7 +930,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			let marker = -1;
 			for (let i = msgs.length - 1; i >= 0; i--) {
 				const m = msgs[i] as { role: string; customType?: string };
-				if (m.role === "custom" && m.customType === MARKER_TYPE) {
+				if (m.role === "custom" && m.customType === SWAP_MARKER_TYPE) {
 					marker = i;
 					break;
 				}

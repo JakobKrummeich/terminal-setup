@@ -33,6 +33,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { conversationMessages } from "./context-compat.ts";
 import { abortedStep, createTestSession, errorStep, textStep, toolStep, type TestSession } from "./harness.ts";
+import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const CONTEXT_CAP_EXTENSION = path.join(EXT_DIR, "context-cap.ts");
@@ -47,7 +48,7 @@ interface SwapMarker {
 
 function swapMarkers(t: TestSession): SwapMarker[] {
 	return (t.session.messages as SwapMarker[]).filter(
-		(m) => m.role === "custom" && m.customType === "context-cap-swap",
+		(m) => m.role === "custom" && m.customType === SWAP_MARKER_TYPE,
 	);
 }
 

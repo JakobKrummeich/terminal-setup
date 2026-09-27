@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { handoffLineBudget, handoffSections } from "./lib/handoff-writer.ts";
+import { HANDOFF_PREAMBLE, HANDOFF_SUMMARY_TYPE } from "./lib/message-types.ts";
 
 /**
  * Reply-mode variant of context-cap's handoff request. The section list and
@@ -13,17 +14,18 @@ import { handoffLineBudget, handoffSections } from "./lib/handoff-writer.ts";
  *    (triggerTurn: false below): the user stays in the driver's seat, so no
  *    "Continue your work." suffix either.
  */
-export const HANDOFF_PROMPT = `Write the handoff document your successor session starts from, as your reply. The next session sees this document and nothing else — no conversation history, no tool output. Anything you leave out is lost; be concrete (real paths, real commands, real state) and mark every unverified claim as unverified.
+/**
+ * Opening words of HANDOFF_PROMPT. The message_start handler below detects the
+ * prompt entering a run by this text, so it is derived here, not re-typed there.
+ */
+const HANDOFF_PROMPT_OPENING = "Write the handoff document your successor session starts from";
+
+export const HANDOFF_PROMPT = `${HANDOFF_PROMPT_OPENING}, as your reply. The next session sees this document and nothing else — no conversation history, no tool output. Anything you leave out is lost; be concrete (real paths, real commands, real state) and mark every unverified claim as unverified.
 
 Plain markdown, ~${handoffLineBudget()} lines total:
 ${handoffSections()}
 
 Reply with the document only — no preamble, no sign-off, no code fence around the whole document, and do NOT call any tools (not even context_handoff: this handoff is harvested from your reply, not from a file).`;
-
-// Matches context-cap.ts's PREAMBLE byte for byte — successors read the same
-// opening line whether the handoff came from a cap swap or from /handoff.
-export const HANDOFF_PREAMBLE =
-	"You are continuing work from a previous session. The agent before you left you this information:";
 
 /** What the harvest found in the branch after the handoff run ended. */
 export type SummaryExtraction = { ok: true; text: string } | { ok: false; reason: string };
@@ -82,7 +84,7 @@ export default function handoffExtension(pi: ExtensionAPI) {
 					.map((c) => c.text ?? "")
 					.join("\n")
 			: String(msg.content ?? "");
-		if (text.includes("Write the handoff document your successor session starts from")) {
+		if (text.includes(HANDOFF_PROMPT_OPENING)) {
 			pending.delivered = true;
 		}
 	});
@@ -131,7 +133,7 @@ export default function handoffExtension(pi: ExtensionAPI) {
 				withSession: async (newCtx) => {
 					await newCtx.sendMessage(
 						{
-							customType: "handoff-summary",
+							customType: HANDOFF_SUMMARY_TYPE,
 							content: `${HANDOFF_PREAMBLE}\n\n${summaryText.trim()}`,
 							display: true,
 						},

@@ -31,6 +31,7 @@ import {
 	type ResolvedTriggers,
 } from "../lib/env.ts";
 import { createTestSession, textStep, toolStep } from "./harness.ts";
+import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 
 const CAP_KEYS = ["CONTEXT_CAP_SOFT", "CONTEXT_CAP_HARD", "CONTEXT_CAP_RESERVE", "PI_CODING_AGENT_DIR"] as const;
 
@@ -289,7 +290,7 @@ test("mid-session model switch moves the soft cap: no steer at 1M, steer at 200k
 
 		const marker = (
 			t.session.messages as Array<{ role: string; customType?: string; details?: Record<string, unknown> }>
-		).find((m) => m.role === "custom" && m.customType === "context-cap-swap");
+		).find((m) => m.role === "custom" && m.customType === SWAP_MARKER_TYPE);
 		assert.ok(marker, "the swap must have happened");
 		assert.deepEqual(
 			{

@@ -26,6 +26,7 @@
  */
 import { readFileSync, statSync } from "node:fs";
 import type { SessionFileStats, TranscriptEntry, TranscriptToolCall } from "./dashboard-api.ts";
+import { HANDOFF_SUMMARY_TYPE, SWAP_MARKER_TYPE } from "./message-types.ts";
 
 /** Tool outputs beyond this are cut (spec: transcript view truncates ~2000 chars). */
 const OUTPUT_LIMIT = 2000;
@@ -33,12 +34,8 @@ const OUTPUT_LIMIT = 2000;
 const ARGS_LIMIT = 400;
 const TRUNCATION_MARK = "… [truncated]";
 
-/**
- * customType values that mark a context handoff in the transcript.
- * Sources: MARKER_TYPE in context-cap.ts ("context-cap-swap") and the
- * sendMessage in handoff.ts ("handoff-summary").
- */
-const HANDOFF_CUSTOM_TYPES = new Set(["context-cap-swap", "handoff-summary"]);
+/** customType values that mark a context handoff in the transcript (writers: context-cap.ts, handoff.ts). */
+const HANDOFF_CUSTOM_TYPES: ReadonlySet<string> = new Set([SWAP_MARKER_TYPE, HANDOFF_SUMMARY_TYPE]);
 
 export interface ParsedTranscript {
 	entries: TranscriptEntry[];

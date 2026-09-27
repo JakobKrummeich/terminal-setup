@@ -45,6 +45,7 @@ import { ChildView, liveChildren, runChildTool } from "../lib/child-session.ts";
 import { CONTEXT_CAP_TOOL_NAME } from "../lib/env.ts";
 import { conversationMessages } from "./context-compat.ts";
 import { type ResponseStep, type ScriptedStep, sleep, textStep, toolStep } from "./harness.ts";
+import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 // context-cap writes handoff files under the real home dir (os.homedir()).
@@ -210,7 +211,7 @@ test("one-jump hard-cap crossing: emergency steer, handoff survives into the swa
 			details?: { trigger?: string; handoffPath?: string | null };
 			content?: unknown;
 		}>;
-		const marker = messages.find((m) => m.role === "custom" && m.customType === "context-cap-swap");
+		const marker = messages.find((m) => m.role === "custom" && m.customType === SWAP_MARKER_TYPE);
 		assert.ok(marker, "swap marker must be in the session");
 		assert.equal(marker.details?.trigger, "soft", "swap must be the fresh-handoff kind");
 		assert.ok(marker.details?.handoffPath, "swap must record the handoff file");

@@ -22,6 +22,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { conversationMessages, currentTools } from "./context-compat.ts";
 import { createTestSession, textStep, toolStep, type TestSession } from "./harness.ts";
+import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 
 // lib/handoff-writer.ts resolves the schema at module load, and ESM hoists every
 // static import above the assignments at the top of this file — so it must be
@@ -158,7 +159,7 @@ test("v1 + no tail: agent instructions, tool spec and post-swap context are unch
 
 		// New forensic fields only — the swap decision itself is unchanged.
 		const marker = (t.session.messages as { role: string; customType?: string; details?: any }[]).find(
-			(m) => m.role === "custom" && m.customType === "context-cap-swap",
+			(m) => m.role === "custom" && m.customType === SWAP_MARKER_TYPE,
 		);
 		assert.ok(marker, "swap marker must exist");
 		assert.equal(marker.details?.trigger, "soft");

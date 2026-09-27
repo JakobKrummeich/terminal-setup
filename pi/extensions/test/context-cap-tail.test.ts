@@ -28,6 +28,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { conversationMessages } from "./context-compat.ts";
 import { createTestSession, textStep, toolStep, type TestSession } from "./harness.ts";
+import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const CONTEXT_CAP_EXTENSION = path.join(EXT_DIR, "context-cap.ts");
@@ -142,7 +143,7 @@ test("the swapped-in context is [recent turns …, handoff], pairing-safe and in
 
 		// Forensics: the marker says the lever fired and how much it kept.
 		const marker = (t.session.messages as { role: string; customType?: string; details?: any }[]).find(
-			(m) => m.role === "custom" && m.customType === "context-cap-swap",
+			(m) => m.role === "custom" && m.customType === SWAP_MARKER_TYPE,
 		);
 		assert.ok(marker, "swap marker must exist");
 		assert.equal(marker.details?.tailTokens, TAIL_BUDGET);

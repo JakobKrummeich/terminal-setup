@@ -26,6 +26,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { conversationMessages, currentTools } from "./context-compat.ts";
 import { createTestSession, textStep, toolStep, type TestSession } from "./harness.ts";
+import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const CONTEXT_CAP_EXTENSION = path.join(EXT_DIR, "context-cap.ts");
@@ -126,7 +127,7 @@ test("v2 reaches the tool spec, the agent instructions and the machine writer", 
 
 		// Instrumentation: marker details and frontmatter.
 		const marker = (t.session.messages as { role: string; customType?: string; details?: any }[]).find(
-			(m) => m.role === "custom" && m.customType === "context-cap-swap",
+			(m) => m.role === "custom" && m.customType === SWAP_MARKER_TYPE,
 		);
 		assert.ok(marker, "the backstop must swap");
 		assert.equal(marker.details?.schema, "v2");

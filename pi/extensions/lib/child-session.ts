@@ -36,6 +36,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { renderFooterLines } from "../custom-footer.ts";
 import { appendEvent, findSpawnsByLabel, type RunStatus } from "./agent-runs.ts";
+import { SWAP_MARKER_TYPE, type SwapTrigger } from "./message-types.ts";
 import { cancelPendingWork } from "./pending-work.ts";
 import { waitForSessionQuiet } from "./session-quiet.ts";
 import {
@@ -223,11 +224,8 @@ function messageText(content: unknown): string {
 		.join("\n");
 }
 
-/** Swap-marker customType — MARKER_TYPE in context-cap.ts (not exported: that file is an extension). */
-const HANDOFF_MARKER_TYPE = "context-cap-swap";
-
-/** Human label of a swap trigger (context-cap.ts SwapTrigger); undefined for unknown/missing. */
-const TRIGGER_LABELS: Record<string, string> = {
+/** Human label of each swap trigger. Typed per SwapTrigger: a new trigger without a label is a compile error. */
+const TRIGGER_LABELS: Record<SwapTrigger, string> = {
 	soft: "soft cap",
 	hard: "hard cap",
 	"hard-no-file": "hard cap, no handoff file",
@@ -252,7 +250,11 @@ export function handoffDividerText(
 ): string {
 	const parts = [`\u21c4 handoff ${index}/${total}`];
 	if (typeof details?.tokensAtSwap === "number") parts.push(`at ${formatTokenCount(details.tokensAtSwap)} tokens`);
-	const trigger = typeof details?.trigger === "string" ? TRIGGER_LABELS[details.trigger] : undefined;
+	// details come from disk: an unknown string (older/newer writer) must yield undefined, not throw.
+	const trigger =
+		typeof details?.trigger === "string" && Object.hasOwn(TRIGGER_LABELS, details.trigger)
+			? TRIGGER_LABELS[details.trigger as SwapTrigger]
+			: undefined;
 	if (trigger) parts.push(trigger);
 	const label = `\u2500\u2500 ${parts.join(" \u00b7 ")} `;
 	const fill = width - visibleWidth(label);
@@ -358,7 +360,7 @@ export class ChildView {
 		const text = messageText(message.content);
 		if (!text.trim()) return;
 		let divider: HandoffDivider | undefined;
-		if (message.role === "custom" && message.customType === HANDOFF_MARKER_TYPE) {
+		if (message.role === "custom" && message.customType === SWAP_MARKER_TYPE) {
 			const details = message.details;
 			divider = new HandoffDivider(
 				this.dividers.length + 1,
@@ -421,7 +423,7 @@ export class ChildView {
 	}
 	/**
 	 * Injected mid-run messages — context-cap steers/reminders (role "user") and
-	 * swap markers (role "custom", e.g. customType "context-cap-swap") — otherwise
+	 * swap markers (role "custom", e.g. customType SWAP_MARKER_TYPE) — otherwise
 	 * the F2 view shows a handoff tool call with no visible cause and no visible
 	 * post-swap injection. The child's own prompt() delivery re-emits the prompt
 	 * already shown by addUserMessage; pendingManualPrompts swallows exactly those.
