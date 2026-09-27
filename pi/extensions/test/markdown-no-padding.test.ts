@@ -1,8 +1,8 @@
 /**
  * markdown-no-padding patches the shared pi-tui Markdown.prototype.render. pi
- * loads the extension once per session bind and once per child spawn (separate
- * jiti instances, same prototype), so an unguarded patch stacked one wrapper per
- * load. Calling the default export N times here reproduces that: the guard lives
+ * re-imports the extension whenever its extension cache is dropped (/reload,
+ * cwd change) — separate jiti instances, same prototype — so an unguarded patch
+ * stacked one wrapper per load. Calling the default export N times here reproduces that: the guard lives
  * on the prototype, not in module state, so N calls on one module instance hit
  * exactly the path N separate jiti loads hit.
  */

@@ -36,9 +36,10 @@ type PatchableProto = {
 
 export default function (_pi: ExtensionAPI) {
 	const proto = Markdown.prototype as unknown as PatchableProto;
-	// WHY the guard: pi loads this file once per session bind AND per child spawn,
-	// each via its own jiti instance, but the pi-tui prototype is shared — without
-	// it every load stacked another wrapper around render. Patch exactly once.
+	// WHY the guard: pi re-imports this file whenever its extension cache is
+	// dropped (/reload, cwd change), each time via a fresh jiti instance, but the
+	// pi-tui prototype is shared — without it every re-import stacked another
+	// wrapper around render. Patch exactly once.
 	if (proto[ORIGINAL_RENDER]) return;
 	const origRender = proto.render;
 	proto[ORIGINAL_RENDER] = origRender;

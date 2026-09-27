@@ -62,13 +62,16 @@ export PI_OFFLINE=1
 # (settings.json feeds context-cap's reserve) or write into it (context-cap
 # handoff files, agent-runs log). Test files that need their own dir still set
 # PI_CODING_AGENT_DIR themselves; this is the default for the rest. No `exec`
-# below, so the EXIT trap can remove the dir; INT/TERM traps make bash exit
-# (running the EXIT trap) once node has exited on the same signal.
+# below, so the EXIT trap can remove the dir. node runs in the background +
+# `wait` so a signal sent to bash alone (not the process group) is forwarded to
+# node at once instead of waiting for the whole suite to finish.
 PI_CODING_AGENT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/pi-ext-test-agentdir.XXXXXX")"
 export PI_CODING_AGENT_DIR
 trap 'rm -rf "$PI_CODING_AGENT_DIR"' EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
 
 # transform (not strip): lib/child-view.ts uses TS parameter properties.
-node --test --experimental-transform-types --no-warnings "$@" ./*.test.ts
+node --test --experimental-transform-types --no-warnings "$@" ./*.test.ts &
+node_pid=$!
+trap 'kill -INT "$node_pid" 2>/dev/null; wait "$node_pid" || true; exit 130' INT
+trap 'kill -TERM "$node_pid" 2>/dev/null; wait "$node_pid" || true; exit 143' TERM
+wait "$node_pid"
