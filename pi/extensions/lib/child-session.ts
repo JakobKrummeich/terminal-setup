@@ -57,7 +57,7 @@ export interface ChildRecord {
 	waitingFor?: string;
 	running: boolean;
 	/**
-	 * Epoch ms the current run started (runChildToolInSlot); undefined between runs.
+	 * Epoch ms the current run started (runChildRecord); undefined between runs.
 	 * elapsedMs only grows when a run ends — liveElapsedMs adds the running part.
 	 */
 	runStartedAt?: number;
@@ -572,7 +572,7 @@ const freshHint = (kind: string) => `Start a fresh ${kind} with a self-contained
 
 /**
  * Where to reopen a child that is not in liveChildren, or why it cannot be.
- * Synchronous on purpose: runChildToolInSlot reserves the id right after this,
+ * Synchronous on purpose: reopenEvictedChild reserves the id right after this,
  * before its first await.
  *  1. Eviction tombstone (this pi session).
  *  2. After a pi restart (`pi -c` clears in-memory state): the child's
@@ -640,7 +640,7 @@ function findChildSource(id: string, kind: string, ctx: ExtensionContext): Child
  * reservation (state.reopening) is released a microtask after this returns, and
  * in that window a second resume must see the child as running — not as an
  * idle finished child it may prompt (or eviction may dispose). From here on the
- * caller owns resetting `running` on failure (runChildToolInSlot's finally).
+ * caller owns resetting `running` on failure (runChildRecord's finally).
  * Returns an error text when the file cannot be reopened as this child.
  */
 async function reopenChild(
@@ -815,6 +815,9 @@ export async function runChildTool(
 	}
 }
 
+/** A resolved child for this call, or the tool result that ends the call instead. */
+type ResolvedChild = { record: ChildRecord } | { result: ReturnType<typeof textResult> };
+
 async function runChildToolInSlot(
 	params: ChildToolParams,
 	options: RunChildOptions,
@@ -823,80 +826,134 @@ async function runChildToolInSlot(
 	ctx: ExtensionContext,
 	onSession: (session: AgentSession) => void,
 ) {
-	const resumeId = params.resume_id;
+	// Both steps hand back the record already claimed (running = true), set in the
+	// same synchronous stretch as their checks: the await here yields, and in that
+	// gap a concurrent resume or another spawn's eviction must see it as running.
+	const resolved: ResolvedChild = params.resume_id
+		? await resumeChildRecord(params.resume_id, params.description, options, ctx)
+		: { record: await spawnChildRecord(params, options, ctx) };
+	if ("result" in resolved) return resolved.result;
+	onSession(resolved.record.session);
+	return runChildRecord(resolved.record, params, options, signal, onUpdate);
+}
+
+/**
+ * Resume `resumeId` for this call: the live child, or an evicted/pre-restart one
+ * reopened from its session file. Claims it (running = true) on success; returns
+ * an error result when it is unknown, of another kind, or still running.
+ */
+async function resumeChildRecord(
+	resumeId: string,
+	description: string | undefined,
+	options: RunChildOptions,
+	ctx: ExtensionContext,
+): Promise<ResolvedChild> {
+	const unknownResume = (text: string) => ({
+		result: textResult(text, { error: "unknown_resume_id" }, true),
+	});
+	const stillRunning = () => ({
+		result: textResult(
+			`${options.kind} "${resumeId}" is still running. Wait for its result, then resume it.`,
+			{ error: "child_running" },
+			true,
+		),
+	});
+	// Reservation first: a reopen in flight is running even once its record is
+	// already in liveChildren (inserted with running: true, see reopenChild).
+	if (state.reopening.has(resumeId)) return stillRunning();
+	const existing = liveChildren.get(resumeId);
 	let record: ChildRecord;
-	if (resumeId) {
-		const unknownResume = (text: string) => textResult(text, { error: "unknown_resume_id" }, true);
-		const stillRunning = () =>
-			textResult(
-				`${options.kind} "${resumeId}" is still running. Wait for its result, then resume it.`,
-				{ error: "child_running" },
-				true,
+	if (existing) {
+		if (existing.kind !== options.kind) {
+			return unknownResume(
+				`No ${options.kind} session with id "${resumeId}" (that id is a ${existing.kind}). ${freshHint(options.kind)}`,
 			);
-		// Reservation first: a reopen in flight is running even once its record is
-		// already in liveChildren (inserted with running: true, see reopenChild).
-		if (state.reopening.has(resumeId)) return stillRunning();
-		const existing = liveChildren.get(resumeId);
-		if (existing) {
-			if (existing.kind !== options.kind) {
-				return unknownResume(
-					`No ${options.kind} session with id "${resumeId}" (that id is a ${existing.kind}). ${freshHint(options.kind)}`,
-				);
-			}
-			record = existing;
-			// With explorers running in parallel, two calls can pass the semaphore and
-			// resume the same child at once — session.prompt() on a busy session throws,
-			// and the loser's wind-down would mark the winner's record as not running and
-			// cancel its pending work. Also covers a session still draining after an abort.
-			if (record.running || !record.session.isIdle) return stillRunning();
-		} else {
-			// Evicted (or from before a pi restart): reopen it from its session file.
-			// Another call already reopening the same id counted as running above —
-			// two SessionManagers appending to one file would corrupt it.
-			const source = findChildSource(resumeId, options.kind, ctx);
-			if ("error" in source) return unknownResume(source.error);
-			// Reserved synchronously (no await since the has() check above); released
-			// on every path. The record reaches liveChildren before the release, and
-			// record.running is set below without an intervening await.
-			state.reopening.add(resumeId);
-			let reopened: ChildRecord | { error: string };
-			try {
-				evictFinishedChildren();
-				reopened = await reopenChild(ctx, options, source);
-			} finally {
-				state.reopening.delete(resumeId);
-			}
-			if ("error" in reopened) return unknownResume(reopened.error);
-			record = reopened;
 		}
-		if (params.description) record.description = params.description;
+		// With explorers running in parallel, two calls can pass the semaphore and
+		// resume the same child at once — session.prompt() on a busy session throws,
+		// and the loser's wind-down would mark the winner's record as not running and
+		// cancel its pending work. Also covers a session still draining after an abort.
+		// No await between this check and the claim below.
+		if (existing.running || !existing.session.isIdle) return stillRunning();
+		record = existing;
 	} else {
-		evictFinishedChildren();
-		const id = randomUUID().slice(0, 8);
-		const session = await createChildSession(ctx, options);
-		session.setSessionName(`${options.kind}#${id}`);
-		// Spawner = the session whose tool call runs right now: the main session, or
-		// an agent child when its own Explore call lands here (ctx is then the child's
-		// ExtensionContext). Optional chain: unit tests pass bare fake contexts.
-		const spawnerSid = ctx.sessionManager?.getSessionId();
-		const sid = session.sessionManager.getSessionId();
-		record = {
-			id,
-			kind: options.kind,
-			sid,
-			rootSid: spawnerSid ? rootSidFor(spawnerSid) : sid,
-			session,
-			view: new ChildView(session, ctx.cwd),
-			description: params.description ?? labelFromPrompt(params.prompt),
-			turns: 0,
-			elapsedMs: 0,
-			running: false,
-		};
-		liveChildren.set(id, record);
-		if (spawnerSid) writeSpawnEvent(record, spawnerSid);
+		const reopened = await reopenEvictedChild(resumeId, options, ctx);
+		if ("error" in reopened) return unknownResume(reopened.error);
+		record = reopened;
 	}
-	onSession(record.session);
+	if (description) record.description = description;
 	record.running = true;
+	return { record };
+}
+
+/**
+ * Evicted (or from before a pi restart): reopen it from its session file.
+ * Another call already reopening the same id counted as running in
+ * resumeChildRecord — two SessionManagers appending to one file would corrupt it.
+ */
+async function reopenEvictedChild(
+	resumeId: string,
+	options: RunChildOptions,
+	ctx: ExtensionContext,
+): Promise<ChildRecord | { error: string }> {
+	const source = findChildSource(resumeId, options.kind, ctx);
+	if ("error" in source) return source;
+	// Reserved synchronously (no await since resumeChildRecord's has() check);
+	// released on every path. The record reaches liveChildren — already
+	// running: true (reopenChild) — before the release.
+	state.reopening.add(resumeId);
+	try {
+		evictFinishedChildren();
+		return await reopenChild(ctx, options, source);
+	} finally {
+		state.reopening.delete(resumeId);
+	}
+}
+
+/** Spawn a fresh child session, register it (+ spawn row) and claim it (running = true). */
+async function spawnChildRecord(
+	params: ChildToolParams,
+	options: RunChildOptions,
+	ctx: ExtensionContext,
+): Promise<ChildRecord> {
+	evictFinishedChildren();
+	const id = randomUUID().slice(0, 8);
+	const session = await createChildSession(ctx, options);
+	session.setSessionName(`${options.kind}#${id}`);
+	// Spawner = the session whose tool call runs right now: the main session, or
+	// an agent child when its own Explore call lands here (ctx is then the child's
+	// ExtensionContext). Optional chain: unit tests pass bare fake contexts.
+	const spawnerSid = ctx.sessionManager?.getSessionId();
+	const sid = session.sessionManager.getSessionId();
+	const record: ChildRecord = {
+		id,
+		kind: options.kind,
+		sid,
+		rootSid: spawnerSid ? rootSidFor(spawnerSid) : sid,
+		session,
+		view: new ChildView(session, ctx.cwd),
+		description: params.description ?? labelFromPrompt(params.prompt),
+		turns: 0,
+		elapsedMs: 0,
+		running: false,
+	};
+	liveChildren.set(id, record);
+	if (spawnerSid) writeSpawnEvent(record, spawnerSid);
+	record.running = true;
+	return record;
+}
+
+/**
+ * Run one prompt on a claimed record and do the run's bookkeeping: elapsed time,
+ * runStartedAt, pending-work cancel and the agent-runs finish row.
+ */
+async function runChildRecord(
+	record: ChildRecord,
+	params: ChildToolParams,
+	options: RunChildOptions,
+	signal: AbortSignal | undefined,
+	onUpdate: ((partial: ReturnType<typeof textResult>) => void) | undefined,
+) {
 	let watcher: ReturnType<typeof watchChild>;
 	try {
 		// The child gets the task verbatim: the delegate contract rides the system

@@ -606,6 +606,25 @@ test("resuming a still-running explorer is rejected instead of double-prompting 
 	disposeChildren();
 });
 
+test("two same-tick resumes of one idle explorer: exactly one runs, the other gets child_running", async () => {
+	// Guards the check-then-claim in the resume path: `running` must be set before
+	// the first await, or both calls see an idle child and double-prompt it.
+	const ctx = await makeCtx(1500);
+	const options = parallelOptions(2);
+	const spawned = await runChildTool({ prompt: "first lookup", description: "idle one" }, options, undefined, undefined, ctx);
+	const id = (spawned.details as { id?: string }).id;
+	assert.ok(id && liveChildren.get(id)?.running === false, "precondition: finished, idle child");
+	const results = await Promise.all([
+		runChildTool({ prompt: "follow-up A", resume_id: id }, options, undefined, undefined, ctx),
+		runChildTool({ prompt: "follow-up B", resume_id: id }, options, undefined, undefined, ctx),
+	]);
+	const errors = results.map((r) => (r.details as { error?: string }).error);
+	assert.deepEqual(errors, [undefined, "child_running"], "first call wins, second is rejected");
+	assert.match(resultText(results[0]!), /fast child done/);
+	assert.equal(liveChildren.get(id)?.running, false, "winner's run released the record");
+	disposeChildren();
+});
+
 test("old finished children are evicted beyond the cap; running children survive", async () => {
 	const ctx = await makeCtx(8000);
 	const options = parallelOptions(2);
