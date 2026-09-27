@@ -1552,10 +1552,12 @@ function busyGroup(name: string): BusyGroup {
  * and no claim left (lib/session-quiet.ts). Claims are self-expiring, so a lost
  * wake-up delays the result instead of hanging it.
  *
- * Note the child's own mode: `bindExtensions({})` below leaves pi's default "print",
- * so `timer` takes its blocking branch inside a child and claims nothing — its wait
- * simply keeps the child's run active. The claim path stays the contract for any
- * out-of-band restart (and for a top-level TUI session's timer).
+ * Note: nothing inside a child currently produces claims — `timer` (the only claim
+ * producer today) is main-session-only and registers nothing in a child, and
+ * children wait on background jobs by blocking in `bash`. So for a child this wait
+ * is in practice the queue grace (a queued steer/follow-up about to run) plus any
+ * claim some extension registers for the child's session id; the claim path stays
+ * the contract for any future out-of-band restart.
  */
 async function waitForChildDone(
 	record: ChildRecord,

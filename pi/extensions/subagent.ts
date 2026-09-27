@@ -45,7 +45,8 @@ continues that session with its context intact.`;
 // Appended to a child's system prompt on every turn (see the before_agent_start handler
 // below). Children are otherwise clones of the parent — same system prompt, same skills — so
 // this is the only place they learn they are delegates and who reads their output.
-const CHILD_CONTRACT = `You are a delegated agent. Your final message is the only thing the caller
+// Exported for tests only (child-contract.test.ts).
+export const CHILD_CONTRACT = `You are a delegated agent. Your final message is the only thing the caller
 sees, and the caller is another agent, not a human. Response-length limits from the system prompt
 do not apply to that final message.
 
@@ -54,10 +55,9 @@ do not apply to that final message.
 - Use absolute paths. Include code snippets only when the exact text is load-bearing — a bug you
   found, a signature the caller needs. Do not recap code you merely read.
 - Complete the task fully. Don't gold-plate, don't leave it half-done.
-- To wait for a long background job, call the timer tool and do what its result says: it either
-  blocks until the wait is over (keep working in the same turn) or arms a wake-up and tells you
-  to end your turn. Never end your turn on the assumption that something will wake you unless
-  that result said so; the caller only sees your final message.
+- To wait for a long background job, block inside the run with bash (e.g. \`sleep 30\`, then
+  re-check; or poll in a loop until it finishes). Never end your turn expecting a wake-up —
+  nothing will wake you, and the caller only sees your final message.
 - Stay in scope. Note anything out of scope in one sentence; don't fix it.
 - Report truthfully: if tests fail, say so with the output; if you skipped a step, say that.
 - If you committed, list the paths and commit hashes.

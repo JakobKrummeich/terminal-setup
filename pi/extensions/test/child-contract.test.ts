@@ -38,7 +38,8 @@ process.env.PI_OFFLINE = "1";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { initTheme, ModelRuntime, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { liveChildren, runChildTool } from "../lib/child-session.ts";
+import { AGENT_TOOL, liveChildren, runChildTool } from "../lib/child-session.ts";
+import { CHILD_CONTRACT } from "../subagent.ts";
 import { CONTEXT_CAP_TOOL_NAME } from "../lib/env.ts";
 import { conversationMessages, currentSystemPrompt } from "./context-compat.ts";
 import { type ResponseStep, type ScriptedStep, sleep, textStep, toolStep } from "./harness.ts";
@@ -249,4 +250,12 @@ test("contract survives the swap: still in the system prompt on post-swap and re
 	} finally {
 		cleanup(childId);
 	}
+});
+
+// The real Agent-child contract must not steer the child toward tools it does not
+// have: timer.ts registers nothing inside a child session (see its inChildSession
+// guard), and the Agent tool is excluded from Agent children (excludeTools).
+test("child contract names no tool that is unavailable to children", () => {
+	assert.doesNotMatch(CHILD_CONTRACT, /\btimer\b/i, "children have no timer tool");
+	assert.ok(!CHILD_CONTRACT.includes(`${AGENT_TOOL} tool`), "Agent children cannot delegate further");
 });

@@ -4,12 +4,15 @@
  *
  * `session.prompt()` resolving only means the model stopped calling tools. Two more
  * signals matter before a caller may treat the session as finished:
- *   - pending-work claims (lib/pending-work.ts): an extension (timer) has scheduled
- *     work that restarts the session from the outside.
+ *   - pending-work claims (lib/pending-work.ts): an extension has scheduled work
+ *     that restarts the session from the outside. Any claim registered for the
+ *     session id counts. Today there is no producer inside child sessions — the
+ *     only producer, timer.ts, is main-session-only — so for a child this is a
+ *     contract for future out-of-band restarts, not a live path.
  *   - queued messages: a steer/follow-up was queued but not yet delivered — its run
- *     is about to start (or it was stranded by the settle race, in which case its
- *     owner also holds a claim and re-sends; see timer.ts). Checking the queue uses
- *     pi's own state and catches strandedness from any source.
+ *     is about to start (or it was stranded by the settle race; a claim owner would
+ *     re-send, as timer.ts does in the main session). Checking the queue uses pi's
+ *     own state and catches strandedness from any source.
  *
  * Claims self-expire, so a lost wake-up delays the caller instead of hanging it;
  * the queue grace is budgeted so a permanently stranded message cannot spin forever.
