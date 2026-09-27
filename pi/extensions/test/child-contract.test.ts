@@ -20,7 +20,7 @@ process.env.CONTEXT_CAP_SOFT = "5";
 
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import os, { tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -43,11 +43,11 @@ import { CHILD_CONTRACT } from "../subagent.ts";
 import { CONTEXT_CAP_TOOL_NAME } from "../lib/env.ts";
 import { conversationMessages, currentSystemPrompt } from "./context-compat.ts";
 import { type ResponseStep, type ScriptedStep, sleep, textStep, toolStep } from "./harness.ts";
+import { contextCapDir } from "../lib/agent-dir.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
-// context-cap writes handoff files under the real home dir (os.homedir()), not
-// the agent dir override — clean up per child session id in each test.
-const CAP_DIR = path.join(os.homedir(), ".pi", "agent", "context-cap");
+// context-cap writes handoff files to contextCapDir() (<PI_CODING_AGENT_DIR>/context-cap,
+// the temp agent dir set above) — clean up per child session id in each test.
 
 // Children discover extensions in <agentDir>/extensions. Re-export wrappers
 // (real files, not symlinks) so each repo extension resolves its own relative
@@ -172,8 +172,8 @@ function cleanup(childId: string | undefined) {
 		const sessionId = liveChildren.get(childId)?.session.sessionManager.getSessionId();
 		if (sessionId) {
 			try {
-				for (const n of readdirSync(CAP_DIR)) {
-					if (n.startsWith(`${sessionId}-`)) rmSync(path.join(CAP_DIR, n), { force: true });
+				for (const n of readdirSync(contextCapDir())) {
+					if (n.startsWith(`${sessionId}-`)) rmSync(path.join(contextCapDir(), n), { force: true });
 				}
 			} catch {}
 		}

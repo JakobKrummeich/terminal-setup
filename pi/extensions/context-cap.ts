@@ -80,7 +80,8 @@
  * prompt is unwritable (or, worse, silently writes into the sandbox) and the
  * handoff never materializes. A tool has no path contract to get wrong.
  *
- * Files: ~/.pi/agent/context-cap/<sessionId>-<seq>.md — seq is disk-derived per
+ * Files: <agent dir>/context-cap/<sessionId>-<seq>.md (contextCapDir(); agent dir =
+ * PI_CODING_AGENT_DIR, else ~/.pi/agent — same dir pi puts the sessions in) — seq is disk-derived per
  * sessionId (sessionId never changes — swaps are entries, not new sessions, so one
  * session accumulates seq 1, 2, 3…). YAML frontmatter is written by the extension;
  * it is stripped before injection. No cleanup policy (v1).
@@ -118,8 +119,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
+import { contextCapDir } from "./lib/agent-dir.ts";
 import { appendEvent } from "./lib/agent-runs.ts";
 import {
 	contextCapReserveTokens,
@@ -144,7 +145,6 @@ import { HANDOFF_PREAMBLE, SWAP_MARKER_TYPE, type SwapTrigger } from "./lib/mess
 const SCHEMA: HandoffSchema = CONTEXT_CAP_SCHEMA;
 const TAIL_TOKENS = CONTEXT_CAP_TAIL_TOKENS;
 const MAX_RETRIES = 2;
-const CAP_DIR = path.join(os.homedir(), ".pi", "agent", "context-cap");
 const TOOL_NAME = CONTEXT_CAP_TOOL_NAME;
 /** Read at call time (not import time) so it can be flipped per test / per run. */
 const COMPACT_HANDOFF_ENV = "CONTEXT_CAP_COMPACT_HANDOFF";
@@ -242,7 +242,7 @@ function fileSeq(sessionId: string, name: string): number | undefined {
 function existingSeqs(sessionId: string): number[] {
 	try {
 		return fs
-			.readdirSync(CAP_DIR)
+			.readdirSync(contextCapDir())
 			.map((n) => fileSeq(sessionId, n))
 			.filter((s): s is number => s !== undefined)
 			.sort((a, b) => a - b);
@@ -254,13 +254,13 @@ function existingSeqs(sessionId: string): number[] {
 function nextPath(sessionId: string): { seq: number; filePath: string } {
 	const seqs = existingSeqs(sessionId);
 	const seq = (seqs[seqs.length - 1] ?? 0) + 1;
-	return { seq, filePath: path.join(CAP_DIR, `${sessionId}-${seq}.md`) };
+	return { seq, filePath: path.join(contextCapDir(), `${sessionId}-${seq}.md`) };
 }
 
 function latestPath(sessionId: string): string | undefined {
 	const seqs = existingSeqs(sessionId);
 	if (seqs.length === 0) return undefined;
-	return path.join(CAP_DIR, `${sessionId}-${seqs[seqs.length - 1]}.md`);
+	return path.join(contextCapDir(), `${sessionId}-${seqs[seqs.length - 1]}.md`);
 }
 
 /** Full frontmatter block only — a lone markdown hr (`---`) at the top must NOT match. */
@@ -593,7 +593,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 	}
 
 	function startCycle(ctx: ExtensionContext, tokens: number, triggerCaps: ResolvedTriggers) {
-		fs.mkdirSync(CAP_DIR, { recursive: true });
+		fs.mkdirSync(contextCapDir(), { recursive: true });
 		const next = nextPath(sessionId(ctx));
 		seq = next.seq;
 		expectedPath = next.filePath;

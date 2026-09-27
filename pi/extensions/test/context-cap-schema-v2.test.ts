@@ -20,18 +20,17 @@ delete process.env.CONTEXT_CAP_TAIL_TOKENS;
 
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { conversationMessages, currentTools } from "./context-compat.ts";
 import { createTestSession, textStep, toolStep, type TestSession } from "./harness.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
+import { contextCapDir } from "../lib/agent-dir.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const CONTEXT_CAP_EXTENSION = path.join(EXT_DIR, "context-cap.ts");
 const TIMER_EXTENSION = path.join(EXT_DIR, "timer.ts");
-const CAP_DIR = path.join(os.homedir(), ".pi", "agent", "context-cap");
 
 // See context-cap-schema-v1.test.ts: static imports are hoisted above the env
 // assignments above, so the writer lib must be loaded dynamically.
@@ -59,8 +58,8 @@ function captureContexts(t: TestSession): CapturedContext[] {
 
 function cleanup(t: TestSession, sessionId: string) {
 	try {
-		for (const n of fs.readdirSync(CAP_DIR)) {
-			if (n.startsWith(`${sessionId}-`)) fs.rmSync(path.join(CAP_DIR, n), { force: true });
+		for (const n of fs.readdirSync(contextCapDir())) {
+			if (n.startsWith(`${sessionId}-`)) fs.rmSync(path.join(contextCapDir(), n), { force: true });
 		}
 	} catch {}
 	t.dispose();
@@ -136,9 +135,9 @@ test("v2 reaches the tool spec, the agent instructions and the machine writer", 
 		assert.equal(marker.details?.author, "machine", "existing fields survive");
 		assert.equal(marker.details?.trigger, "hard");
 
-		const files = fs.readdirSync(CAP_DIR).filter((n) => n.startsWith(`${sessionId}-`));
+		const files = fs.readdirSync(contextCapDir()).filter((n) => n.startsWith(`${sessionId}-`));
 		assert.equal(files.length, 1);
-		const doc = fs.readFileSync(path.join(CAP_DIR, files[0]), "utf8");
+		const doc = fs.readFileSync(path.join(contextCapDir(), files[0]), "utf8");
 		assert.ok(doc.includes("\nauthor: machine\n"), `existing frontmatter survives:\n${doc}`);
 		assert.ok(doc.includes("\nschema: v2\n"));
 		assert.ok(doc.includes("\ntailTokens: 0\n"));

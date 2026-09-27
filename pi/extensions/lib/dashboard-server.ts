@@ -28,6 +28,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo, Socket } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { agentDir } from "./agent-dir.ts";
 import { type AgentRunEvent, readRuns, runsFilePath } from "./agent-runs.ts";
 import {
 	decodeProjectDirName,
@@ -63,15 +64,12 @@ const CONTENT_TYPES: Record<string, string> = {
  * daemon passes its repo-relative UI dir explicitly.
  */
 function defaultUiDir(env: NodeJS.ProcessEnv): string {
-	// `||` not `??`: pi's own getAgentDir treats an empty env var as unset.
-	const agentDir = env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
-	return path.join(agentDir, "extensions", "lib", "dashboard-ui");
+	return path.join(agentDir(env), "extensions", "lib", "dashboard-ui");
 }
 
 /** ~/.pi/agent/sessions (PI_CODING_AGENT_DIR respected) — pi's per-cwd session dirs live under it. */
 export function defaultSessionsRoot(env: NodeJS.ProcessEnv): string {
-	const agentDir = env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
-	return path.join(agentDir, "sessions");
+	return path.join(agentDir(env), "sessions");
 }
 
 export interface DashboardServerOptions {

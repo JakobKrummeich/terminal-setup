@@ -14,7 +14,7 @@ process.env.CONTEXT_CAP_HARD = "50";
 
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import os, { tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -46,9 +46,9 @@ import {
 } from "../lib/child-session.ts";
 import { CONTEXT_CAP_TOOL_NAME } from "../lib/env.ts";
 import { type ResponseStep, type ScriptedStep, sleep, textStep, toolStep } from "./harness.ts";
+import { contextCapDir } from "../lib/agent-dir.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
-const CAP_DIR = path.join(os.homedir(), ".pi", "agent", "context-cap");
 
 // Children discover extensions in <agentDir>/extensions (re-export wrapper, see
 // context-cap-hard-jump.test.ts).
@@ -340,8 +340,8 @@ test("real child: a context-cap swap shows up as exactly one handoff anchor", as
 		if (childId) {
 			const sessionId = liveChildren.get(childId)?.session.sessionManager.getSessionId();
 			try {
-				for (const n of readdirSync(CAP_DIR)) {
-					if (sessionId && n.startsWith(`${sessionId}-`)) rmSync(path.join(CAP_DIR, n), { force: true });
+				for (const n of readdirSync(contextCapDir())) {
+					if (sessionId && n.startsWith(`${sessionId}-`)) rmSync(path.join(contextCapDir(), n), { force: true });
 				}
 			} catch {}
 		}

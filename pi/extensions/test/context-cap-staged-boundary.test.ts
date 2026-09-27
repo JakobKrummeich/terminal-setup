@@ -4,10 +4,10 @@ process.env.CONTEXT_CAP_HARD = "50";
 
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { contextCapDir } from "../lib/agent-dir.ts";
 
 type Handler = (event: any, ctx: ExtensionContext) => unknown | Promise<unknown>;
 type RegisteredTool = {
@@ -121,7 +121,7 @@ async function finishPreservedCycle(bound: BoundExtension, actionable = true) {
 }
 
 function cleanup(bound: BoundExtension) {
-	const dir = path.join(os.homedir(), ".pi", "agent", "context-cap");
+	const dir = contextCapDir();
 	try {
 		for (const name of fs.readdirSync(dir)) {
 			if (name.startsWith(`${bound.sessionId}-`)) fs.rmSync(path.join(dir, name), { force: true });

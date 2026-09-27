@@ -21,7 +21,7 @@ process.env.CONTEXT_CAP_HARD = "50";
 
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import os, { tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -46,10 +46,10 @@ import { CONTEXT_CAP_TOOL_NAME } from "../lib/env.ts";
 import { conversationMessages } from "./context-compat.ts";
 import { type ResponseStep, type ScriptedStep, sleep, textStep, toolStep } from "./harness.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
+import { contextCapDir } from "../lib/agent-dir.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
-// context-cap writes handoff files under the real home dir (os.homedir()).
-const CAP_DIR = path.join(os.homedir(), ".pi", "agent", "context-cap");
+// context-cap writes handoff files to contextCapDir() (<PI_CODING_AGENT_DIR>/context-cap).
 
 // Children discover extensions in <agentDir>/extensions. Re-export wrapper (real
 // file, not symlink) so context-cap.ts resolves its relative imports (./lib/…)
@@ -158,8 +158,8 @@ function cleanup(childId: string | undefined) {
 		const sessionId = liveChildren.get(childId)?.session.sessionManager.getSessionId();
 		if (sessionId) {
 			try {
-				for (const n of readdirSync(CAP_DIR)) {
-					if (n.startsWith(`${sessionId}-`)) rmSync(path.join(CAP_DIR, n), { force: true });
+				for (const n of readdirSync(contextCapDir())) {
+					if (n.startsWith(`${sessionId}-`)) rmSync(path.join(contextCapDir(), n), { force: true });
 				}
 			} catch {}
 		}

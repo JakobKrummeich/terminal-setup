@@ -1,5 +1,4 @@
 import { readFileSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -10,6 +9,7 @@ import {
 	renderChildResult,
 	runChildTool,
 } from "./lib/child-session.ts";
+import { agentDir } from "./lib/agent-dir.ts";
 import { CONTEXT_CAP_TOOL_NAME } from "./lib/env.ts";
 
 const TOOL_DESCRIPTION = `Delegate readonly exploration to a fast, cheap agent that reports back.
@@ -99,9 +99,7 @@ function parentFallbackWarning(parentModel: ChildModel | undefined): string {
  * where import.meta is syntax error). PI_CODING_AGENT_DIR is same override pi honors.
  */
 export function explorerModelsFile(env: NodeJS.ProcessEnv): string {
-	// `||` not `??`: pi's own getAgentDir treats an empty env var as unset.
-	const agentDir = env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
-	return path.join(agentDir, "extensions", "explorer-models.json");
+	return path.join(agentDir(env), "extensions", "explorer-models.json");
 }
 
 /** Look up a "provider/modelId" spec. Split on the first slash only: ids may contain slashes. */

@@ -27,18 +27,17 @@ process.env.CONTEXT_CAP_HARD = "50";
 
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { conversationMessages } from "./context-compat.ts";
 import { abortedStep, createTestSession, errorStep, textStep, toolStep, type TestSession } from "./harness.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
+import { contextCapDir } from "../lib/agent-dir.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const CONTEXT_CAP_EXTENSION = path.join(EXT_DIR, "context-cap.ts");
 const TIMER_EXTENSION = path.join(EXT_DIR, "timer.ts");
-const CAP_DIR = path.join(os.homedir(), ".pi", "agent", "context-cap");
 
 interface SwapMarker {
 	role: string;
@@ -96,8 +95,8 @@ function toolResultTexts(t: TestSession): string[] {
 
 function cleanup(t: TestSession, sessionId: string) {
 	try {
-		for (const n of fs.readdirSync(CAP_DIR)) {
-			if (n.startsWith(`${sessionId}-`)) fs.rmSync(path.join(CAP_DIR, n), { force: true });
+		for (const n of fs.readdirSync(contextCapDir())) {
+			if (n.startsWith(`${sessionId}-`)) fs.rmSync(path.join(contextCapDir(), n), { force: true });
 		}
 	} catch {}
 	t.dispose();
@@ -145,7 +144,7 @@ test("errored turns don't burn reminder retries; the cycle survives a flaky patc
 		assert.equal(markers.length, 1, "one swap");
 		assert.equal(markers[0].details?.trigger, "soft", "handoff-backed swap, not a backstop wipe");
 
-		const files = fs.readdirSync(CAP_DIR).filter((n) => n.startsWith(`${sessionId}-`));
+		const files = fs.readdirSync(contextCapDir()).filter((n) => n.startsWith(`${sessionId}-`));
 		assert.equal(files.length, 1, "the handoff file was written");
 	} finally {
 		cleanup(t, sessionId);
@@ -226,7 +225,7 @@ test("a network error during a hard-cap cycle must not fire the no-file backstop
 		const refusals = toolResultTexts(t).filter((text) => text.includes("Refused: no handoff was requested"));
 		assert.equal(refusals.length, 0, "the handoff tool call must be accepted, not refused post-wipe");
 
-		const files = fs.readdirSync(CAP_DIR).filter((n) => n.startsWith(`${sessionId}-`));
+		const files = fs.readdirSync(contextCapDir()).filter((n) => n.startsWith(`${sessionId}-`));
 		assert.equal(files.length, 1, "the handoff file exists");
 	} finally {
 		cleanup(t, sessionId);
@@ -291,7 +290,7 @@ test("a cycle stranded in a fresh window resets instead of demanding a handoff",
 		);
 		assert.equal(swapMarkers(t).length, 0, "no swap");
 		assert.equal(
-			fs.readdirSync(CAP_DIR).filter((n) => n.startsWith(`${sessionId}-`)).length,
+			fs.readdirSync(contextCapDir()).filter((n) => n.startsWith(`${sessionId}-`)).length,
 			0,
 			"no handoff file demanded or written",
 		);

@@ -21,6 +21,7 @@ import * as path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createCapResolver } from "../context-cap.ts";
+import { contextCapDir } from "../lib/agent-dir.ts";
 import {
 	CONTEXT_CAP_HARD_TRIGGER,
 	CONTEXT_CAP_RESERVE_TOKENS_DEFAULT,
@@ -61,8 +62,14 @@ const usage = (contextWindow: number | null | undefined) => ({ contextWindow });
 
 test("precondition: no CONTEXT_CAP_* override is set in this process", () => {
 	for (const key of CAP_KEYS) {
+		if (key === "PI_CODING_AGENT_DIR") continue; // run.sh points it at an empty temp dir
 		assert.equal(process.env[key], undefined, `${key} must be unset — it would mask the dynamic path`);
 	}
+	assert.equal(
+		contextCapReserveTokens(),
+		CONTEXT_CAP_RESERVE_TOKENS_DEFAULT,
+		"the agent dir in force must carry no compaction.reserveTokens — it would shift every dynamic cap",
+	);
 	assert.equal(CONTEXT_CAP_SOFT_TRIGGER, 260_000, "the static soft value is also the dynamic ceiling");
 	assert.equal(CONTEXT_CAP_HARD_TRIGGER, 325_000, "the static hard value is also the dynamic ceiling");
 	assert.equal(CONTEXT_CAP_RESERVE_TOKENS_DEFAULT, 16_384, "must equal pi's compaction reserveTokens default");
@@ -248,7 +255,6 @@ test("resolver warns once per condition, not once per check", () => {
 // ---------------------------------------------------------------------------
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
-const CAP_DIR = path.join(os.homedir(), ".pi", "agent", "context-cap");
 
 /** Above the 200k-window soft cap (132_203), below its hard cap and below the old static 260k. */
 const TOKENS = 140_000;
@@ -308,9 +314,9 @@ test("mid-session model switch moves the soft cap: no steer at 1M, steer at 200k
 		assert.equal(marker.details?.tailKeptTokens, 0);
 
 		// Same four fields in the handoff file's frontmatter.
-		const files = fs.readdirSync(CAP_DIR).filter((n) => n.startsWith(`${sessionId}-`));
+		const files = fs.readdirSync(contextCapDir()).filter((n) => n.startsWith(`${sessionId}-`));
 		assert.equal(files.length, 1, "exactly one handoff file");
-		const fm = fs.readFileSync(path.join(CAP_DIR, files[0]), "utf8");
+		const fm = fs.readFileSync(path.join(contextCapDir(), files[0]), "utf8");
 		assert.match(fm, /\ncontextWindow: 200000\n/);
 		assert.match(fm, /\nsoftCap: 132203\n/);
 		assert.match(fm, /\nhardCap: 165254\n/);
@@ -318,8 +324,8 @@ test("mid-session model switch moves the soft cap: no steer at 1M, steer at 200k
 		assert.match(fm, /DYNAMIC-CAP-SENTINEL/);
 	} finally {
 		try {
-			for (const n of fs.readdirSync(CAP_DIR)) {
-				if (n.startsWith(`${sessionId}-`)) fs.rmSync(path.join(CAP_DIR, n), { force: true });
+			for (const n of fs.readdirSync(contextCapDir())) {
+				if (n.startsWith(`${sessionId}-`)) fs.rmSync(path.join(contextCapDir(), n), { force: true });
 			}
 		} catch {}
 		t.dispose();

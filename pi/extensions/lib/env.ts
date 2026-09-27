@@ -1,8 +1,8 @@
 // Env-var config helpers shared across extension files.
 //
 import { readFileSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { agentDir } from "./agent-dir.ts";
 //
 // jiti caveat (see AGENTS.md): each top-level extension gets its own module copy
 // of this file, so only pure values/functions belong here — no shared state.
@@ -94,9 +94,8 @@ export const CONTEXT_CAP_RESERVE_TOKENS_DEFAULT = 16_384;
 export function contextCapReserveTokens(): number {
 	const override = envIntOrNull("CONTEXT_CAP_RESERVE");
 	if (override != null) return override;
-	const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
 	try {
-		const raw = readFileSync(path.join(agentDir, "settings.json"), "utf8");
+		const raw = readFileSync(path.join(agentDir(), "settings.json"), "utf8");
 		const value = (JSON.parse(raw) as { compaction?: { reserveTokens?: unknown } })?.compaction?.reserveTokens;
 		if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.floor(value);
 	} catch {

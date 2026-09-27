@@ -48,7 +48,9 @@ Read `README.md` first — layout, install, known issues live there. Don't dupli
 - extension tests: `cd pi/extensions/test && timeout 150 ./run.sh` (builds a
   node_modules symlink farm; run it before typecheck; exports `PI_OFFLINE=1` —
   without it pi's model-catalog refresh holds keep-alive sockets and hangs the
-  suite). Don't pipe to `tail` — masks the exit code.
+  suite; also points `PI_CODING_AGENT_DIR` at a temp dir so tests never read or
+  write the live `~/.pi/agent` — invoking `node --test` directly bypasses that).
+  Don't pipe to `tail` — masks the exit code.
 
 ## Boundaries
 

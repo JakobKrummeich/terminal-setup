@@ -58,5 +58,17 @@ ln -sfn "$PWD/node_modules" ../node_modules
 # hang the test processes. The suite is offline by design (scripted LLM, no API key).
 export PI_OFFLINE=1
 
+# Hermetic agent dir: nothing under test may read the user's live ~/.pi/agent
+# (settings.json feeds context-cap's reserve) or write into it (context-cap
+# handoff files, agent-runs log). Test files that need their own dir still set
+# PI_CODING_AGENT_DIR themselves; this is the default for the rest. No `exec`
+# below, so the EXIT trap can remove the dir; INT/TERM traps make bash exit
+# (running the EXIT trap) once node has exited on the same signal.
+PI_CODING_AGENT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/pi-ext-test-agentdir.XXXXXX")"
+export PI_CODING_AGENT_DIR
+trap 'rm -rf "$PI_CODING_AGENT_DIR"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # transform (not strip): lib/child-session.ts uses TS parameter properties.
-exec node --test --experimental-transform-types --no-warnings "$@" ./*.test.ts
+node --test --experimental-transform-types --no-warnings "$@" ./*.test.ts

@@ -22,7 +22,6 @@ process.env.CONTEXT_CAP_HARD = "50";
 
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -36,11 +35,11 @@ import {
 } from "../lib/handoff-writer.ts";
 import { createTestSession, textStep, toolStep, type TestSession } from "./harness.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
+import { contextCapDir } from "../lib/agent-dir.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const CONTEXT_CAP_EXTENSION = path.join(EXT_DIR, "context-cap.ts");
 const TIMER_EXTENSION = path.join(EXT_DIR, "timer.ts");
-const CAP_DIR = path.join(os.homedir(), ".pi", "agent", "context-cap");
 const COMPACT_FLAG = "CONTEXT_CAP_COMPACT_HANDOFF";
 
 const MACHINE_DRAFT = "## Current Task\nMACHINE-DRAFT-SENTINEL — finish the refactor in lib/foo.ts.";
@@ -224,14 +223,14 @@ function swapMarkers(t: TestSession): SwapMarker[] {
 
 function capFiles(sessionId: string): string[] {
 	try {
-		return fs.readdirSync(CAP_DIR).filter((n) => n.startsWith(`${sessionId}-`));
+		return fs.readdirSync(contextCapDir()).filter((n) => n.startsWith(`${sessionId}-`));
 	} catch {
 		return [];
 	}
 }
 
 function cleanup(t: TestSession, sessionId: string) {
-	for (const n of capFiles(sessionId)) fs.rmSync(path.join(CAP_DIR, n), { force: true });
+	for (const n of capFiles(sessionId)) fs.rmSync(path.join(contextCapDir(), n), { force: true });
 	t.dispose();
 }
 
@@ -280,7 +279,7 @@ test("hard cap without a fresh handoff: one LLM call writes the handoff that is 
 
 		const files = capFiles(sessionId);
 		assert.equal(files.length, 1, "written through the normal <sessionId>-<seq>.md path");
-		const doc = fs.readFileSync(path.join(CAP_DIR, files[0]), "utf8");
+		const doc = fs.readFileSync(path.join(contextCapDir(), files[0]), "utf8");
 		assert.ok(doc.includes("author: machine"), `frontmatter must record the author, got: ${doc.slice(0, 200)}`);
 		assert.ok(doc.includes("MACHINE-DRAFT-SENTINEL"));
 	} finally {
@@ -317,9 +316,9 @@ test("a failing writer leaves the hard cap doing exactly what it did before (no 
 test("a failing writer still falls back to the stale file, staleness noted, as before", async () => {
 	const t = await hardCapSession();
 	const sessionId = t.session.sessionManager.getSessionId();
-	fs.mkdirSync(CAP_DIR, { recursive: true });
+	fs.mkdirSync(contextCapDir(), { recursive: true });
 	fs.writeFileSync(
-		path.join(CAP_DIR, `${sessionId}-1.md`),
+		path.join(contextCapDir(), `${sessionId}-1.md`),
 		`---\nsessionId: ${sessionId}\nseq: 1\nauthor: agent\n---\n\n## Current Task\nSTALE-DOC-SENTINEL\n`,
 	);
 	t.modelRuntime.complete = async () => assistantResponse("", { stopReason: "error", errorMessage: "nope", content: [] });

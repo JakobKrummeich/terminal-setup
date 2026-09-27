@@ -13,18 +13,17 @@ process.env.CONTEXT_CAP_SOFT = "5";
 
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createTestSession, textStep, toolStep } from "./harness.ts";
 import { hasPendingWork } from "../lib/pending-work.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
+import { contextCapDir } from "../lib/agent-dir.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const CONTEXT_CAP_EXTENSION = path.join(EXT_DIR, "context-cap.ts");
 const TIMER_EXTENSION = path.join(EXT_DIR, "timer.ts");
-const CAP_DIR = path.join(os.homedir(), ".pi", "agent", "context-cap");
 
 function assistantTexts(session: { messages: Array<{ role: string; content?: unknown }> }): string[] {
 	return session.messages
@@ -74,15 +73,15 @@ test("soft-cap handoff cycle completes inside a single prompt() call", async () 
 		assert.ok(sessionMessages.indexOf(markers[0]) > lastToolResult, "swap marker must follow tool-result entries");
 
 		// The handoff file was written by the tool.
-		const files = fs.readdirSync(CAP_DIR).filter((n) => n.startsWith(`${sessionId}-`));
+		const files = fs.readdirSync(contextCapDir()).filter((n) => n.startsWith(`${sessionId}-`));
 		assert.equal(files.length, 1, "exactly one handoff file for this session");
 
 		// And no pending-work claim was ever needed for any of it.
 		assert.equal(hasPendingWork(sessionId), false);
 	} finally {
 		try {
-			for (const n of fs.readdirSync(CAP_DIR)) {
-				if (n.startsWith(`${sessionId}-`)) fs.rmSync(path.join(CAP_DIR, n), { force: true });
+			for (const n of fs.readdirSync(contextCapDir())) {
+				if (n.startsWith(`${sessionId}-`)) fs.rmSync(path.join(contextCapDir(), n), { force: true });
 			}
 		} catch {}
 		t.dispose();
