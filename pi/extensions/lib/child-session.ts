@@ -36,6 +36,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { renderFooterLines } from "../custom-footer.ts";
 import { appendEvent, findSpawnsByLabel, type RunStatus } from "./agent-runs.ts";
+import { messageText } from "./message-text.ts";
 import { SWAP_MARKER_TYPE, type SwapTrigger } from "./message-types.ts";
 import { cancelPendingWork } from "./pending-work.ts";
 import { waitForSessionQuiet } from "./session-quiet.ts";
@@ -213,16 +214,6 @@ export const inChildSession = () => childSessionStore.getStore() !== undefined;
 export const childSessionInfo = (): ChildSessionInfo | undefined => childSessionStore.getStore();
 const runInChildSession = <T>(info: ChildSessionInfo, fn: () => Promise<T>) =>
 	childSessionStore.run(info, fn);
-
-/** Text of a session message's content — string (custom messages) or text blocks. */
-function messageText(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	return content
-		.filter((b): b is { type: "text"; text: string } => (b as { type?: string }).type === "text")
-		.map((b) => b.text ?? "")
-		.join("\n");
-}
 
 /** Human label of each swap trigger. Typed per SwapTrigger: a new trigger without a label is a compile error. */
 const TRIGGER_LABELS: Record<SwapTrigger, string> = {
@@ -1766,10 +1757,7 @@ export function renderChildResult(
 	theme: Pick<Theme, "fg">,
 	context: { lastComponent?: unknown },
 ) {
-	const text = (result.content ?? [])
-		.filter((block: { type?: string }) => block?.type === "text")
-		.map((block: { text?: string }) => block.text ?? "")
-		.join("\n");
+	const text = messageText(result.content);
 	const meta = result.details as RunMeta | undefined;
 	const summary = meta?.kind ? theme.fg("toolTitle", metaLine(meta)) : "";
 	const body = theme.fg("toolOutput", text);

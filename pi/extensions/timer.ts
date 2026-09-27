@@ -53,6 +53,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import { inChildSession } from "./lib/child-session.ts";
 import { envInt } from "./lib/env.ts";
+import { messageText } from "./lib/message-text.ts";
 import { claimPendingWork, releasePendingWork } from "./lib/pending-work.ts";
 
 const CLAIM = "timer";
@@ -210,13 +211,7 @@ export default function timerExtension(pi: ExtensionAPI) {
 		if (!awaitingWake || wakeDelivered || !wakeText) return;
 		const msg = event.message as { role?: string; content?: unknown };
 		if (msg.role !== "user") return;
-		const text = Array.isArray(msg.content)
-			? (msg.content as Array<{ type?: string; text?: string }>)
-					.filter((c) => c?.type === "text")
-					.map((c) => c.text ?? "")
-					.join("\n")
-			: String(msg.content ?? "");
-		if (text.includes(wakeText)) wakeDelivered = true;
+		if (messageText(msg.content).includes(wakeText)) wakeDelivered = true;
 	});
 
 	pi.on("agent_settled", () => {

@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { handoffLineBudget, handoffSections } from "./lib/handoff-writer.ts";
+import { messageText } from "./lib/message-text.ts";
 import { HANDOFF_PREAMBLE, HANDOFF_SUMMARY_TYPE } from "./lib/message-types.ts";
 
 /**
@@ -47,16 +48,7 @@ export function extractHandoffSummary(
 		if (stopReason === "error" || stopReason === "aborted") {
 			return { ok: false, reason: `handoff generation ${stopReason === "aborted" ? "was aborted" : "failed"} — run /handoff again` };
 		}
-		const text = (
-			typeof content === "string"
-				? content
-				: Array.isArray(content)
-					? content
-							.filter((c: any) => c.type === "text")
-							.map((c: any) => c.text)
-							.join("\n")
-					: ""
-		).trim();
+		const text = messageText(content).trim();
 		if (!text) return { ok: false, reason: "handoff reply was empty — run /handoff again" };
 		return { ok: true, text };
 	}
@@ -78,13 +70,7 @@ export default function handoffExtension(pi: ExtensionAPI) {
 		if (!pending || pending.delivered) return;
 		const msg = event.message as { role?: string; content?: unknown };
 		if (msg.role !== "user") return;
-		const text = Array.isArray(msg.content)
-			? (msg.content as Array<{ type?: string; text?: string }>)
-					.filter((c) => c?.type === "text")
-					.map((c) => c.text ?? "")
-					.join("\n")
-			: String(msg.content ?? "");
-		if (text.includes(HANDOFF_PROMPT_OPENING)) {
+		if (messageText(msg.content).includes(HANDOFF_PROMPT_OPENING)) {
 			pending.delivered = true;
 		}
 	});
