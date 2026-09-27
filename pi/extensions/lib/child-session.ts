@@ -40,6 +40,7 @@ import { appendEvent, findSpawnsByLabel, type RunStatus } from "./agent-runs.ts"
 import { messageText } from "./message-text.ts";
 import { SWAP_MARKER_TYPE, type SwapTrigger } from "./message-types.ts";
 import { cancelPendingWork } from "./pending-work.ts";
+import { sharedState } from "./shared-state.ts";
 import { waitForSessionQuiet } from "./session-quiet.ts";
 import {
 	CONTEXT_CAP_STATUS_KEY,
@@ -175,15 +176,14 @@ interface SharedState {
 // v7: ChildView gained handoffCount/handoffAnchors (read by the watch overlay);
 // ChildRecord gained the optional runStartedAt (readers treat undefined as "not running").
 const STATE_KEY = Symbol.for("terminal-setup.child-session.v7");
-const globals = globalThis as unknown as Record<symbol, SharedState | undefined>;
-const state: SharedState = (globals[STATE_KEY] ??= {
+const state = sharedState<SharedState>(STATE_KEY, () => ({
 	liveChildren: new Map(),
 	evicted: new Map(),
 	reopening: new Set(),
 	busyGroups: new Map(),
 	childSessionStore: new AsyncLocalStorage<ChildSessionInfo>(),
 	watchCursor: undefined,
-});
+}));
 
 /** Session teardown: drop child records and busy-latch counters (see subagent.ts). */
 export function resetChildState(): void {

@@ -26,6 +26,8 @@
  * work is disarmed instead of running unsupervised later.
  */
 
+import { sharedState } from "./shared-state.ts";
+
 interface Claim {
 	timeout: NodeJS.Timeout;
 	/** Disarm the underlying work (e.g. clear the timer) — not just the claim. */
@@ -43,8 +45,7 @@ interface Registry {
 // copy may still hold the previous shape under the previous symbol — old and new
 // copies must never share a mis-shaped state object.
 const REGISTRY_KEY = Symbol.for("terminal-setup.pending-work.v2");
-const globals = globalThis as unknown as Record<symbol, Registry | undefined>;
-const registry: Registry = (globals[REGISTRY_KEY] ??= { claims: new Map(), listeners: new Set() });
+const registry = sharedState<Registry>(REGISTRY_KEY, () => ({ claims: new Map(), listeners: new Set() }));
 
 function notify(sessionId: string): void {
 	for (const listener of [...registry.listeners]) {

@@ -19,6 +19,7 @@ import http from "node:http";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { appendEvent } from "./lib/agent-runs.ts";
 import { inChildSession } from "./lib/child-session.ts";
+import { sharedState } from "./lib/shared-state.ts";
 
 const DEFAULT_PORT = 7357;
 const PROBE_TIMEOUT_MS = 1000;
@@ -33,9 +34,9 @@ const PROBE_TIMEOUT_MS = 1000;
  */
 const STATE_KEY = Symbol.for("terminal-setup.agent-dash.v2");
 type DashState = { probeAttempted: boolean };
-const globals = globalThis as unknown as Record<symbol, DashState | undefined>;
 function dashState(): DashState {
-	return (globals[STATE_KEY] ??= { probeAttempted: false });
+	// Resolved per call, not captured at load: dashboard-daemon.test.ts deletes the key between runs.
+	return sharedState<DashState>(STATE_KEY, () => ({ probeAttempted: false }));
 }
 
 /** PI_AGENT_DASH_PORT, else 7357. Non-numeric/non-positive values fall back. */
