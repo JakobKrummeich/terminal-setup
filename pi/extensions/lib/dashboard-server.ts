@@ -23,13 +23,14 @@
  * EADDRINUSE resolves as { started: false }: the port is taken (daemon
  * already running, or a squatter); the caller decides what that means.
  */
-import { type FSWatcher, readdirSync, readFileSync, statSync, watch } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { agentDir } from "./agent-dir.ts";
 import { type AgentRunEvent, readRuns, runsFilePath } from "./agent-runs.ts";
+import { openEventStream } from "./dashboard-events.ts";
 import {
 	decodeProjectDirName,
 	deriveSessions,
@@ -150,15 +151,22 @@ export function startDashboardServer(options: DashboardServerOptions): Promise<S
 	});
 }
 
-/** The route table. Literal paths only — grep the path, land here. */
+type ApiHandler = (req: IncomingMessage, res: ServerResponse, ctx: ServerContext, url: URL) => void;
+
+/** The route table. Literal paths only — grep the path, land here. Anything else is a static UI file. */
+const API_ROUTES: ReadonlyMap<string, ApiHandler> = new Map<string, ApiHandler>([
+	["/api/meta", (_req, res, ctx) => handleMeta(res, ctx)],
+	["/api/sessions", (_req, res, ctx) => handleSessions(res, ctx.sessionsRoot)],
+	["/api/tree", (_req, res, ctx, url) => handleTree(res, ctx.sessionsRoot, url.searchParams.get("root"))],
+	["/api/transcript", (_req, res, ctx, url) => handleTranscript(res, ctx.sessionsRoot, url.searchParams.get("sid"))],
+	["/api/events", (req, res, ctx, url) => handleEvents(req, res, ctx, url.searchParams.get("sid"))],
+]);
+
 function route(req: IncomingMessage, res: ServerResponse, ctx: ServerContext): void {
 	if (req.method !== "GET") return fail(res, 405, "GET only");
 	const url = new URL(req.url ?? "/", "http://localhost");
-	if (url.pathname === "/api/meta") return handleMeta(res, ctx);
-	if (url.pathname === "/api/sessions") return handleSessions(res, ctx.sessionsRoot);
-	if (url.pathname === "/api/tree") return handleTree(res, ctx.sessionsRoot, url.searchParams.get("root"));
-	if (url.pathname === "/api/transcript") return handleTranscript(res, ctx.sessionsRoot, url.searchParams.get("sid"));
-	if (url.pathname === "/api/events") return handleEvents(req, res, ctx, url.searchParams.get("sid"));
+	const handler = API_ROUTES.get(url.pathname);
+	if (handler) return handler(req, res, ctx, url);
 	return handleStatic(res, ctx.uiDir, url.pathname);
 }
 
@@ -272,127 +280,15 @@ function handleTranscript(res: ServerResponse, sessionsRoot: string, sid: string
 	json(res, 200, body);
 }
 
-/**
- * GET /api/events[?sid=<sid>] — SSE, deliberately dumb: any relevant change
- * emits one debounced `data: {"changed":true}` and clients refetch. No replay,
- * no payloads. Watches:
- *  - the sessions ROOT (project dirs appearing/vanishing → change + rescan),
- *  - every project dir, filtered to agent-runs.jsonl basenames (+ the sid's
- *    session file basename when ?sid= is given — it lives beside its index).
- * A project dir vanishing mid-stream kills only that dir's watcher (and emits
- * a change — its rows just disappeared); the stream lives while the root
- * watcher lives. fs.watch on a not-yet-existing file throws, hence dir watches
- * filtered by basename.
- */
+/** GET /api/events[?sid=<sid>] → SSE change stream (lib/dashboard-events.ts). */
 function handleEvents(req: IncomingMessage, res: ServerResponse, ctx: ServerContext, sid: string | null): void {
+	// Watched basenames: every index; with ?sid= also that session's file — it lives beside its index.
 	const names = new Set([path.basename(runsFilePath(ctx.sessionsRoot))]);
 	if (sid) {
 		const found = findSession(ctx.sessionsRoot, sid);
 		if (found) names.add(path.basename(found.file));
 	}
-	const dirWatchers = new Map<string, FSWatcher>();
-	let timer: NodeJS.Timeout | null = null;
-	const emitChange = (): void => {
-		if (timer) return; // change already pending — coalesce
-		timer = setTimeout(() => {
-			timer = null;
-			// Client can vanish inside the debounce window, racing the 'close'
-			// handler's clearTimeout — never write into a dead stream.
-			if (res.writableEnded || res.destroyed) return;
-			res.write('data: {"changed":true}\n\n');
-		}, ctx.sseDebounceMs);
-		timer.unref?.();
-	};
-	const watchProjectDir = (dir: string): void => {
-		if (dirWatchers.has(dir)) return;
-		let watcher: FSWatcher;
-		try {
-			watcher = watch(dir, (_type, filename) => {
-				if (typeof filename === "string" && !names.has(filename)) return; // null/Buffer filename: over-notify, never miss
-				emitChange();
-			});
-		} catch {
-			return; // dir vanished between scan and watch: skipped, rescan re-tries
-		}
-		watcher.on("error", () => {
-			// Dir deleted / inotify hiccup: its rows are gone — that IS a change.
-			watcher.close();
-			dirWatchers.delete(dir);
-			emitChange();
-		});
-		watcher.unref();
-		dirWatchers.set(dir, watcher);
-	};
-	const scanProjectDirs = (): void => {
-		let entries: string[];
-		try {
-			entries = readdirSync(ctx.sessionsRoot);
-		} catch {
-			// Root gone. fs.watch (Linux) emits only 'rename' for self-deletion,
-			// never 'error' — the root watcher is silently dead, so fold the stream
-			// ourselves: the client reconnects, gets a clean 500 while the root is
-			// missing (EventSource falls back to polling) and a live stream once
-			// it is back.
-			foldStream();
-			return;
-		}
-		for (const name of entries) {
-			const dir = path.join(ctx.sessionsRoot, name);
-			try {
-				if (!statSync(dir).isDirectory()) continue;
-			} catch {
-				continue; // vanished between readdir and stat
-			}
-			watchProjectDir(dir); // index-less dirs too: their index may appear later
-		}
-	};
-	const stopAll = (): void => {
-		rootWatcher.close();
-		for (const watcher of dirWatchers.values()) watcher.close();
-		dirWatchers.clear();
-		if (timer) clearTimeout(timer);
-		timer = null;
-	};
-	/** Tear down and end the stream (500 when it never started) — the client's cue to reconnect. */
-	const foldStream = (): void => {
-		stopAll();
-		if (!res.headersSent) fail(res, 500, "sessions root vanished");
-		else if (!res.writableEnded && !res.destroyed) res.end();
-	};
-	// The watch backend can fail at connect (root missing, inotify limits) —
-	// that's a request failure. At runtime it must never throw unhandled: this
-	// server may run inside a test host process; fold the stream quietly, the
-	// client just reconnects.
-	let rootWatcher: FSWatcher;
-	try {
-		rootWatcher = watch(ctx.sessionsRoot, (_type, filename) => {
-			emitChange(); // a project appearing/vanishing changes /api/sessions
-			// A deleted dir's watcher stays open on its dead inode WITHOUT erroring
-			// (Linux) and would block re-watching a recreated dir of the same name.
-			// Root events name the touched entry: drop its watcher; the rescan
-			// re-adds a live one if the dir (still) exists.
-			if (typeof filename === "string") {
-				const dir = path.join(ctx.sessionsRoot, filename);
-				dirWatchers.get(dir)?.close();
-				dirWatchers.delete(dir);
-			} else {
-				// No filename (platform edge): can't tell which — rebuild them all.
-				for (const watcher of dirWatchers.values()) watcher.close();
-				dirWatchers.clear();
-			}
-			scanProjectDirs(); // pick up new dirs so their future appends are seen
-		});
-	} catch (error) {
-		return fail(res, 500, `cannot watch sessions root: ${String(error)}`);
-	}
-	rootWatcher.on("error", foldStream);
-	rootWatcher.unref();
-	scanProjectDirs();
-	if (res.writableEnded) return; // root vanished during setup: already folded as a 500
-	res.on("error", () => {}); // client reset mid-write: cleanup happens via req 'close'
-	res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
-	res.write(":connected\n\n");
-	req.on("close", stopAll);
+	openEventStream(req, res, { sessionsRoot: ctx.sessionsRoot, debounceMs: ctx.sseDebounceMs, names });
 }
 
 /**

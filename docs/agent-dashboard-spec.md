@@ -134,7 +134,7 @@ parsing in `pi/extensions/lib/session-transcript.ts` (re-verify after `pi update
 | `GET /api/sessions` | `SessionsResponse` | One `SessionRow` per tree root across ALL projects, newest first; rows carry `projectId` (raw dir name, stable) + `project` (best-effort decoded display path). Pinning/grouping is the client's job. |
 | `GET /api/tree?root=<sid>` | `TreeResponse` | `TreeNode[]` for Gantt + tree; sid found by scanning project indexes; 400 without `root`, 404 for unknown sid. |
 | `GET /api/transcript?sid=<sid>` | `TranscriptResponse` | Entries + `TranscriptAnchor[]` (handoff / agent-spawn / explorer-spawn, spawn anchors carry `targetSid`). Cross-project by the same sid scan. |
-| `GET /api/events[?sid=<sid>]` | SSE | `data: {"changed":true}` (debounced ~500ms). Watches the sessions root (project dirs appearing/vanishing) + every project dir filtered to `agent-runs.jsonl` (+ that sid's session file); clients refetch. No replay. |
+| `GET /api/events[?sid=<sid>]` | SSE | `data: {"changed":true}` (debounced ~500ms). Watches the sessions root (project dirs appearing/vanishing) + every project dir filtered to `agent-runs.jsonl` (+ that sid's session file); clients refetch. No replay. Stream logic: `lib/dashboard-events.ts`. |
 | `GET /` + assets | static | `lib/dashboard-ui/`, traversal-safe. |
 
 Future idea (NOT implemented): peers links on the landing page — a

@@ -56,14 +56,6 @@
       "count": 1
     }
   },
-  "pi/extensions/lib/dashboard-server.ts": {
-    "complexity": {
-      "count": 1
-    },
-    "max-lines-per-function": {
-      "count": 1
-    }
-  },
   "pi/extensions/lib/dashboard-ui/app.js": {
     "complexity": {
       "count": 3
