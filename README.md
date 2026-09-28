@@ -334,7 +334,7 @@ nesting at one layer (structural, not a counter — nothing to configure).
 ```bash
 ./pi/extensions/test/run.sh          # all extension tests
 ./pi/extensions/test/run.sh --test-name-pattern=timer
-./pi/extensions/test/check.sh        # quality gate: typecheck, eslint, dependency-cruiser, jscpd, shellcheck
+./pi/extensions/test/check.sh        # quality gate: typecheck, eslint, dependency-cruiser, jscpd, shellcheck, lua syntax
 for t in test/*.test.sh; do bash "$t" || echo "FAIL: $t"; done   # installer/patch shell tests (repo root; sandboxed in mktemp dirs)
 ```
 

@@ -76,6 +76,9 @@ Read `README.md` first — layout, install, known issues live there. Don't dupli
   - jscpd — ≤ 1% copy-paste (≥ 50 tokens) in production TS/JS + bash.
   - shellcheck — installers, `lib/`, `shell/`, `tmux/`, shell tests, test scripts.
     Silence a finding only per line: `# shellcheck disable=SCxxxx # reason`.
+  - lua syntax — `tools/lua-syntax.mjs` (luaparse, Lua 5.3 grammar) parses every
+    `wezterm/*.lua`: they are live, and no lua binary is installed. Lua 5.4 local
+    attributes (`<const>`/`<close>`) fail it — extend the checker, don't drop it.
 - **ESLint ratchet:** `tools/eslint-suppressions.json` froze the pre-gate
   `complexity`/`max-lines`/`max-lines-per-function` offenders; all are split now
   and the file is empty (`{}`) — keep it that way. NEVER add to it (no

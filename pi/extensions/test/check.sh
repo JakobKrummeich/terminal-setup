@@ -2,6 +2,7 @@
 # Deterministic local quality gate (manual / agents; no CI, no git hook).
 # Complements ./run.sh (tests); run both. Steps, first failure stops the gate:
 #   typecheck → eslint → dependency-cruiser (+ rule self-test) → jscpd → shellcheck
+#   → lua syntax
 # Tools are pinned in tools/package.json + package-lock.json and installed into
 # the gitignored tools/node_modules on first run or when the lockfile changes
 # (the only step needing network). Everything is invoked by explicit path —
@@ -72,6 +73,9 @@ shellcheck_gate() {
 		test/*.test.sh pi/extensions/test/*.sh)
 }
 
+# WHY: wezterm/*.lua are live (symlinked, auto-reloaded) — a syntax error breaks the terminal at once.
+lua_syntax_gate() { (cd "$REPO" && node "$TOOLS/lua-syntax.mjs" wezterm/*.lua); }
+
 ensure_tools
 # shellcheck source=pi/extensions/test/farm.sh
 source ./farm.sh
@@ -83,4 +87,5 @@ run_step "dependency-cruiser" depcruise_gate
 run_step "dependency-cruiser rule self-test" depcruise_selftest
 run_step "jscpd" jscpd_gate
 run_step "shellcheck" shellcheck_gate
+run_step "lua syntax (luaparse)" lua_syntax_gate
 echo "== check.sh: all $step_count steps passed"
