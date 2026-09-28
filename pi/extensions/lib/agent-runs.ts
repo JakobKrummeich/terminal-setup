@@ -128,45 +128,53 @@ export function appendEvent(dir: string, event: AgentRunEvent): void {
 	}
 }
 
+type FieldCheck = (value: unknown) => boolean;
+const isString: FieldCheck = (value) => typeof value === "string";
+const isNumber: FieldCheck = (value) => typeof value === "number";
+const isNumberOrNull: FieldCheck = (value) => value === null || typeof value === "number";
+const isOptionalString: FieldCheck = (value) => value === undefined || typeof value === "string";
+const isRunStatus: FieldCheck = (value) => value === "done" || value === "error" || value === "cancelled";
+
+/** One check per field of E beyond ts/event/sid (parseLine checks those); the type makes the table exhaustive. */
+type FieldChecks<E> = { [F in Exclude<keyof E, "ts" | "event" | "sid">]-?: FieldCheck };
+
 /**
- * Per-event required fields, one literal check per event type — the cast in
- * parseLine is only as honest as this switch. Unknown event types fail here.
+ * Per-event required fields, one literal check per field — the cast in
+ * parseLine is only as honest as this table. Unknown event types fail.
  */
+const EVENT_FIELDS: { [K in AgentRunEvent["event"]]: FieldChecks<Extract<AgentRunEvent, { event: K }>> } = {
+	// sessionFile is load-bearing for pruning: an intro row without it is useless.
+	"session-start": { sessionFile: isString },
+	spawn: {
+		root: isString,
+		parentSid: isString,
+		kind: isString,
+		label: isString,
+		sessionFile: isString,
+		description: isString,
+	},
+	progress: { turn: isNumber, tool: isOptionalString },
+	reset: {}, // ts/sid only, already checked by parseLine
+	finish: {
+		status: isRunStatus,
+		turns: isNumber,
+		costUsd: isNumber,
+		contextTokens: isNumberOrNull,
+		contextPercent: isNumberOrNull,
+		resets: isNumber,
+		durationMs: isNumber,
+	},
+};
+
 function hasEventFields(event: { event: string } & Record<string, unknown>): boolean {
-	switch (event.event) {
-		case "session-start":
-			// sessionFile is load-bearing for pruning: an intro row without it is useless.
-			return typeof event.sessionFile === "string";
-		case "spawn":
-			return (
-				typeof event.root === "string" &&
-				typeof event.parentSid === "string" &&
-				typeof event.kind === "string" &&
-				typeof event.label === "string" &&
-				typeof event.sessionFile === "string" &&
-				typeof event.description === "string"
-			);
-		case "progress":
-			return typeof event.turn === "number" && (event.tool === undefined || typeof event.tool === "string");
-		case "reset":
-			return true; // ts/sid only, already checked by parseLine
-		case "finish":
-			return (
-				(event.status === "done" || event.status === "error" || event.status === "cancelled") &&
-				typeof event.turns === "number" &&
-				typeof event.costUsd === "number" &&
-				(event.contextTokens === null || typeof event.contextTokens === "number") &&
-				(event.contextPercent === null || typeof event.contextPercent === "number") &&
-				typeof event.resets === "number" &&
-				typeof event.durationMs === "number"
-			);
-		default:
-			return false;
-	}
+	// Own keys only: "constructor"/"toString" must not resolve through the prototype.
+	if (!Object.hasOwn(EVENT_FIELDS, event.event)) return false;
+	const checks: Record<string, FieldCheck> = EVENT_FIELDS[event.event as AgentRunEvent["event"]];
+	return Object.entries(checks).every(([field, check]) => check(event[field]));
 }
 
-/** Shape check for one index line; anything off is skipped, not fatal. */
-function parseLine(line: string): AgentRunEvent | undefined {
+/** JSON.parse to a plain object; undefined for corrupt lines and non-object JSON. */
+function parseJsonObject(line: string): Record<string, unknown> | undefined {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(line);
@@ -174,11 +182,26 @@ function parseLine(line: string): AgentRunEvent | undefined {
 		return undefined;
 	}
 	if (typeof parsed !== "object" || parsed === null) return undefined;
-	const event = parsed as { ts?: unknown; event?: unknown; sid?: unknown } & Record<string, unknown>;
+	return parsed as Record<string, unknown>;
+}
+
+/** Shape check for one index line; anything off is skipped, not fatal. */
+function parseLine(line: string): AgentRunEvent | undefined {
+	const event = parseJsonObject(line);
+	if (!event) return undefined;
 	if (typeof event.ts !== "number" || typeof event.sid !== "string") return undefined;
 	if (typeof event.event !== "string") return undefined;
 	if (!hasEventFields(event as { event: string } & Record<string, unknown>)) return undefined;
 	return event as unknown as AgentRunEvent;
+}
+
+/** Index lines; [] when there is no index yet (or it is unreadable). */
+function readIndexLines(dir: string): string[] {
+	try {
+		return readFileSync(runsFilePath(dir), "utf8").split("\n");
+	} catch {
+		return [];
+	}
 }
 
 /**
@@ -197,15 +220,9 @@ function parseLine(line: string): AgentRunEvent | undefined {
  * File order is preserved; the file itself is never modified.
  */
 export function readRuns(dir: string): AgentRunEvent[] {
-	let content: string;
-	try {
-		content = readFileSync(runsFilePath(dir), "utf8");
-	} catch {
-		return []; // no index yet (or unreadable): nothing to render
-	}
 	const events: AgentRunEvent[] = [];
 	const seenStart = new Set<string>();
-	for (const line of content.split("\n")) {
+	for (const line of readIndexLines(dir)) {
 		if (!line.trim()) continue;
 		const event = parseLine(line);
 		if (!event) continue;
@@ -224,6 +241,38 @@ export interface SpawnLookup {
 	finish: RunFinish | undefined;
 }
 
+// findSpawnsByLabel runs on every resume miss, and the file grows forever:
+// JSON.parse only lines that can match. Rows are written by JSON.stringify
+// (appendEvent), so a row whose field equals X contains X's JSON-escaped form
+// verbatim — the substring test never drops a match; parseLine + the field
+// checks stay authoritative.
+function jsonEscaped(s: string): string {
+	return JSON.stringify(s).slice(1, -1);
+}
+
+function spawnsWithLabel(lines: string[], label: string): RunSpawn[] {
+	const labelText = jsonEscaped(label);
+	const spawns: RunSpawn[] = [];
+	for (const line of lines) {
+		if (!line.includes(labelText)) continue;
+		const event = parseLine(line);
+		if (event?.event === "spawn" && event.label === label) spawns.push(event);
+	}
+	return spawns;
+}
+
+/** Second pass for the matched sids' finish rows (they carry no label); the last row per sid wins. */
+function lastFinishBySid(lines: string[], sids: string[]): Map<string, RunFinish> {
+	const sidTexts = [...new Set(sids.map((sid) => jsonEscaped(sid)))];
+	const lastFinish = new Map<string, RunFinish>();
+	for (const line of lines) {
+		if (!sidTexts.some((sid) => line.includes(sid))) continue;
+		const event = parseLine(line);
+		if (event?.event === "finish") lastFinish.set(event.sid, event);
+	}
+	return lastFinish;
+}
+
 /**
  * All spawn rows carrying `label` (e.g. "agent#3ce02a1b"), in file order, each
  * paired with its sid's LAST finish row. Unlike readRuns this does NOT prune rows
@@ -233,34 +282,10 @@ export interface SpawnLookup {
  * spawn trees; the caller picks by root.
  */
 export function findSpawnsByLabel(dir: string, label: string): SpawnLookup[] {
-	let content: string;
-	try {
-		content = readFileSync(runsFilePath(dir), "utf8");
-	} catch {
-		return [];
-	}
-	// Runs on every resume miss, and the file grows forever: JSON.parse only lines
-	// that can match. Rows are written by JSON.stringify (appendEvent), so a row
-	// whose field equals X contains X's JSON-escaped form verbatim — the substring
-	// test never drops a match; parseLine + the field checks stay authoritative.
-	const escaped = (s: string) => JSON.stringify(s).slice(1, -1);
-	const lines = content.split("\n");
-	const labelText = escaped(label);
-	const spawns: RunSpawn[] = [];
-	for (const line of lines) {
-		if (!line.includes(labelText)) continue;
-		const event = parseLine(line);
-		if (event?.event === "spawn" && event.label === label) spawns.push(event);
-	}
+	const lines = readIndexLines(dir);
+	const spawns = spawnsWithLabel(lines, label);
 	if (spawns.length === 0) return [];
-	// Second pass for the matched sids' finish rows (they carry no label).
-	const sidTexts = [...new Set(spawns.map((spawn) => escaped(spawn.sid)))];
-	const lastFinish = new Map<string, RunFinish>();
-	for (const line of lines) {
-		if (!sidTexts.some((sid) => line.includes(sid))) continue;
-		const event = parseLine(line);
-		if (event?.event === "finish") lastFinish.set(event.sid, event);
-	}
+	const lastFinish = lastFinishBySid(lines, spawns.map((spawn) => spawn.sid));
 	return spawns.map((spawn) => ({ spawn, finish: lastFinish.get(spawn.sid) }));
 }
 

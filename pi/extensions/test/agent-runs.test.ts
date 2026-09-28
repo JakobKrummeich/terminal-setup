@@ -133,6 +133,67 @@ test("readRuns skips corrupt and foreign lines but keeps the valid ones around t
 	assert.deepEqual(readRuns(dir), [good, reset]);
 });
 
+// Field-level contract of the line validator: one valid row per event type, then
+// every required field dropped and mistyped. Rows are appended after an intro row
+// (sid-a) whose file exists, so a kept row is only ever dropped by validation.
+const INTRO_SID = "sid-a";
+type RawRow = Record<string, unknown>;
+function validRows(file: string): RawRow[] {
+	return [
+		{ ts: 1, event: "session-start", sid: "sid-b", sessionFile: file },
+		{ ...spawnRow("", "sid-c", file), ts: 2 },
+		{ ts: 3, event: "progress", sid: INTRO_SID, turn: 1 },
+		{ ts: 4, event: "reset", sid: INTRO_SID },
+		{
+			ts: 5,
+			event: "finish",
+			sid: INTRO_SID,
+			status: "cancelled",
+			turns: 1,
+			costUsd: 0,
+			contextTokens: 10,
+			contextPercent: 5,
+			resets: 0,
+			durationMs: 1,
+		},
+	];
+}
+
+function acceptsRow(row: RawRow): boolean {
+	const dir = tempIndexDir();
+	const file = touchSession(dir, "s.jsonl");
+	const intro = spawnRow(dir, INTRO_SID, file);
+	appendEvent(dir, intro);
+	appendFileSync(runsFilePath(dir), `${JSON.stringify(row).replaceAll("__FILE__", file)}\n`);
+	return readRuns(dir).length === 2;
+}
+
+test("readRuns line validation: valid rows kept; each missing or mistyped field rejects the row", () => {
+	for (const row of validRows("__FILE__")) {
+		assert.equal(acceptsRow(row), true, `valid ${JSON.stringify(row)}`);
+		for (const field of Object.keys(row)) {
+			const { [field]: _dropped, ...without } = row;
+			assert.equal(acceptsRow(without), false, `${String(row.event)} without ${field}`);
+			const wrong = typeof row[field] === "number" ? "1" : 1;
+			assert.equal(acceptsRow({ ...row, [field]: wrong }), false, `${String(row.event)} with ${field}=${wrong}`);
+		}
+	}
+});
+
+test("readRuns line validation: nullable, optional and enum fields", () => {
+	const finish = { ts: 5, event: "finish", sid: INTRO_SID, status: "done", turns: 1, costUsd: 0, resets: 0, durationMs: 1 };
+	assert.equal(acceptsRow({ ...finish, contextTokens: null, contextPercent: null }), true, "null context numbers");
+	assert.equal(acceptsRow({ ...finish, status: "error", contextTokens: 1, contextPercent: 1 }), true);
+	assert.equal(acceptsRow({ ...finish, status: "aborted", contextTokens: null, contextPercent: null }), false, "unknown status");
+	assert.equal(acceptsRow({ ts: 3, event: "progress", sid: INTRO_SID, turn: 1, tool: "edit" }), true);
+	assert.equal(acceptsRow({ ts: 3, event: "progress", sid: INTRO_SID, turn: 1, tool: 5 }), false, "tool must be a string");
+	assert.equal(acceptsRow({ ts: 3, event: "progress", sid: INTRO_SID, turn: 1, tool: null }), false, "tool not nullable");
+	for (const event of ["no-such-event", "constructor", "__proto__", "toString", "hasOwnProperty"]) {
+		assert.equal(acceptsRow({ ts: 1, event, sid: INTRO_SID }), false, `unknown event ${event}`);
+	}
+	assert.equal(acceptsRow({ ts: 1, event: "reset", sid: INTRO_SID, extra: [1] }), true, "extra fields tolerated");
+});
+
 test("readRuns dedupes repeated session-start per sid — first row (true start time) wins", () => {
 	const dir = tempIndexDir();
 	const fileA = touchSession(dir, "a.jsonl");

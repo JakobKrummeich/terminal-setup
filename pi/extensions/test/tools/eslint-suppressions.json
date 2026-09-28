@@ -30,11 +30,6 @@
       "count": 1
     }
   },
-  "pi/extensions/lib/agent-runs.ts": {
-    "complexity": {
-      "count": 3
-    }
-  },
   "pi/extensions/lib/child-session.ts": {
     "complexity": {
       "count": 8
