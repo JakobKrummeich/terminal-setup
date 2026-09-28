@@ -6,6 +6,7 @@ REPO="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/install-common.sh
 . "$REPO/lib/install-common.sh"
 
+warn_if_pi_too_old
 install_pi
 install_pi_azure_response_retry_patch
 install_pi_dash_service

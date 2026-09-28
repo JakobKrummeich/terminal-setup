@@ -36,10 +36,12 @@ Read `README.md` first — layout, install, known issues live there. Don't dupli
   target `@earendil-works/pi-coding-agent` + `pi-ai` + `pi-tui` + `pi-agent-core`
   into a `/tmp` farm, point a scratch tsconfig's `paths` at it with absolute repo
   `include`s, and run the same `command npx -y -p typescript tsc`. Never install the
-  new version to test it. Extension-visible shapes that moved in >=0.86: the system
-  prompt is ordered XML sections (`<tools>`/`<rules>`/`<docs>`/`<cwd>`), and the
-  prompt + tool declarations ride as `system` messages inside the provider
-  `context.messages` (0.87 filters them out of extension `context` events).
+  new version to test it. Extension-visible shapes a new version may move (as of
+  0.87, the supported minimum — README): the system prompt is ordered XML sections
+  (`<tools>`/`<rules>`/`<docs>`/`<cwd>`); the prompt + tool declarations ride as
+  `system` messages inside the provider `context.messages` (filtered out of
+  extension `context` events); `turn_end` handlers get boundary events and may
+  return entries/continue.
   To also RUN repo code against the uninstalled version, add third-party deps from
   the installed pi into the farm and use
   `node --experimental-strip-types --preserve-symlinks --preserve-symlinks-main`

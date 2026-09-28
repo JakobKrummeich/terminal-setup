@@ -67,10 +67,14 @@ installs + starts the `pi-dash` dashboard daemon as a systemd user unit
 (skipped with a warning where systemd/user-bus is unavailable — see “Agent
 dashboard” below), installs/links `rtk` (pinned release, SHA-256-verified — see
 “Bumping rtk”), and installs the shell `wsstate.sh`
-hook. For Pi
-`0.83.0`, `0.84.1`–`0.84.4`, `0.85.1`, `0.86.1`, and `0.87.1`, it also applies a version-and-hash-guarded
+hook. For Pi `0.87.1` it also applies a version-and-hash-guarded
 Azure Responses hidden-error retry workaround. Installer fails after a Pi upgrade until patch is
 reviewed or removed. It does not install/link WezTerm or tmux.
+
+**Minimum supported pi: 0.87** (`PI_MIN_VERSION` in `lib/install-common.sh`). The
+extensions rely on 0.87 extension APIs (e.g. actionable `turn_end` boundary results,
+transcript system messages) and carry no fallbacks for older pi; `install-pi.sh`
+prints a warning — without blocking — when the installed pi is older.
 
 Then install apps themselves if flagged:
 - wezterm: https://wezterm.org/install/linux.html (apt repo)

@@ -52,6 +52,25 @@ EOF
     echo "UPDATED: $rc wsstate hook -> $src"
 }
 
+# Oldest pi the extensions (and the Azure retry patch) support; README "Install pi runtime".
+PI_MIN_VERSION="0.87.0"
+
+warn_if_pi_too_old() {
+    # Warning only: pi keeps working, but the extensions target pi >= PI_MIN_VERSION.
+    command -v pi >/dev/null || return 0
+    local version oldest
+    version="$(pi --version 2>/dev/null)" || version=""
+    version="${version%%$'\n'*}"
+    if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+        echo "WARNING: could not read pi version; extensions require pi >= $PI_MIN_VERSION."
+        return 0
+    fi
+    oldest="$(printf '%s\n%s\n' "$PI_MIN_VERSION" "${BASH_REMATCH[0]}" | sort -V | head -n 1)"
+    if [ "$oldest" != "$PI_MIN_VERSION" ]; then
+        echo "WARNING: pi $version is older than the supported minimum $PI_MIN_VERSION; upgrade pi (extensions and the Azure retry patch target >= $PI_MIN_VERSION)."
+    fi
+}
+
 install_pi() {
     # ── pi ──────────────────────────────────────────────────────────
     link pi/extensions ~/.pi/agent/extensions
@@ -141,7 +160,7 @@ find_pi_ai_root_from() { # <pi-executable-or-cli-path> [package-tree-root]
 }
 
 install_pi_azure_response_retry_patch() {
-    # Temporary fail-closed workaround for Pi 0.83.0/0.84.1–0.84.4/0.85.1/0.86.1/0.87.1 Azure Responses failed SSE events.
+    # Temporary fail-closed workaround for Pi 0.87.1 Azure Responses failed SSE events.
     if ! command -v pi >/dev/null; then
         echo "SKIPPED: Pi Azure retry patch (pi is not installed)"
         return 0
