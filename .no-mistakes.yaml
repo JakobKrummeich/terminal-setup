@@ -1,0 +1,46 @@
+# no-mistakes repository config — this repo's CI. The repo is private and has no
+# GitHub Actions, so the pipeline's local test + lint steps ARE the check, and
+# `no_ci: true` declares that no forge checks will ever appear on a PR.
+# no-mistakes reads commands/no_ci/protected_paths/review/document from the
+# default branch only, never from the branch under validation.
+commands:
+  # Extension tests, installer shell tests, tmux config parse (AGENTS.md "Verify changes").
+  test: >-
+    (cd pi/extensions/test && timeout 200 ./run.sh)
+    && for t in test/*.test.sh; do bash "$t" || exit 1; done
+    && tmux -f tmux/tmux.conf -L "nm-cfgtest-$$" new-session -d \; kill-server
+  # Quality gate: tsc, eslint (+ empty suppressions ratchet), dependency-cruiser, jscpd, shellcheck.
+  lint: pi/extensions/test/check.sh
+
+no_ci: true
+
+# What defines a green run: automatic fixes must not loosen the gate instead of the code.
+protected_paths:
+  - ".no-mistakes.yaml"
+  - ".maintenance-agent.yaml"
+  - "pi/extensions/test/check.sh"
+  - "pi/extensions/test/run.sh"
+  - "pi/extensions/test/farm.sh"
+  - "pi/extensions/test/depcruise-selftest.sh"
+  - "pi/extensions/test/tsconfig.json"
+  - "pi/extensions/test/tools/**"
+
+review:
+  path_instructions:
+    - path: "wezterm/**"
+      instructions: |
+        Live config: ~/.config/wezterm/wezterm.lua symlinks here and wezterm auto-reloads on save,
+        so a syntax error breaks the user's terminal immediately. Font/layout changes are risky
+        (README known issues: glyph jitter, pane-sync timing).
+    - path: "pi/settings.json"
+      instructions: |
+        Reference copy only; the live ~/.pi/agent/settings.json is owned by pi. Never suggest symlinking it.
+    - path: "pi/extensions/lib/**"
+      instructions: |
+        Each extension loads lib/ as its own module copy (jiti, moduleCache false): shared mutable
+        state must live on globalThis via sharedState() with a versioned Symbol.for key.
+
+document:
+  instructions: |
+    README.md owns layout, install and known issues; AGENTS.md owns only non-obvious agent rules
+    and must not duplicate README.

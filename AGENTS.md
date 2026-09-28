@@ -90,6 +90,19 @@ Read `README.md` first — layout, install, known issues live there. Don't dupli
   is `SHELLCHECK_RELEASE` in check.sh (the npm wrapper would fetch "latest").
   Never add a package.json to the repo root or `pi/extensions/` itself (pi's loader).
 
+## Shipping
+
+- **No GitHub Actions** (private repo): no-mistakes is the CI. `.no-mistakes.yaml`
+  runs the tests (`run.sh`, `test/*.test.sh`, tmux parse) and `check.sh`, and
+  declares `no_ci: true`. Changes under `pi/` and all agent-authored work go
+  through it: feature branch → `/no-mistakes` → PR → human merge. Small config
+  tweaks (wezterm/tmux/shell) may still push straight to `main`.
+- `.no-mistakes.yaml` and `.maintenance-agent.yaml` are trusted only from `main`:
+  an edit to either takes effect once merged. maintenance-agent runs nightly
+  (host registration `~/.maintenance-agent/repos.d/terminal-setup.yaml`,
+  `auto_merge: false`); its `maintenance/*` PRs wait for a human, and two
+  unmerged ones pause the nightly runs (branch cap).
+
 ## Boundaries
 
 - ✅ **Always:** edit configs via repo paths (they ARE the live configs).

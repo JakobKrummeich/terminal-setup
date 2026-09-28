@@ -1,0 +1,53 @@
+# maintenance-agent target config. The agent runs nightly from its own clone,
+# which `setup` gives a no-mistakes gate of its own; delivery goes through that
+# gate (review, test, lint, push, PR), whose commands are .no-mistakes.yaml's.
+# The repo is private with no GitHub Actions: .no-mistakes.yaml declares
+# no_ci, so the local gates below are the whole check. Whether an agent PR may
+# merge itself is decided on the host (repos.d), not here — it is off.
+version: 1
+base_branch: main
+delivery: no-mistakes # github | no-mistakes | push-only
+diff_limit: 200
+churn_paths: [pi, lib, shell, tmux, wezterm, test, install-pi.sh, install-terminal.sh]
+# What defines the gates, and so what a green run means: an agent that could edit
+# these could pass its own work by loosening the check instead of the code.
+# wezterm/ and pi/settings.json are live config (AGENTS.md: ask first) — a human's job.
+protected_paths:
+  - .no-mistakes.yaml
+  - .maintenance-agent.yaml
+  - pi/extensions/test/check.sh
+  - pi/extensions/test/run.sh
+  - pi/extensions/test/farm.sh
+  - pi/extensions/test/depcruise-selftest.sh
+  - pi/extensions/test/tsconfig.json
+  - pi/extensions/test/tools
+  - wezterm
+  - pi/settings.json
+# check.sh installs the pinned gate tools on first run; the analyzers need them.
+setup: no-mistakes init && pi/extensions/test/check.sh >/dev/null
+# AGENTS.md "Verify changes", one gate each so a failure names its check.
+gates:
+  - name: test
+    run: cd pi/extensions/test && timeout 200 ./run.sh
+  - name: shell-tests
+    run: for t in test/*.test.sh; do bash "$t" || exit 1; done
+  - name: tmux-config
+    run: tmux -f tmux/tmux.conf -L "ma-cfgtest-$$" new-session -d \; kill-server
+  - name: check
+    run: pi/extensions/test/check.sh
+analyzers:
+  - name: near-limit-functions
+    run: >-
+      pi/extensions/test/tools/node_modules/.bin/eslint
+      -c pi/extensions/test/tools/eslint.config.mjs --no-inline-config --rule
+      '{"complexity":["warn",5],"max-lines-per-function":["warn",{"max":45,"skipBlankLines":true,"skipComments":true}],"max-lines":["warn",{"max":260,"skipBlankLines":true,"skipComments":true}]}'
+      'pi/extensions/*.ts' 'pi/extensions/lib/**/*.ts' 'pi/extensions/lib/dashboard-ui/*.js' pi/dashboard-daemon.mjs
+      | awk -v root="$PWD/" '/^\//{file=substr($0, length(root)+1)} /complexity|max-lines/{sub(/^ +/,""); print file": "$0}'
+    note: "repo gates are complexity<=7, functions<=60 and files<=300 lines; these are within reach of the limit — early decay warning"
+  - name: near-clones
+    run: >-
+      pi/extensions/test/tools/node_modules/.bin/jscpd --config pi/extensions/test/tools/.jscpd.json
+      --min-tokens 35 --threshold 100 --no-colors
+      pi/extensions pi/dashboard-daemon.mjs install-pi.sh install-terminal.sh lib shell tmux
+      | grep -E 'Clone found|^ - |^   [^ ]|^Found [0-9]+ clones'
+    note: "the gate fails clones >=50 tokens over 1%; smaller clones that must stay in sync are latent divergence bugs"
