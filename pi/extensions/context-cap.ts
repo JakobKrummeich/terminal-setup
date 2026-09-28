@@ -259,7 +259,9 @@ const CONTINUE_SUFFIX = "Continue your work.";
 
 function fileSeq(sessionId: string, name: string): number | undefined {
 	const m = name.match(/^(.+)-(\d+)\.md$/);
-	if (!m || m[1] !== sessionId) return undefined;
+	// m[2] is a non-optional group (always captured on a match); the check only
+	// restates that for the type checker.
+	if (!m || m[1] !== sessionId || m[2] === undefined) return undefined;
 	return Number.parseInt(m[2], 10);
 }
 

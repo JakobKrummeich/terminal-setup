@@ -601,7 +601,8 @@ export function watchTarget(): ChildRecord | undefined {
 	// Id-based cursor: children starting or finishing between presses shift indices,
 	// so an index cursor could skip an entry.
 	const last = all.findIndex((r) => r.id === state.watchCursor);
-	const target = last >= 0 ? all[(last + 1) % all.length] : (all.find((r) => r.running) ?? all.at(-1)!);
+	// `all` is non-empty (checked above), so every index taken modulo its length exists.
+	const target = last >= 0 ? all[(last + 1) % all.length]! : (all.find((r) => r.running) ?? all.at(-1)!);
 	state.watchCursor = target.id;
 	return target;
 }
@@ -614,7 +615,8 @@ export function watchTarget(): ChildRecord | undefined {
 export function nextChild(currentId: string): ChildRecord | undefined {
 	const all = [...liveChildren.values()];
 	if (all.length === 0) return undefined;
-	const target = all[(all.findIndex((r) => r.id === currentId) + 1) % all.length];
+	// Non-empty (checked above) + modulo length: the index always exists.
+	const target = all[(all.findIndex((r) => r.id === currentId) + 1) % all.length]!;
 	state.watchCursor = target.id;
 	return target;
 }

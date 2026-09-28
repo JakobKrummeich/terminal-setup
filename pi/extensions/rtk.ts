@@ -20,7 +20,11 @@ const MIN_SUPPORTED_RTK_MINOR = 23
 function parseSemver(raw: string): [number, number, number] | null {
   const m = raw.trim().match(/(\d+)\.(\d+)\.(\d+)/)
   if (!m) return null
-  return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)]
+  // The three groups are non-optional, so a match always captures them; the guard
+  // only restates that for the type checker (null = "unparsable", fail-open).
+  const [, major, minor, patch] = m
+  if (major === undefined || minor === undefined || patch === undefined) return null
+  return [parseInt(major, 10), parseInt(minor, 10), parseInt(patch, 10)]
 }
 
 // Calls `rtk rewrite`; returns the rewritten command or null (pass through).

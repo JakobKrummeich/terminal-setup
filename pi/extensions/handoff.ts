@@ -42,7 +42,7 @@ export function extractHandoffSummary(
 	branch: ReadonlyArray<{ type: string; message?: { role?: string; stopReason?: string; content?: unknown } }>,
 ): SummaryExtraction {
 	for (let i = branch.length - 1; i >= 0; i--) {
-		const entry = branch[i];
+		const entry = branch[i]!; // i ∈ [0, branch.length): loop bound
 		if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
 		const { stopReason, content } = entry.message;
 		if (stopReason === "error" || stopReason === "aborted") {

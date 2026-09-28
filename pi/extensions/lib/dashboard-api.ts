@@ -66,9 +66,10 @@ export interface ProjectRef {
  * grouping and identity always use the raw dir name (ProjectRef.projectId).
  */
 export function decodeProjectDirName(name: string): string {
-	const match = /^--(.*)--$/.exec(name);
-	if (!match) return name; // foreign dir name: show verbatim
-	return `/${match[1].replaceAll("-", "/")}`;
+	// `(.*)` always captures on a match, so undefined only means "no match".
+	const inner = /^--(.*)--$/.exec(name)?.[1];
+	if (inner === undefined) return name; // foreign dir name: show verbatim
+	return `/${inner.replaceAll("-", "/")}`;
 }
 
 // --- GET /api/sessions -------------------------------------------------------
@@ -363,8 +364,7 @@ export function sessionFileFor(events: AgentRunEvent[], sid: string): string | n
 /** Last entry at-or-before ts (entries with unknown ts skipped); 0 when none. */
 function nearestEntryIndex(entryTs: readonly (number | null)[], ts: number): number {
 	let best = 0;
-	for (let i = 0; i < entryTs.length; i++) {
-		const t = entryTs[i];
+	for (const [i, t] of entryTs.entries()) {
 		if (t !== null && t <= ts) best = i;
 	}
 	return best;
