@@ -22,8 +22,8 @@ function blockText(block: unknown): unknown {
 	return typeof block === "string" ? block : field(block, "text") ?? "";
 }
 
-/** Extract system instructions from a provider wire payload (best effort). */
-function extractWireSystemPrompt(payload: unknown): string | undefined {
+/** Extract system instructions from a provider wire payload (best effort). Exported for tests. */
+export function extractWireSystemPrompt(payload: unknown): string | undefined {
 	if (!payload || typeof payload !== "object") return undefined;
 
 	// Anthropic messages API: payload.system is a string or array of text blocks
@@ -36,21 +36,21 @@ function extractWireSystemPrompt(payload: unknown): string | undefined {
 	if (typeof instructions === "string") return instructions;
 
 	// OpenAI completions API: leading system/developer messages
-	const messages = field(payload, "messages");
-	if (Array.isArray(messages)) {
-		const sys = messages.filter((m) => field(m, "role") === "system" || field(m, "role") === "developer");
-		if (sys.length > 0) {
-			return sys
-				.map((m) => {
-					const content = field(m, "content");
-					if (typeof content === "string") return content;
-					return Array.isArray(content) ? content.map((c) => field(c, "text") ?? "").join("\n") : "";
-				})
-				.join("\n");
-		}
-	}
+	return systemMessagesText(field(payload, "messages"));
+}
 
-	return undefined;
+/** OpenAI completions API: system/developer messages' text joined; undefined when there are none. */
+function systemMessagesText(messages: unknown): string | undefined {
+	if (!Array.isArray(messages)) return undefined;
+	const sys = messages.filter((m) => field(m, "role") === "system" || field(m, "role") === "developer");
+	if (sys.length === 0) return undefined;
+	return sys
+		.map((m) => {
+			const content = field(m, "content");
+			if (typeof content === "string") return content;
+			return Array.isArray(content) ? content.map((c) => field(c, "text") ?? "").join("\n") : "";
+		})
+		.join("\n");
 }
 
 export default function (pi: ExtensionAPI) {

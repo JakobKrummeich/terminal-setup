@@ -10,21 +10,6 @@
       "count": 1
     }
   },
-  "pi/extensions/dump-system-prompt.ts": {
-    "complexity": {
-      "count": 1
-    }
-  },
-  "pi/extensions/explore.ts": {
-    "complexity": {
-      "count": 1
-    }
-  },
-  "pi/extensions/handoff.ts": {
-    "complexity": {
-      "count": 1
-    }
-  },
   "pi/extensions/lib/child-session.ts": {
     "complexity": {
       "count": 8
@@ -70,11 +55,6 @@
     }
   },
   "pi/extensions/lib/handoff-writer.ts": {
-    "complexity": {
-      "count": 1
-    }
-  },
-  "pi/extensions/rtk.ts": {
     "complexity": {
       "count": 1
     }

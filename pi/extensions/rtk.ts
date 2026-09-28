@@ -27,6 +27,14 @@ function parseSemver(raw: string): [number, number, number] | null {
   return [parseInt(major, 10), parseInt(minor, 10), parseInt(patch, 10)]
 }
 
+// A non-empty command not already routed through rtk, with RTK_DISABLED unset
+// (read per call). Exported for tests.
+export function isRewriteCandidate(cmd: unknown): cmd is string {
+  if (typeof cmd !== "string" || cmd.trim() === "") return false
+  if (cmd.startsWith("rtk ")) return false
+  return process.env.RTK_DISABLED !== "1"
+}
+
 // Calls `rtk rewrite`; returns the rewritten command or null (pass through).
 async function rewriteCommand(
   pi: ExtensionAPI,
@@ -65,10 +73,7 @@ export default async function (pi: ExtensionAPI) {
       if (!isToolCallEventType("bash", event)) return
 
       const cmd = event.input.command
-      if (typeof cmd !== "string" || cmd.trim() === "") return
-
-      if (cmd.startsWith("rtk ")) return
-      if (process.env.RTK_DISABLED === "1") return
+      if (!isRewriteCandidate(cmd)) return
 
       // Delegate to RTK.
       const rewritten = await rewriteCommand(pi, cmd, ctx.signal)

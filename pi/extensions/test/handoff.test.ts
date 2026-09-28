@@ -90,6 +90,11 @@ test("harvest rejects errored, aborted and empty replies — even with partial t
 	assert.equal(extractHandoffSummary([assistant([])]).ok, false, "empty reply");
 	assert.equal(extractHandoffSummary([assistant("   ")]).ok, false, "whitespace-only reply");
 	assert.equal(extractHandoffSummary([user("prompt only")]).ok, false, "no assistant at all");
+	assert.deepEqual(
+		extractHandoffSummary([assistant("doc"), { type: "custom" }, { type: "message" }]),
+		{ ok: true, text: "doc" },
+		"non-message entries and role-less messages after the reply are skipped",
+	);
 });
 
 test("extension registers the /handoff command", () => {

@@ -39,20 +39,26 @@ export type SummaryExtraction = { ok: true; text: string } | { ok: false; reason
  * asking the user to run /handoff again). Pure; exported for tests.
  */
 export function extractHandoffSummary(
-	branch: ReadonlyArray<{ type: string; message?: { role?: string; stopReason?: string; content?: unknown } }>,
+	branch: ReadonlyArray<{ type: string; message?: HarvestedMessage }>,
 ): SummaryExtraction {
 	for (let i = branch.length - 1; i >= 0; i--) {
 		const entry = branch[i]!; // i ∈ [0, branch.length): loop bound
 		if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
-		const { stopReason, content } = entry.message;
-		if (stopReason === "error" || stopReason === "aborted") {
-			return { ok: false, reason: `handoff generation ${stopReason === "aborted" ? "was aborted" : "failed"} — run /handoff again` };
-		}
-		const text = messageText(content).trim();
-		if (!text) return { ok: false, reason: "handoff reply was empty — run /handoff again" };
-		return { ok: true, text };
+		return judgeHandoffReply(entry.message);
 	}
 	return { ok: false, reason: "no assistant message found" };
+}
+
+type HarvestedMessage = { role?: string; stopReason?: string; content?: unknown };
+
+/** The newest assistant message as a handoff document: errored/aborted/empty replies are rejected. */
+function judgeHandoffReply({ stopReason, content }: HarvestedMessage): SummaryExtraction {
+	if (stopReason === "error" || stopReason === "aborted") {
+		return { ok: false, reason: `handoff generation ${stopReason === "aborted" ? "was aborted" : "failed"} — run /handoff again` };
+	}
+	const text = messageText(content).trim();
+	if (!text) return { ok: false, reason: "handoff reply was empty — run /handoff again" };
+	return { ok: true, text };
 }
 
 export default function handoffExtension(pi: ExtensionAPI) {

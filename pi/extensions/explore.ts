@@ -167,9 +167,25 @@ export function resolveExplorerConfig(
 	candidates: readonly string[] = [],
 ): ExplorerConfig {
 	const warnings: string[] = [];
-	let model: ChildModel | undefined;
+	let model = configuredModel(env.PI_EXPLORER_MODEL, registry, candidates, warnings);
 	let parentFallback: string | undefined;
-	const modelSpec = env.PI_EXPLORER_MODEL;
+	if (!model) {
+		parentFallback = parentFallbackWarning(parentModel);
+		warnings.push(parentFallback);
+		model = parentModel;
+	}
+	const thinkingLevel = explorerThinkingLevel(env.PI_EXPLORER_THINKING, warnings);
+	return { model, thinkingLevel, warnings, parentFallbackWarning: parentFallback };
+}
+
+/** PI_EXPLORER_MODEL, else the first registered candidate; undefined = use the parent model. Misses warn. */
+function configuredModel(
+	modelSpec: string | undefined,
+	registry: ModelRegistry,
+	candidates: readonly string[],
+	warnings: string[],
+): ChildModel | undefined {
+	let model: ChildModel | undefined;
 	if (modelSpec) {
 		model = findModelSpec(modelSpec, registry);
 		if (!model) warnings.push(`[explorer] PI_EXPLORER_MODEL "${modelSpec}" not found`);
@@ -178,23 +194,16 @@ export function resolveExplorerConfig(
 		model = findFirstCandidate(candidates, registry);
 		if (!model) warnings.push(`[explorer] no explorer-models.json candidate found (${candidates.join(", ")})`);
 	}
-	if (!model) {
-		parentFallback = parentFallbackWarning(parentModel);
-		warnings.push(parentFallback);
-		model = parentModel;
-	}
+	return model;
+}
+
+function explorerThinkingLevel(levelSpec: string | undefined, warnings: string[]): ChildThinkingLevel {
 	// Explorers should be fast regardless of the parent's level, so the default is
 	// "low", not ctx.thinkingLevel. createAgentSession clamps to model capabilities.
-	let thinkingLevel: ChildThinkingLevel = "low";
-	const levelSpec = env.PI_EXPLORER_THINKING;
-	if (levelSpec) {
-		if ((THINKING_LEVELS as readonly string[]).includes(levelSpec)) {
-			thinkingLevel = levelSpec as ChildThinkingLevel;
-		} else {
-			warnings.push(`[explorer] PI_EXPLORER_THINKING "${levelSpec}" is not a thinking level; using "low"`);
-		}
-	}
-	return { model, thinkingLevel, warnings, parentFallbackWarning: parentFallback };
+	if (!levelSpec) return "low";
+	if ((THINKING_LEVELS as readonly string[]).includes(levelSpec)) return levelSpec as ChildThinkingLevel;
+	warnings.push(`[explorer] PI_EXPLORER_THINKING "${levelSpec}" is not a thinking level; using "low"`);
+	return "low";
 }
 
 export default function (pi: ExtensionAPI) {
