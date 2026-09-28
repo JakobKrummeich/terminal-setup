@@ -57,8 +57,9 @@ ensure_tools() {
 		{ echo "tool install failed — first run needs network (registry.npmjs.org)" >&2; return 1; }
 	# The wrapper's own download() (GitHub releases), NOT its bin: the bin would
 	# execute the binary right after fetching it — before verify_shellcheck.
-	(cd "$TOOLS" && SHELLCHECKJS_RELEASE="$SHELLCHECK_RELEASE" node --input-type=module \
-		-e 'import { download } from "shellcheck"; await download({ destination: process.argv[1] });' "$SHELLCHECK") ||
+	(cd "$TOOLS" && node --input-type=module -e 'import { buildURL, download } from "shellcheck";
+		await download({ destination: process.argv[1], url: await buildURL({ release: process.argv[2] }) });' \
+		"$SHELLCHECK" "$SHELLCHECK_RELEASE") ||
 		{ echo "shellcheck download failed — first run needs network (github.com releases)" >&2; return 1; }
 	verify_shellcheck "$sha256" || return 1
 	if ! "$SHELLCHECK" --version | grep -qx "version: ${SHELLCHECK_RELEASE#v}"; then
