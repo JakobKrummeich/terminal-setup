@@ -10,7 +10,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { estimateMessageTokens, selectContextTail } from "../context-cap.ts";
+import { estimateMessageTokens, selectContextTail } from "../lib/context-cap-view.ts";
 import {
 	CONTEXT_CAP_HARD_TRIGGER,
 	CONTEXT_CAP_SCHEMA,

@@ -96,7 +96,7 @@
  *    handoff never named).
  *  - CONTEXT_CAP_TAIL_TOKENS=N (default 0) additionally keeps ~N tokens of raw
  *    transcript immediately before the marker, cut only at complete turns
- *    (selectContextTail below). The handoff itself stays the LAST thing the model
+ *    (lib/context-cap-view.ts selectContextTail). The handoff itself stays the LAST thing the model
  *    reads. 0 reproduces the pre-lever slice exactly.
  *
  * Triggers (lib/env.ts resolveTriggers, resolved FRESH on every check — never
@@ -134,14 +134,12 @@ import * as path from "node:path";
 import { contextCapDir } from "./lib/agent-dir.ts";
 import { appendEvent } from "./lib/agent-runs.ts";
 import {
-	contextCapReserveTokens,
 	CONTEXT_CAP_SCHEMA,
 	CONTEXT_CAP_STATUS_KEY,
 	CONTEXT_CAP_TAIL_TOKENS,
 	CONTEXT_CAP_TOOL_NAME,
 	envFlag,
 	type HandoffSchema,
-	resolveTriggers,
 	type ResolvedTriggers,
 } from "./lib/env.ts";
 import { formatCapStatus, formatTokenCount } from "./lib/format.ts";
@@ -158,6 +156,8 @@ import {
 	type MessageEndAction,
 } from "./lib/context-cap-decide.ts";
 import { HANDOFF_PREAMBLE, SWAP_MARKER_TYPE, type SwapTrigger } from "./lib/message-types.ts";
+import { createCapResolver, type UsageLike } from "./lib/context-cap-resolver.ts";
+import { llmView, selectContextTail, WARNING_PREFIX } from "./lib/context-cap-view.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -187,15 +187,6 @@ ${handoffSections(SCHEMA)}
 
 After the tool returns, end your turn. Your context will then be replaced by this handoff.`;
 
-// pi's steering/followUp queues can deliver a cap message arbitrarily late — a
-// network-errored run strands it until the next prompt, which may be a fresh
-// post-swap window where the demand is nonsense.
-// Every cap warning/reminder carries this prefix. It is the scrub key: the
-// `context` handler removes messages carrying it from the LLM view once their
-// demand no longer applies (see isCapWarning below), so no message here needs a
-// "if this looks stale, ignore it" clause — a stale one is never seen at all.
-const WARNING_PREFIX = "[context-cap]";
-
 function steerMessage(tokens: number, caps: ResolvedTriggers): string {
 	return `${WARNING_PREFIX} ⚠️ CONTEXT LIMIT WARNING: your context is at ${tokens} tokens (soft cap ${caps.soft}, hard cap ${caps.hard}).
 
@@ -217,20 +208,6 @@ function reminderMessage(attempt: number): string {
 	return `${WARNING_PREFIX} No handoff was recorded — the \`${TOOL_NAME}\` tool was not called.
 
 Call it now (see the earlier context-limit instructions), then end your turn. (reminder ${attempt}/${MAX_RETRIES})`;
-}
-
-/**
- * A cap warning/reminder as it appears in the message array: a user message
- * whose text starts with WARNING_PREFIX. Only the four messages above match —
- * swap-marker content (HANDOFF_PREAMBLE…) and handoff bodies never carry the prefix.
- */
-function isCapWarning(message: unknown): boolean {
-	const m = (message ?? {}) as { role?: string; content?: unknown };
-	if (m.role !== "user") return false;
-	if (typeof m.content === "string") return m.content.startsWith(WARNING_PREFIX);
-	if (!Array.isArray(m.content)) return false;
-	const first = (m.content.find((c) => (c as { type?: string })?.type === "text") ?? {}) as { text?: string };
-	return typeof first.text === "string" && first.text.startsWith(WARNING_PREFIX);
 }
 
 /** Machine-written handoff (hard-cap backstop): say so — its claims were never agent-verified. */
@@ -320,216 +297,6 @@ function writeHandoff(
 /** null / +Infinity (a disabled cap) are not YAML numbers — emit the null literal. */
 function yamlNumber(n: number | null): string {
 	return n != null && Number.isFinite(n) ? String(n) : "null";
-}
-
-// ---------------------------------------------------------------------------
-// Trigger resolution (model-aware, per check)
-// ---------------------------------------------------------------------------
-
-/** What a cap check needs from ctx — `ctx.getContextUsage()`'s shape, minimally. */
-type UsageLike = { contextWindow?: number | null } | null | undefined;
-type Notify = (message: string, level: "info" | "warning" | "error") => void;
-
-/**
- * Per-session cap resolution: the pure lib/env.ts `resolveTriggers` plus the two
- * things one session has to remember — the last context window it actually saw
- * (pi reports none before the first LLM call, and a stale-but-real window beats the
- * static fallback) and which warnings were already shown, so a degenerate window
- * does not notify on every single message.
- *
- * A factory, not module state: jiti hands each extension file its own module copy
- * (AGENTS.md), and tests want one resolver per case.
- *
- * Exported for tests.
- */
-export function createCapResolver(): (usage: UsageLike, notify?: Notify) => ResolvedTriggers {
-	let lastKnownWindow: number | null = null;
-	let warnedDisabled = false;
-	let warnedClamped = false;
-	let warnedFallback = false;
-	return (usage, notify) => {
-		const observed = usage?.contextWindow;
-		const live = typeof observed === "number" && Number.isFinite(observed) && observed > 0 ? observed : null;
-		if (live != null) lastKnownWindow = live;
-		const caps = resolveTriggers(live ?? lastKnownWindow);
-		if (caps.disabled && !warnedDisabled) {
-			warnedDisabled = true;
-			notify?.(
-				`context-cap: context window ${caps.contextWindow ?? "unknown"} cannot hold a cap below pi's own compaction (reserve ${contextCapReserveTokens()}) — cap disabled`,
-				"warning",
-			);
-		}
-		if (caps.clamped && !warnedClamped) {
-			warnedClamped = true;
-			notify?.(`context-cap: soft cap ≥ hard cap — soft clamped to ${caps.soft} (hard ${caps.hard})`, "warning");
-		}
-		if (caps.source === "fallback" && !warnedFallback) {
-			warnedFallback = true;
-			notify?.(`context-cap: context window unknown — using static caps ${caps.soft}/${caps.hard}`, "info");
-		}
-		return caps;
-	};
-}
-
-// ---------------------------------------------------------------------------
-// Recency tail (CONTEXT_CAP_TAIL_TOKENS)
-// ---------------------------------------------------------------------------
-
-/**
- * Token estimate: characters / 4, the usual BPE rule of thumb for English + code.
- * Deliberately local and allocation-light — this runs inside the synchronous
- * `context` handler before every LLM call, where loading a tokenizer would be
- * absurd. It is an APPROXIMATION: ±25% on prose, worse on dense JSON, and images
- * are counted as a flat guess. The lever it feeds is a budget, not a limit that
- * anything breaks on.
- */
-const CHARS_PER_TOKEN = 4;
-/** Role/id/envelope overhead the character count does not see. */
-const MESSAGE_OVERHEAD_TOKENS = 4;
-/** Flat per-image guess (~1k tokens); exact size needs the provider's tiler. */
-const IMAGE_CHARS = 4000;
-
-/** The fields of an AgentMessage this file's estimator/pairing walk care about. */
-type TailMessage = {
-	role?: string;
-	content?: unknown;
-	toolCallId?: string;
-	summary?: string;
-	command?: string;
-	output?: string;
-};
-
-/** Cheap size estimate for one message. Pure; exported for tests. */
-export function estimateMessageTokens(message: unknown): number {
-	const m = (message ?? {}) as TailMessage;
-	let chars = 0;
-	if (typeof m.content === "string") chars += m.content.length;
-	else if (Array.isArray(m.content)) {
-		for (const raw of m.content) {
-			const c = (raw ?? {}) as { type?: string; text?: string; thinking?: string; name?: string; arguments?: unknown };
-			if (typeof c.text === "string") chars += c.text.length;
-			if (typeof c.thinking === "string") chars += c.thinking.length;
-			if (c.type === "image") chars += IMAGE_CHARS;
-			if (c.type === "toolCall") {
-				chars += c.name?.length ?? 0;
-				try {
-					chars += JSON.stringify(c.arguments ?? "").length;
-				} catch {
-					chars += 200; // unserializable arguments: guess rather than throw
-				}
-			}
-		}
-	}
-	// bashExecution / branchSummary / compactionSummary carry their text outside `content`.
-	for (const extra of [m.summary, m.command, m.output]) {
-		if (typeof extra === "string") chars += extra.length;
-	}
-	return MESSAGE_OVERHEAD_TOKENS + Math.ceil(chars / CHARS_PER_TOKEN);
-}
-
-export interface TailSelection {
-	/** Index of the first kept message. Equals `markerIndex` when nothing is kept. */
-	start: number;
-	/** Estimated tokens of messages[start … markerIndex). 0 when nothing is kept. */
-	tokens: number;
-}
-
-/**
- * How much raw transcript directly before the swap marker may be kept.
- *
- * Pairing safety is the whole point: a tool result whose toolCall was cut, or an
- * assistant toolCall whose result was cut, is a provider error — strictly worse
- * than keeping nothing. So a cut is only allowed at a message that references
- * nothing earlier (anything that is not `assistant` and not `toolResult`; those
- * all convert to a standalone user message), and only when the walk from there
- * to the marker contains no orphan result and no dangling call.
- *
- * Walks backwards from the marker, accumulating the estimate, and returns the
- * EARLIEST safe boundary that still fits the budget. If none fits — budget too
- * small, a tool call whose result lands after the marker, no boundary at all —
- * it returns `start = markerIndex`, i.e. keep nothing: today's behaviour.
- *
- * Pure; exported for tests. O(n) over the messages it inspects.
- */
-export function selectContextTail(
-	messages: readonly unknown[],
-	markerIndex: number,
-	budgetTokens: number,
-): TailSelection {
-	const nothing: TailSelection = { start: markerIndex, tokens: 0 };
-	if (!(budgetTokens > 0) || markerIndex <= 0) return nothing;
-
-	/** Results already walked past whose toolCall has not been seen yet (calls precede results). */
-	const unmatchedResults = new Set<string>();
-	let danglingCalls = 0;
-	let tokens = 0;
-	let best = nothing;
-
-	for (let i = markerIndex - 1; i >= 0; i--) {
-		const m = (messages[i] ?? {}) as TailMessage;
-		tokens += estimateMessageTokens(m);
-		if (tokens > budgetTokens) break; // every earlier start is larger still
-		if (m.role === "toolResult") {
-			if (typeof m.toolCallId === "string") unmatchedResults.add(m.toolCallId);
-		} else if (m.role === "assistant") {
-			for (const raw of Array.isArray(m.content) ? m.content : []) {
-				const c = (raw ?? {}) as { type?: string; id?: string };
-				if (c.type !== "toolCall" || typeof c.id !== "string") continue;
-				// Its result is after the marker and can never come back: no cut below
-				// this message is safe either, so the walk is done.
-				if (!unmatchedResults.delete(c.id)) danglingCalls++;
-			}
-		} else if (unmatchedResults.size === 0 && danglingCalls === 0) {
-			// References nothing earlier and everything after it is paired: safe cut.
-			best = { start: i, tokens };
-		}
-		if (danglingCalls > 0) break;
-	}
-	return best;
-}
-
-// ---------------------------------------------------------------------------
-// LLM view (the `context` handler's pure half)
-// ---------------------------------------------------------------------------
-
-/** Index of the latest swap marker in `messages`, -1 when there is none. */
-function lastSwapMarkerIndex(messages: readonly unknown[]): number {
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const m = messages[i] as { role: string; customType?: string };
-		if (m.role === "custom" && m.customType === SWAP_MARKER_TYPE) return i;
-	}
-	return -1;
-}
-
-/**
- * What the model sees of the session's messages: stale cap warnings scrubbed
- * (the rules are on the `context` handler below), then everything before the
- * latest swap marker cut except the recency tail. `changed` = the result differs
- * from `original` (the handler then returns a replacement array). Pure; exported
- * for tests.
- */
-export function llmView<T>(
-	original: readonly T[],
-	cycleArmed: boolean,
-	tailTokens: number,
-): { messages: readonly T[]; changed: boolean } {
-	const markerIndex = lastSwapMarkerIndex(original);
-	// One pass: scrub, and note where the marker lands in the scrubbed array. The
-	// marker survives the scrub by construction (custom role, never a cap warning).
-	const kept: T[] = [];
-	let marker = -1;
-	original.forEach((m, i) => {
-		if (i === markerIndex) marker = kept.length;
-		if (!isCapWarning(m) || (cycleArmed && i > markerIndex)) kept.push(m);
-	});
-	// Recency tail: keep whole turns in front of the marker when the lever is
-	// on. tailTokens = 0 ⇒ start === marker ⇒ the pre-lever slice.
-	// The marker (and any post-swap turns) stay last: the handoff is the last
-	// thing the model reads. Deterministic in the prefix, so later calls in the
-	// same window cut at the same place and the prompt prefix stays cacheable.
-	const start = marker >= 0 ? selectContextTail(kept, marker, tailTokens).start : 0;
-	const messages = start > 0 ? kept.slice(start) : kept;
-	return { messages, changed: start > 0 || kept.length !== original.length };
 }
 
 // ---------------------------------------------------------------------------

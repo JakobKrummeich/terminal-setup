@@ -1,7 +1,7 @@
 /**
  * context-cap state machine, decision tables: one row per branch of the
  * message_end / turn_end decisions (lib/context-cap-decide.ts) and of the
- * `context` handler's view (context-cap.ts llmView). The expected
+ * `context` handler's view (lib/context-cap-view.ts llmView). The expected
  * actions characterize the behaviour the handlers had before the decisions were
  * extracted; the end-to-end context-cap-*.test.ts files pin the side effects
  * each action runs.
@@ -9,7 +9,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { llmView } from "../context-cap.ts";
+import { llmView } from "../lib/context-cap-view.ts";
 import {
 	type CapsView,
 	type CycleState,
@@ -164,7 +164,7 @@ for (const [name, state, input, expected] of turnEndRows) {
 }
 
 // ---------------------------------------------------------------------------
-// context: the LLM view (context-cap.ts llmView)
+// context: the LLM view (lib/context-cap-view.ts llmView)
 // ---------------------------------------------------------------------------
 
 const U = { role: "user", content: "task" };

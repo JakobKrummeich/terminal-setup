@@ -1,7 +1,7 @@
 {
   "pi/extensions/context-cap.ts": {
     "complexity": {
-      "count": 7
+      "count": 4
     },
     "max-lines": {
       "count": 1

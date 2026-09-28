@@ -20,7 +20,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { createCapResolver } from "../context-cap.ts";
+import { createCapResolver } from "../lib/context-cap-resolver.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";
 import {
 	CONTEXT_CAP_HARD_TRIGGER,
