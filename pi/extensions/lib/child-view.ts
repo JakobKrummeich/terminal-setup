@@ -35,6 +35,14 @@ interface HandoffDetails {
 	trigger?: unknown;
 }
 
+/** Label of a swap marker's `trigger` detail. */
+function triggerLabel(trigger: unknown): string | undefined {
+	// details come from disk: an unknown string (older/newer writer) must yield undefined, not throw.
+	return typeof trigger === "string" && Object.hasOwn(TRIGGER_LABELS, trigger)
+		? TRIGGER_LABELS[trigger as SwapTrigger]
+		: undefined;
+}
+
 /**
  * Divider text for handoff `index` of `total`, `─`-padded (or truncated) to `width`:
  * `── ⇄ handoff 2/3 · at 162k tokens · soft cap ─────…`. Parts whose detail is
@@ -48,11 +56,7 @@ export function handoffDividerText(
 ): string {
 	const parts = [`\u21c4 handoff ${index}/${total}`];
 	if (typeof details?.tokensAtSwap === "number") parts.push(`at ${formatTokenCount(details.tokensAtSwap)} tokens`);
-	// details come from disk: an unknown string (older/newer writer) must yield undefined, not throw.
-	const trigger =
-		typeof details?.trigger === "string" && Object.hasOwn(TRIGGER_LABELS, details.trigger)
-			? TRIGGER_LABELS[details.trigger as SwapTrigger]
-			: undefined;
+	const trigger = triggerLabel(details?.trigger);
 	if (trigger) parts.push(trigger);
 	const label = `\u2500\u2500 ${parts.join(" \u00b7 ")} `;
 	const fill = width - visibleWidth(label);
@@ -161,17 +165,21 @@ export class ChildView {
 		if (message.role === "custom" && message.display === false) return;
 		const text = messageText(message.content);
 		if (!text.trim()) return;
-		let divider: HandoffDivider | undefined;
-		if (message.role === "custom" && message.customType === SWAP_MARKER_TYPE) {
-			const details = message.details;
-			divider = new HandoffDivider(
-				this.dividers.length + 1,
-				() => this.dividers.length,
-				typeof details === "object" && details !== null ? (details as HandoffDetails) : undefined,
-			);
-			this.dividers.push(divider);
-		}
+		const divider =
+			message.role === "custom" && message.customType === SWAP_MARKER_TYPE
+				? this.addDivider(message.details)
+				: undefined;
 		this.addUserBlock(text, divider);
+	}
+	/** Next handoff divider (not yet placed in the container). */
+	private addDivider(details: unknown): HandoffDivider {
+		const divider = new HandoffDivider(
+			this.dividers.length + 1,
+			() => this.dividers.length,
+			typeof details === "object" && details !== null ? (details as HandoffDetails) : undefined,
+		);
+		this.dividers.push(divider);
+		return divider;
 	}
 	/**
 	 * Render a reopened child's saved history (session.sessionManager.getBranch():
@@ -182,38 +190,7 @@ export class ChildView {
 	 * pending tools behind and never touches pendingManualPrompts.
 	 */
 	replay(entries: readonly unknown[]) {
-		for (const raw of entries) {
-			const entry = raw as { type?: string; message?: unknown } & Omit<MessageBlock, "role">;
-			if (entry.type === "custom_message") {
-				this.addMessageBlock(customEntryBlock(entry));
-				continue;
-			}
-			if (entry.type !== "message" || !entry.message) continue;
-			const message = entry.message as { role: string; content?: unknown; toolCallId?: string };
-			if (message.role === "user") {
-				this.addMessageBlock(message);
-			} else if (message.role === "assistant") {
-				const assistant = message as unknown as AssistantMessage;
-				this.container.addChild(new AssistantMessageComponent(assistant, false, getMarkdownTheme()));
-				const before = new Set(this.pendingTools.keys());
-				this.syncToolCalls(assistant);
-				if (assistant.stopReason === "aborted" || assistant.stopReason === "error") {
-					// Same as pi: tool calls of a failed message never ran — show why.
-					const text =
-						assistant.stopReason === "aborted" ? "Operation aborted" : assistant.errorMessage || "Error";
-					for (const [id, tool] of this.pendingTools) {
-						if (before.has(id)) continue;
-						tool.updateResult({ content: [{ type: "text", text }], isError: true });
-						this.pendingTools.delete(id);
-					}
-				}
-			} else if (message.role === "toolResult" && message.toolCallId) {
-				const tool = this.pendingTools.get(message.toolCallId);
-				if (!tool) continue;
-				tool.updateResult(message as unknown as Parameters<ToolExecutionComponent["updateResult"]>[0]);
-				this.pendingTools.delete(message.toolCallId);
-			}
-		}
+		for (const raw of entries) this.replayEntry(raw);
 		for (const tool of this.tools) tool.setArgsComplete();
 		// A call without a saved result was cut off (abort mid-tool, pi killed mid-run).
 		// Nothing will ever complete it: no live events exist for past calls.
@@ -222,6 +199,41 @@ export class ChildView {
 		}
 		this.pendingTools.clear();
 		this.requestRender();
+	}
+	private replayEntry(raw: unknown) {
+		const entry = raw as { type?: string; message?: unknown } & Omit<MessageBlock, "role">;
+		if (entry.type === "custom_message") {
+			this.addMessageBlock(customEntryBlock(entry));
+			return;
+		}
+		if (entry.type !== "message" || !entry.message) return;
+		this.replayMessage(entry.message as { role: string; content?: unknown; toolCallId?: string });
+	}
+	private replayMessage(message: { role: string; content?: unknown; toolCallId?: string }) {
+		if (message.role === "user") {
+			this.addMessageBlock(message);
+		} else if (message.role === "assistant") {
+			this.replayAssistant(message as unknown as AssistantMessage);
+		} else if (message.role === "toolResult" && message.toolCallId) {
+			const tool = this.pendingTools.get(message.toolCallId);
+			if (!tool) return;
+			tool.updateResult(message as unknown as Parameters<ToolExecutionComponent["updateResult"]>[0]);
+			this.pendingTools.delete(message.toolCallId);
+		}
+	}
+	private replayAssistant(assistant: AssistantMessage) {
+		this.container.addChild(new AssistantMessageComponent(assistant, false, getMarkdownTheme()));
+		const before = new Set(this.pendingTools.keys());
+		this.syncToolCalls(assistant);
+		if (assistant.stopReason === "aborted" || assistant.stopReason === "error") {
+			// Same as pi: tool calls of a failed message never ran — show why.
+			const text = assistant.stopReason === "aborted" ? "Operation aborted" : assistant.errorMessage || "Error";
+			for (const [id, tool] of this.pendingTools) {
+				if (before.has(id)) continue;
+				tool.updateResult({ content: [{ type: "text", text }], isError: true });
+				this.pendingTools.delete(id);
+			}
+		}
 	}
 	/**
 	 * Injected mid-run messages — context-cap steers/reminders (role "user") and
@@ -248,56 +260,52 @@ export class ChildView {
 		for (const block of content as Array<{ type?: string; id?: string; name?: string; arguments?: unknown }>) {
 			if (block?.type !== "toolCall" || !block.id) continue;
 			const existing = this.pendingTools.get(block.id);
-			if (existing) {
-				existing.updateArgs(block.arguments);
-				continue;
-			}
-			const name = block.name ?? "tool";
-			const component = new ToolExecutionComponent(
-				name,
-				block.id,
-				block.arguments,
-				{ showImages: false },
-				this.session.getToolDefinition(name),
-				this.ui,
-				this.cwd,
-			);
-			component.setExpanded(this.expanded);
-			this.pendingTools.set(block.id, component);
-			this.tools.push(component);
-			this.container.addChild(component);
+			if (existing) existing.updateArgs(block.arguments);
+			else this.addToolCall(block.id, block.name, block.arguments);
 		}
 	}
+	private addToolCall(id: string, blockName: string | undefined, args: unknown) {
+		const name = blockName ?? "tool";
+		const component = new ToolExecutionComponent(
+			name,
+			id,
+			args,
+			{ showImages: false },
+			this.session.getToolDefinition(name),
+			this.ui,
+			this.cwd,
+		);
+		component.setExpanded(this.expanded);
+		this.pendingTools.set(id, component);
+		this.tools.push(component);
+		this.container.addChild(component);
+	}
 	handle(event: AgentSessionEvent) {
+		this.applyMessageEvent(event);
+		this.requestRender();
+	}
+	private applyMessageEvent(event: AgentSessionEvent) {
 		switch (event.type) {
-			case "message_start": {
-				if (event.message.role === "user" || event.message.role === "custom") {
-					this.addInjectedMessage(event.message as MessageBlock);
-					break;
-				}
-				if (event.message.role !== "assistant") break;
-				this.streaming = new AssistantMessageComponent(undefined, false, getMarkdownTheme());
-				this.container.addChild(this.streaming);
-				this.streaming.updateContent(event.message as AssistantMessage);
+			case "message_start":
+				this.startMessage(event.message);
 				break;
-			}
 			case "message_update":
-			case "message_end": {
-				if (event.message.role !== "assistant") break;
-				const message = event.message as AssistantMessage;
-				this.streaming?.updateContent(message);
-				this.syncToolCalls(message);
-				if (event.type === "message_end") {
-					for (const tool of this.pendingTools.values()) tool.setArgsComplete();
-					this.streaming = undefined;
-				}
+				this.updateAssistant(event.message);
 				break;
-			}
+			case "message_end":
+				this.endAssistant(event.message);
+				break;
 			case "entry_appended": {
 				const entry = event.entry as { type: string } & Omit<MessageBlock, "role">;
 				if (entry.type === "custom_message") this.addInjectedMessage(customEntryBlock(entry));
 				break;
 			}
+			default:
+				this.applyToolEvent(event);
+		}
+	}
+	private applyToolEvent(event: AgentSessionEvent) {
+		switch (event.type) {
 			case "tool_execution_start":
 				this.pendingTools.get(event.toolCallId)?.markExecutionStarted();
 				break;
@@ -313,6 +321,28 @@ export class ChildView {
 				this.pendingTools.delete(event.toolCallId);
 				break;
 		}
-		this.requestRender();
+	}
+	private startMessage(message: { role: string }) {
+		if (message.role === "user" || message.role === "custom") {
+			this.addInjectedMessage(message as MessageBlock);
+			return;
+		}
+		if (message.role !== "assistant") return;
+		this.streaming = new AssistantMessageComponent(undefined, false, getMarkdownTheme());
+		this.container.addChild(this.streaming);
+		this.streaming.updateContent(message as AssistantMessage);
+	}
+	/** Returns false for a non-assistant message (nothing to stream). */
+	private updateAssistant(message: { role: string }): boolean {
+		if (message.role !== "assistant") return false;
+		const assistant = message as AssistantMessage;
+		this.streaming?.updateContent(assistant);
+		this.syncToolCalls(assistant);
+		return true;
+	}
+	private endAssistant(message: { role: string }) {
+		if (!this.updateAssistant(message)) return;
+		for (const tool of this.pendingTools.values()) tool.setArgsComplete();
+		this.streaming = undefined;
 	}
 }
