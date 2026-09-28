@@ -69,8 +69,9 @@ PI_CODING_AGENT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/pi-ext-test-agentdir.XXXXXX")"
 export PI_CODING_AGENT_DIR
 trap 'rm -rf "$PI_CODING_AGENT_DIR"' EXIT
 
-# transform (not strip): lib/child-view.ts uses TS parameter properties.
-node --test --experimental-transform-types --no-warnings "$@" ./*.test.ts &
+# Plain type stripping (flag is a no-op default on node >= 22.18, needed on 22.6-22.17);
+# tsconfig's erasableSyntaxOnly keeps the sources strippable.
+node --test --experimental-strip-types --no-warnings "$@" ./*.test.ts &
 node_pid=$!
 trap 'kill -INT "$node_pid" 2>/dev/null; wait "$node_pid" || true; exit 130' INT
 trap 'kill -TERM "$node_pid" 2>/dev/null; wait "$node_pid" || true; exit 143' TERM

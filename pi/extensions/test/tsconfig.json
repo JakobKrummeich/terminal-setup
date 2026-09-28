@@ -13,7 +13,17 @@
 		"skipLibCheck": true,
 		"types": ["node"],
 		"typeRoots": ["./node_modules/@types"],
-		
+		// WHY: an accidental same-name method in a pi subclass silently replaces pi's;
+		// `override` makes that an explicit, reviewable choice.
+		"noImplicitOverride": true,
+		// WHY: unintended fallthrough is a silent control-flow bug; intentional ones
+		// must be written as grouped empty cases.
+		"noFallthroughCasesInSwitch": true,
+		// WHY: run.sh executes the sources with Node's type stripping (no transform),
+		// which cannot run enums/namespaces/parameter properties — pi's jiti loader
+		// can, so without this flag such syntax would pass pi and break the tests.
+		"erasableSyntaxOnly": true,
+
 		"paths": {
 			"@earendil-works/pi-coding-agent": ["./node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"],
 			"@earendil-works/pi-ai": ["./node_modules/@earendil-works/pi-ai/dist/index.d.ts"],

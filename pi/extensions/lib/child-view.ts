@@ -65,11 +65,14 @@ export function handoffDividerText(
  * live run keeps adding handoffs. ChildView.render records its line as an anchor.
  */
 class HandoffDivider implements Component {
-	constructor(
-		private readonly index: number,
-		private readonly total: () => number,
-		private readonly details: HandoffDetails | undefined,
-	) {}
+	private readonly index: number;
+	private readonly total: () => number;
+	private readonly details: HandoffDetails | undefined;
+	constructor(index: number, total: () => number, details: HandoffDetails | undefined) {
+		this.index = index;
+		this.total = total;
+		this.details = details;
+	}
 	render(width: number): string[] {
 		return [getMarkdownTheme().heading(handoffDividerText(this.index, this.total(), this.details, width))];
 	}
@@ -110,10 +113,11 @@ export class ChildView {
 	private pendingManualPrompts = 0;
 	private requestRender: () => void = () => {};
 	private readonly ui: TUI;
-	constructor(
-		private readonly session: AgentSession,
-		private readonly cwd: string,
-	) {
+	private readonly session: AgentSession;
+	private readonly cwd: string;
+	constructor(session: AgentSession, cwd: string) {
+		this.session = session;
+		this.cwd = cwd;
 		this.ui = { requestRender: () => this.requestRender() } as unknown as TUI;
 	}
 	setRenderer(fn: () => void) {
