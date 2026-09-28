@@ -204,29 +204,54 @@ install_tmux() {
     command -v tmux >/dev/null || echo "TODO: sudo apt install tmux"
 }
 
-resolve_rtk_release_url() { # <os> <arch>
-    local os="$1" arch="$2"
-    curl -fsSL https://api.github.com/repos/rtk-ai/rtk/releases/latest \
-        | node -e '
-const assetNames = {
-  "Linux/x86_64": ["rtk-x86_64-unknown-linux-musl.tar.gz", "rtk-x86_64-unknown-linux-gnu.tar.gz"],
-  "Linux/aarch64": ["rtk-aarch64-unknown-linux-musl.tar.gz", "rtk-aarch64-unknown-linux-gnu.tar.gz"],
-  "Darwin/x86_64": ["rtk-x86_64-apple-darwin.tar.gz"],
-  "Darwin/arm64": ["rtk-aarch64-apple-darwin.tar.gz"],
-};
-try {
-  const [os, arch] = process.argv.slice(1);
-  const { assets } = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
-  const asset = assetNames[`${os}/${arch}`]?.map((name) => assets.find((candidate) => candidate.name === name)).find(Boolean);
-  if (asset?.browser_download_url) process.stdout.write(asset.browser_download_url);
-} catch {
-  process.exit(1);
-}
-' "$os" "$arch"
+# ── rtk: pinned release + SHA-256 per asset ─────────────────────────
+# Bump: set RTK_VERSION, then replace every hash in rtk_asset_sha256 with the
+# values from that release's checksums.txt (README "Bumping rtk"). A version
+# without matching hashes fails closed — nothing is extracted or installed.
+RTK_VERSION="0.43.0"
+
+rtk_asset_name() { # <uname -s> <uname -m> → release asset name; empty if unsupported
+    case "$1/$2" in
+        Linux/x86_64) echo "rtk-x86_64-unknown-linux-musl.tar.gz" ;;
+        Linux/aarch64) echo "rtk-aarch64-unknown-linux-gnu.tar.gz" ;;
+        Darwin/x86_64) echo "rtk-x86_64-apple-darwin.tar.gz" ;;
+        Darwin/arm64) echo "rtk-aarch64-apple-darwin.tar.gz" ;;
+    esac
 }
 
-install_rtk_from_url() { # <download-url>
-    local url="$1" download extract_dir extracted_rtk
+rtk_asset_sha256() { # <asset-name> → expected SHA-256 for RTK_VERSION
+    case "$1" in
+        rtk-x86_64-unknown-linux-musl.tar.gz) echo "ff8a1e7766496e175291a85aeca1dc97c9ff6df33e51e5893d1fbc78fea2a609" ;;
+        rtk-aarch64-unknown-linux-gnu.tar.gz) echo "5519f7ca12e5c143a609f0d28a0a77b97413a8dce31c2681f1a41c24519a8731" ;;
+        rtk-x86_64-apple-darwin.tar.gz) echo "a85f60e2637811be68366208b8d8b9c5ba1b748cb5df4477ab20cd73d3c5d9f8" ;;
+        rtk-aarch64-apple-darwin.tar.gz) echo "8a17e49acbd378997eb21d0eb6f7f861111f35b4fc9b1c74edf4c7448e576c65" ;;
+    esac
+}
+
+rtk_release_url() { # <asset-name>
+    printf 'https://github.com/rtk-ai/rtk/releases/download/v%s/%s' "$RTK_VERSION" "$1"
+}
+
+verify_sha256() { # <file> <expected-sha256>; sha256sum (Linux) or shasum (macOS)
+    local file="$1" expected="$2" checkfile status
+    [ -n "$expected" ] || return 1
+    checkfile="$(mktemp)"
+    printf '%s  %s\n' "$expected" "$file" > "$checkfile"
+    if command -v sha256sum >/dev/null; then
+        sha256sum -c --status "$checkfile"
+    elif command -v shasum >/dev/null; then
+        shasum -a 256 -c -s "$checkfile"
+    else
+        echo "WARN: neither sha256sum nor shasum found; cannot verify rtk download"
+        false
+    fi
+    status=$?
+    rm -f "$checkfile"
+    return "$status"
+}
+
+install_rtk_from_url() { # <download-url> <expected-sha256>
+    local url="$1" sha256="$2" download extract_dir extracted_rtk
     mkdir -p "$HOME/.local/bin"
     download="$(mktemp)"
     if ! curl -fsSL "$url" -o "$download"; then
@@ -234,39 +259,33 @@ install_rtk_from_url() { # <download-url>
         rm -f "$download"
         return 1
     fi
-    case "$url" in
-        *.tar.gz)
-            extract_dir="$(mktemp -d)"
-            if ! tar -xzf "$download" -C "$extract_dir"; then
-                echo "WARN: could not extract rtk release asset; install manually: https://github.com/rtk-ai/rtk"
-                rm -rf "$extract_dir"
-                rm -f "$download"
-                return 1
-            fi
-            extracted_rtk="$(find "$extract_dir" -type f -name rtk -print -quit)"
-            if [ -z "$extracted_rtk" ]; then
-                echo "WARN: rtk release asset contains no rtk binary; install manually: https://github.com/rtk-ai/rtk"
-                rm -rf "$extract_dir"
-                rm -f "$download"
-                return 1
-            fi
-            if [ -d "$HOME/.local/bin/rtk" ] || ! mv "$extracted_rtk" "$HOME/.local/bin/rtk"; then
-                echo "WARN: could not place rtk binary; install manually: https://github.com/rtk-ai/rtk"
-                rm -rf "$extract_dir"
-                rm -f "$download"
-                return 1
-            fi
-            rm -rf "$extract_dir"
-            rm -f "$download"
-            ;;
-        *)
-            if [ -d "$HOME/.local/bin/rtk" ] || ! mv "$download" "$HOME/.local/bin/rtk"; then
-                echo "WARN: could not place rtk binary; install manually: https://github.com/rtk-ai/rtk"
-                rm -f "$download"
-                return 1
-            fi
-            ;;
-    esac
+    if ! verify_sha256 "$download" "$sha256"; then
+        echo "ERROR: rtk download failed SHA-256 verification (expected ${sha256:-<none>} for $url); not installed"
+        rm -f "$download"
+        return 1
+    fi
+    extract_dir="$(mktemp -d)"
+    if ! tar -xzf "$download" -C "$extract_dir"; then
+        echo "WARN: could not extract rtk release asset; install manually: https://github.com/rtk-ai/rtk"
+        rm -rf "$extract_dir"
+        rm -f "$download"
+        return 1
+    fi
+    extracted_rtk="$(find "$extract_dir" -type f -name rtk -print -quit)"
+    if [ -z "$extracted_rtk" ]; then
+        echo "WARN: rtk release asset contains no rtk binary; install manually: https://github.com/rtk-ai/rtk"
+        rm -rf "$extract_dir"
+        rm -f "$download"
+        return 1
+    fi
+    if [ -d "$HOME/.local/bin/rtk" ] || ! mv "$extracted_rtk" "$HOME/.local/bin/rtk"; then
+        echo "WARN: could not place rtk binary; install manually: https://github.com/rtk-ai/rtk"
+        rm -rf "$extract_dir"
+        rm -f "$download"
+        return 1
+    fi
+    rm -rf "$extract_dir"
+    rm -f "$download"
     if ! chmod +x "$HOME/.local/bin/rtk"; then
         echo "WARN: could not mark rtk binary executable; install manually: https://github.com/rtk-ai/rtk"
         return 1
@@ -274,24 +293,27 @@ install_rtk_from_url() { # <download-url>
 }
 
 install_rtk() {
-    # ── rtk (latest release binary; used by pi extensions) ──────────
-    local rtk_bin="" URL="" os arch
+    # ── rtk (pinned release binary; used by pi extensions) ──────────
+    local rtk_bin="" asset os arch found_version
     # Resolve rtk, but never to our own dest symlink (self-link = ELOOP).
     if command -v rtk >/dev/null && [ "$(command -v rtk)" != "$HOME/.pi/agent/bin/rtk" ]; then
+        # Already installed: never downloads, only (re)links. A different version
+        # is kept but reported, so a stale binary is visible after a pin bump.
         rtk_bin="$(command -v rtk)"
+        found_version="$("$rtk_bin" --version 2>/dev/null || echo '?')"
+        if [ "$found_version" != "rtk $RTK_VERSION" ]; then
+            echo "NOTE: using existing $rtk_bin ($found_version); pinned is rtk $RTK_VERSION — remove it and re-run to install the pin"
+        fi
     else
-        echo "Installing rtk (latest) ..."
+        echo "Installing rtk $RTK_VERSION ..."
         os="$(uname -s)"
         arch="$(uname -m)"
-        if ! URL="$(resolve_rtk_release_url "$os" "$arch")"; then
-            echo "WARN: could not fetch or parse rtk release metadata; install manually: https://github.com/rtk-ai/rtk"
-        elif [ -n "$URL" ]; then
-            if install_rtk_from_url "$URL"; then
-                rtk_bin="$HOME/.local/bin/rtk"
-                echo "INSTALLED: rtk $("$rtk_bin" --version 2>/dev/null || echo '?')"
-            fi
-        else
+        asset="$(rtk_asset_name "$os" "$arch")"
+        if [ -z "$asset" ]; then
             echo "WARN: no rtk release asset for $os/$arch; install manually: https://github.com/rtk-ai/rtk"
+        elif install_rtk_from_url "$(rtk_release_url "$asset")" "$(rtk_asset_sha256 "$asset")"; then
+            rtk_bin="$HOME/.local/bin/rtk"
+            echo "INSTALLED: rtk $("$rtk_bin" --version 2>/dev/null || echo '?')"
         fi
     fi
     if [ -n "$rtk_bin" ]; then

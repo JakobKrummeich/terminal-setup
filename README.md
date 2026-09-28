@@ -65,7 +65,8 @@ git clone git@github.com:JakobKrummeich/terminal-setup.git ~/codingprojects/term
 This links pi extensions/themes/skills, copies pi settings if missing,
 installs + starts the `pi-dash` dashboard daemon as a systemd user unit
 (skipped with a warning where systemd/user-bus is unavailable — see “Agent
-dashboard” below), installs/links `rtk`, and installs the shell `wsstate.sh`
+dashboard” below), installs/links `rtk` (pinned release, SHA-256-verified — see
+“Bumping rtk”), and installs the shell `wsstate.sh`
 hook. For Pi
 `0.83.0`, `0.84.1`–`0.84.4`, `0.85.1`, `0.86.1`, and `0.87.1`, it also applies a version-and-hash-guarded
 Azure Responses hidden-error retry workaround. Installer fails after a Pi upgrade until patch is
@@ -79,6 +80,22 @@ Then install apps themselves if flagged:
 
 Shell busy/idle status is installed into `~/.bashrc` by both installers. For
 the current shell, either restart it or source `shell/wsstate.sh` once.
+
+### Bumping rtk
+
+`install_rtk` (`lib/install-common.sh`) downloads one pinned release —
+`RTK_VERSION` — and checks the asset against the SHA-256 in `rtk_asset_sha256`
+before extracting; a mismatch (or a missing hash) fails closed and installs
+nothing. An `rtk` already on `PATH` is only linked, never replaced (a version
+other than the pin is reported as a `NOTE:`). To bump:
+
+1. Set `RTK_VERSION` to the new release (without the `v`).
+2. Take the four asset hashes from that release's `checksums.txt`
+   (`https://github.com/rtk-ai/rtk/releases/download/v<version>/checksums.txt`) and
+   replace every entry in `rtk_asset_sha256`. Check the asset names in
+   `rtk_asset_name` still exist in the release.
+3. Run `bash test/rtk-release-resolution.test.sh`; to install it here, remove the old
+   `~/.local/bin/rtk` and re-run `install-pi.sh`.
 
 ## Install (Windows + WSL + Podman)
 

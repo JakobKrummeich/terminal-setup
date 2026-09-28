@@ -1,73 +1,53 @@
 #!/usr/bin/env bash
+# rtk install: pinned version + per-asset SHA-256, verified before extraction.
+# No network: curl and uname are stubbed, the release asset is a local fixture.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=lib/install-common.sh
 . "$REPO/lib/install-common.sh"
 
-RTK_RELEASE_JSON='{
-  "assets": [
-    {"name":"rtk_0.45.0-1_amd64.deb","browser_download_url":"https://example.invalid/rtk.deb"},
-    {"name":"rtk-x86_64-unknown-linux-gnu.tar.gz","browser_download_url":"https://example.invalid/rtk-x86_64-unknown-linux-gnu.tar.gz"},
-    {"name":"rtk-aarch64-unknown-linux-gnu.tar.gz","browser_download_url":"https://example.invalid/rtk-aarch64-unknown-linux-gnu.tar.gz"},
-    {"name":"rtk-x86_64-apple-darwin.tar.gz","browser_download_url":"https://example.invalid/rtk-x86_64-apple-darwin.tar.gz"},
-    {"name":"rtk-aarch64-apple-darwin.tar.gz","browser_download_url":"https://example.invalid/rtk-aarch64-apple-darwin.tar.gz"},
-    {"name":"rtk-x86_64-unknown-linux-musl.tar.gz","browser_download_url":"https://example.invalid/rtk-x86_64-unknown-linux-musl.tar.gz"}
-  ]
-}'
-
-curl() {
-    printf '%s' "$RTK_RELEASE_JSON"
-}
-
-assert_url() {
-    local os="$1" arch="$2" expected="$3" actual
-    actual="$(resolve_rtk_release_url "$os" "$arch")"
-    [ "$actual" = "$expected" ] || {
-        echo "expected $expected for $os/$arch, got $actual" >&2
-        exit 1
-    }
-}
-
-assert_url Linux x86_64 https://example.invalid/rtk-x86_64-unknown-linux-musl.tar.gz
-assert_url Linux aarch64 https://example.invalid/rtk-aarch64-unknown-linux-gnu.tar.gz
-assert_url Darwin x86_64 https://example.invalid/rtk-x86_64-apple-darwin.tar.gz
-assert_url Darwin arm64 https://example.invalid/rtk-aarch64-apple-darwin.tar.gz
-[ -z "$(resolve_rtk_release_url Linux riscv64)" ] || exit 1
-
-curl() { return 22; }
-if resolve_rtk_release_url Linux x86_64 >/dev/null; then
-    echo "expected failed release request" >&2
+fail() {
+    echo "FAIL: $*" >&2
     exit 1
-fi
+}
 
+# ── pinned asset table + URL construction ──────────────────────────
+[[ "$RTK_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "RTK_VERSION is not a plain x.y.z: $RTK_VERSION"
+
+assert_asset() {
+    local os="$1" arch="$2" expected="$3" actual
+    actual="$(rtk_asset_name "$os" "$arch")"
+    [ "$actual" = "$expected" ] || fail "expected $expected for $os/$arch, got $actual"
+    [[ "$(rtk_asset_sha256 "$actual")" =~ ^[0-9a-f]{64}$ ]] || fail "no SHA-256 pinned for $actual"
+}
+assert_asset Linux x86_64 rtk-x86_64-unknown-linux-musl.tar.gz
+assert_asset Linux aarch64 rtk-aarch64-unknown-linux-gnu.tar.gz
+assert_asset Darwin x86_64 rtk-x86_64-apple-darwin.tar.gz
+assert_asset Darwin arm64 rtk-aarch64-apple-darwin.tar.gz
+[ -z "$(rtk_asset_name Linux riscv64)" ] || fail "unsupported platform must map to no asset"
+[ -z "$(rtk_asset_sha256 rtk-unknown.tar.gz)" ] || fail "unknown asset must have no hash"
+
+[ "$(rtk_release_url rtk-x86_64-unknown-linux-musl.tar.gz)" = \
+    "https://github.com/rtk-ai/rtk/releases/download/v$RTK_VERSION/rtk-x86_64-unknown-linux-musl.tar.gz" ] \
+    || fail "release URL is not pinned to v$RTK_VERSION: $(rtk_release_url rtk-x86_64-unknown-linux-musl.tar.gz)"
+
+# ── fixtures ───────────────────────────────────────────────────────
 FIXTURE="$(mktemp -d)"
 trap 'rm -rf "$FIXTURE"' EXIT
-output="$(
-    HOME="$FIXTURE"
-    PATH="/usr/local/bin:/usr/bin:/bin"
-    install_rtk
-)"
-[[ "$output" == *"WARN: could not fetch or parse rtk release metadata"* ]] || {
-    echo "expected metadata warning, got: $output" >&2
-    exit 1
-}
-[ ! -e "$FIXTURE/.local/bin/rtk" ] || {
-    echo "RTK was installed after metadata request failed" >&2
-    exit 1
-}
-
-RTK_ASSET_URL="https://example.invalid/rtk-x86_64-unknown-linux-musl.tar.gz"
+RTK_ASSET_URL="https://github.com/rtk-ai/rtk/releases/download/v$RTK_VERSION/rtk-x86_64-unknown-linux-musl.tar.gz"
 RTK_ARCHIVE="$FIXTURE/rtk.tar.gz"
 mkdir -p "$FIXTURE/archive"
-printf '#!/usr/bin/env bash\necho rtk 0.45.0\n' > "$FIXTURE/archive/rtk"
+printf '#!/usr/bin/env bash\necho rtk %s\n' "$RTK_VERSION" > "$FIXTURE/archive/rtk"
 chmod +x "$FIXTURE/archive/rtk"
 touch -d '2020-01-01 UTC' "$FIXTURE/archive/rtk"
 tar -czf "$RTK_ARCHIVE" -C "$FIXTURE/archive" rtk
+FIXTURE_SHA256="$(sha256sum "$RTK_ARCHIVE" | cut -d' ' -f1)"
+
+CURL_LOG="$FIXTURE/curl.log"
 curl() {
-    if [ "${2-}" = "https://api.github.com/repos/rtk-ai/rtk/releases/latest" ]; then
-        printf '%s' "$RTK_RELEASE_JSON"
-    elif [ "${2-}" = "$RTK_ASSET_URL" ] && [ "${3-}" = "-o" ]; then
+    echo "$*" >> "$CURL_LOG"
+    if [ "${2-}" = "$RTK_ASSET_URL" ] && [ "${3-}" = "-o" ]; then
         cp "$RTK_ARCHIVE" "$4"
     else
         return 1
@@ -79,81 +59,111 @@ uname() {
         -m) printf 'x86_64\n' ;;
     esac
 }
-output="$(
-    HOME="$FIXTURE/home"
-    PATH="/usr/local/bin:/usr/bin:/bin"
-    install_rtk
-)"
-[[ "$output" == *"INSTALLED: rtk rtk 0.45.0"* ]] || {
-    echo "expected RTK installation, got: $output" >&2
-    exit 1
-}
-[ -x "$FIXTURE/home/.local/bin/rtk" ] || {
-    echo "RTK tarball binary was not installed" >&2
-    exit 1
-}
-[ "$(readlink "$FIXTURE/home/.pi/agent/bin/rtk")" = "$FIXTURE/home/.local/bin/rtk" ] || {
-    echo "RTK link points to wrong target" >&2
-    exit 1
+# The fixture archive stands in for the pinned musl asset.
+rtk_asset_sha256() { echo "$FIXTURE_SHA256"; }
+
+run_install() { # <home>
+    (
+        HOME="$1"
+        PATH="/usr/local/bin:/usr/bin:/bin"
+        install_rtk
+    )
 }
 
-mkdir -p "$FIXTURE/destination-collision/.local/bin/rtk"
+assert_not_installed() { # <home> <what>
+    [ ! -e "$1/.local/bin/rtk" ] || fail "rtk binary placed after $2"
+    [ ! -e "$1/.pi/agent/bin/rtk" ] || fail "rtk link created after $2"
+}
+
+# ── checksum match → installed + linked ────────────────────────────
+output="$(run_install "$FIXTURE/home")"
+[[ "$output" == *"Installing rtk $RTK_VERSION"* ]] || fail "expected pinned-version banner, got: $output"
+[[ "$output" == *"INSTALLED: rtk rtk $RTK_VERSION"* ]] || fail "expected RTK installation, got: $output"
+[ -x "$FIXTURE/home/.local/bin/rtk" ] || fail "RTK tarball binary was not installed"
+[ "$(readlink "$FIXTURE/home/.pi/agent/bin/rtk")" = "$FIXTURE/home/.local/bin/rtk" ] || fail "RTK link points to wrong target"
+grep -qF "$RTK_ASSET_URL" "$CURL_LOG" || fail "download did not use the pinned URL: $(cat "$CURL_LOG")"
+
+# ── checksum mismatch → fail closed, nothing extracted or linked ───
+rtk_asset_sha256() { printf '0%.0s' {1..64}; echo; }
+output="$(run_install "$FIXTURE/mismatch")"
+[[ "$output" == *"ERROR: rtk download failed SHA-256 verification"* ]] || fail "expected checksum error, got: $output"
+[[ "$output" != *"INSTALLED:"* ]] || fail "RTK reported an installation after checksum mismatch"
+assert_not_installed "$FIXTURE/mismatch" "checksum mismatch"
+
+# ── no pinned hash for the asset → fail closed too ─────────────────
+rtk_asset_sha256() { :; }
+output="$(run_install "$FIXTURE/no-hash")"
+[[ "$output" == *"ERROR: rtk download failed SHA-256 verification (expected <none>"* ]] || fail "expected missing-hash error, got: $output"
+assert_not_installed "$FIXTURE/no-hash" "missing hash"
+rtk_asset_sha256() { echo "$FIXTURE_SHA256"; }
+
+# ── download failure ───────────────────────────────────────────────
+real_asset_url="$RTK_ASSET_URL"
+RTK_ASSET_URL="https://example.invalid/never-served"
+output="$(run_install "$FIXTURE/download-failure")"
+RTK_ASSET_URL="$real_asset_url"
+[[ "$output" == *"WARN: could not download rtk release asset"* ]] || fail "expected download warning, got: $output"
+assert_not_installed "$FIXTURE/download-failure" "download failure"
+
+# ── unsupported platform ───────────────────────────────────────────
+uname() {
+    case "$1" in
+        -s) printf 'Linux\n' ;;
+        -m) printf 'riscv64\n' ;;
+    esac
+}
+output="$(run_install "$FIXTURE/unsupported")"
+[[ "$output" == *"WARN: no rtk release asset for Linux/riscv64"* ]] || fail "expected unsupported-platform warning, got: $output"
+assert_not_installed "$FIXTURE/unsupported" "unsupported platform"
+uname() {
+    case "$1" in
+        -s) printf 'Linux\n' ;;
+        -m) printf 'x86_64\n' ;;
+    esac
+}
+
+# ── idempotent: an rtk already on PATH is linked, never re-downloaded ──
+mkdir -p "$FIXTURE/existing/bin"
+printf '#!/usr/bin/env bash\necho rtk %s\n' "$RTK_VERSION" > "$FIXTURE/existing/bin/rtk"
+chmod +x "$FIXTURE/existing/bin/rtk"
+: > "$CURL_LOG"
 output="$(
-    HOME="$FIXTURE/destination-collision"
-    PATH="/usr/local/bin:/usr/bin:/bin"
+    HOME="$FIXTURE/existing"
+    PATH="$FIXTURE/existing/bin:/usr/local/bin:/usr/bin:/bin"
     install_rtk
 )"
-[[ "$output" == *"WARN: could not place rtk binary"* ]] || {
-    echo "expected RTK destination warning, got: $output" >&2
-    exit 1
-}
-[[ "$output" != *"INSTALLED:"* ]] || {
-    echo "RTK reported an installation after destination failure" >&2
-    exit 1
-}
-[ ! -e "$FIXTURE/destination-collision/.pi/agent/bin/rtk" ] || {
-    echo "RTK link was created after destination failure" >&2
-    exit 1
-}
+[ ! -s "$CURL_LOG" ] || fail "existing rtk must not trigger a download: $(cat "$CURL_LOG")"
+[[ "$output" != *"NOTE:"* ]] || fail "pinned version on PATH must not be reported as drift: $output"
+[ "$(readlink "$FIXTURE/existing/.pi/agent/bin/rtk")" = "$FIXTURE/existing/bin/rtk" ] || fail "existing rtk not linked"
+printf '#!/usr/bin/env bash\necho rtk 0.0.1\n' > "$FIXTURE/existing/bin/rtk"
+output="$(
+    HOME="$FIXTURE/existing"
+    PATH="$FIXTURE/existing/bin:/usr/local/bin:/usr/bin:/bin"
+    install_rtk
+)"
+[[ "$output" == *"NOTE: using existing $FIXTURE/existing/bin/rtk (rtk 0.0.1); pinned is rtk $RTK_VERSION"* ]] \
+    || fail "expected version-drift note, got: $output"
+[ ! -s "$CURL_LOG" ] || fail "version drift must not trigger a download: $(cat "$CURL_LOG")"
+
+# ── placement failures ─────────────────────────────────────────────
+mkdir -p "$FIXTURE/destination-collision/.local/bin/rtk"
+output="$(run_install "$FIXTURE/destination-collision")"
+[[ "$output" == *"WARN: could not place rtk binary"* ]] || fail "expected RTK destination warning, got: $output"
+[[ "$output" != *"INSTALLED:"* ]] || fail "RTK reported an installation after destination failure"
+[ ! -e "$FIXTURE/destination-collision/.pi/agent/bin/rtk" ] || fail "RTK link was created after destination failure"
 
 mv() { return 1; }
-output="$(
-    HOME="$FIXTURE/move-failure"
-    PATH="/usr/local/bin:/usr/bin:/bin"
-    install_rtk
-)"
+output="$(run_install "$FIXTURE/move-failure")"
 unset -f mv
-[[ "$output" == *"WARN: could not place rtk binary"* ]] || {
-    echo "expected RTK move warning, got: $output" >&2
-    exit 1
-}
-[[ "$output" != *"INSTALLED:"* ]] || {
-    echo "RTK reported an installation after move failure" >&2
-    exit 1
-}
-[ ! -e "$FIXTURE/move-failure/.pi/agent/bin/rtk" ] || {
-    echo "RTK link was created after move failure" >&2
-    exit 1
-}
+[[ "$output" == *"WARN: could not place rtk binary"* ]] || fail "expected RTK move warning, got: $output"
+[[ "$output" != *"INSTALLED:"* ]] || fail "RTK reported an installation after move failure"
+assert_not_installed "$FIXTURE/move-failure" "move failure"
 
 chmod() { return 1; }
-output="$(
-    HOME="$FIXTURE/chmod-failure"
-    PATH="/usr/local/bin:/usr/bin:/bin"
-    install_rtk
-)"
+output="$(run_install "$FIXTURE/chmod-failure")"
 unset -f chmod
-[[ "$output" == *"WARN: could not mark rtk binary executable"* ]] || {
-    echo "expected RTK chmod warning, got: $output" >&2
-    exit 1
-}
-[[ "$output" != *"INSTALLED:"* ]] || {
-    echo "RTK reported an installation after chmod failure" >&2
-    exit 1
-}
-[ ! -e "$FIXTURE/chmod-failure/.pi/agent/bin/rtk" ] || {
-    echo "RTK link was created after chmod failure" >&2
-    exit 1
-}
+[[ "$output" == *"WARN: could not mark rtk binary executable"* ]] || fail "expected RTK chmod warning, got: $output"
+[[ "$output" != *"INSTALLED:"* ]] || fail "RTK reported an installation after chmod failure"
+[ ! -e "$FIXTURE/chmod-failure/.pi/agent/bin/rtk" ] || fail "RTK link was created after chmod failure"
 
-echo "PASS: RTK release asset resolution and installation"
+echo "PASS: pinned RTK download, SHA-256 verification and installation"
