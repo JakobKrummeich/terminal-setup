@@ -136,7 +136,7 @@ test("expiry wakes the agent at the next turn boundary, not at the end of the ru
 	}
 });
 
-test("expiry while the agent is idle starts a new turn", async () => {
+test("expiry while the agent is idle starts exactly one new turn", async () => {
 	const t = await createTestSession({
 		extensionPaths: [TIMER_EXTENSION],
 		mode: "tui",
@@ -151,7 +151,10 @@ test("expiry while the agent is idle starts a new turn", async () => {
 	try {
 		await t.session.prompt("start"); // run ends well before the timer expires
 		const runEndedAt = t.now();
-		await sleep(TIMER_SECONDS * 1000 + 400);
+		// Wait for the first wake-up (bounded poll), let its run finish, then settle
+		// well past the expiry so a duplicate wake-up would have landed too.
+		const deadline = Date.now() + TIMER_SECONDS * 1000 + 5000;
+		while (!t.deliveredUserMessages.some((m) => isExpiry(m.text)) && Date.now() < deadline) await sleep(20);
 
 		const delivery = t.deliveredUserMessages.find((m) => isExpiry(m.text));
 		assert.ok(delivery, "expiry message was never delivered while idle");
@@ -159,6 +162,11 @@ test("expiry while the agent is idle starts a new turn", async () => {
 			delivery.atMs > runEndedAt,
 			"expiry should arrive after the run ended, starting a fresh turn",
 		);
+		await t.session.waitForIdle();
+		await sleep(TIMER_SECONDS * 1000 + 300);
+		const wakes = t.deliveredUserMessages.filter((m) => isExpiry(m.text));
+		assert.equal(wakes.length, 1, `expiry must start exactly one wake-up run, got ${JSON.stringify(wakes)}`);
+		assert.equal(t.session.isIdle, true, "session must be idle again after the single wake-up run");
 	} finally {
 		t.dispose();
 	}
