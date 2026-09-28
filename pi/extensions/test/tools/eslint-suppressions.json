@@ -31,11 +31,6 @@
       "count": 2
     }
   },
-  "pi/extensions/lib/dashboard-ui/app.js": {
-    "complexity": {
-      "count": 2
-    }
-  },
   "pi/extensions/subagent.ts": {
     "max-lines-per-function": {
       "count": 1

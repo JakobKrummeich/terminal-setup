@@ -262,14 +262,17 @@ function renderSessionPage(hash) {
 		}
 		if (token !== navToken) return;
 		state.lastTree = tree;
-		// ~5s timer while running so bars grow between SSE events (spec: UI §2).
-		const running = tree.nodes.some((node) => node.status === "running");
-		if (running && !state.growTimer) state.growTimer = setInterval(refresh, 5000);
-		if (!running && state.growTimer) {
-			clearInterval(state.growTimer);
-			state.growTimer = null;
-		}
+		syncGrowTimer(state, tree.nodes.some((node) => node.status === "running"), refresh);
 		drawSessionPage(app, root, tree, state);
+	}
+}
+
+/** ~5s timer while running so bars grow between SSE events (spec: UI §2). */
+function syncGrowTimer(state, running, refresh) {
+	if (running && !state.growTimer) state.growTimer = setInterval(refresh, 5000);
+	if (!running && state.growTimer) {
+		clearInterval(state.growTimer);
+		state.growTimer = null;
 	}
 }
 
@@ -290,16 +293,9 @@ function renderTranscriptPage(hash) {
 		} catch (error) {
 			return token === navToken ? pageError(error, `transcript ${shortSid(sid)} vanished (404)`) : undefined;
 		}
-		let tree = null;
-		if (root) {
-			try {
-				tree = await fetchJson(`/api/tree?root=${encodeURIComponent(root)}`);
-			} catch {
-				tree = null; // breadcrumb chain degrades; transcript still renders
-			}
-		}
+		const tree = await fetchTreeOrNull(root);
 		if (token !== navToken) return;
-		const node = tree ? (tree.nodes.find((n) => n.sid === sid) ?? null) : null;
+		const node = findTreeNode(tree, sid);
 		// Watch while running — and also whenever tree data is unavailable (no
 		// ?root=, tree 404, sid missing from the tree): we can't tell whether the
 		// session runs, so watch anyway. Watching a finished session is harmless
@@ -309,6 +305,21 @@ function renderTranscriptPage(hash) {
 			onPageLeave(startLive(sid, refresh));
 		}
 		drawTranscript(app, sid, root, transcript, tree);
+	}
+}
+
+/** The tree node for sid; null without tree data or when the tree lacks it. */
+function findTreeNode(tree, sid) {
+	return tree ? (tree.nodes.find((n) => n.sid === sid) ?? null) : null;
+}
+
+/** The tree for the transcript page's breadcrumb; null without ?root= or on any fetch failure. */
+async function fetchTreeOrNull(root) {
+	if (!root) return null;
+	try {
+		return await fetchJson(`/api/tree?root=${encodeURIComponent(root)}`);
+	} catch {
+		return null; // breadcrumb chain degrades; transcript still renders
 	}
 }
 
