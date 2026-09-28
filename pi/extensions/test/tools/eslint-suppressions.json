@@ -61,11 +61,6 @@
       "count": 1
     }
   },
-  "pi/extensions/lib/dashboard-api.ts": {
-    "complexity": {
-      "count": 4
-    }
-  },
   "pi/extensions/lib/dashboard-server.ts": {
     "complexity": {
       "count": 1

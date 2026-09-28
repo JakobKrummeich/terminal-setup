@@ -197,6 +197,15 @@ function emptySidAgg(): SidAgg {
 	return { lastRunTs: 0, lastEventTs: 0, maxTurn: 0, resets: 0 };
 }
 
+function applySpawn(agg: SidAgg, event: RunSpawn): void {
+	agg.spawn ??= event;
+	agg.lastRunTs = Math.max(agg.lastRunTs, event.ts);
+}
+
+function applyFinish(agg: SidAgg, event: RunFinish): void {
+	if (!agg.lastFinish || event.ts >= agg.lastFinish.ts) agg.lastFinish = event;
+}
+
 function applyEvent(agg: SidAgg, event: AgentRunEvent): void {
 	agg.lastEventTs = Math.max(agg.lastEventTs, event.ts);
 	switch (event.event) {
@@ -204,8 +213,7 @@ function applyEvent(agg: SidAgg, event: AgentRunEvent): void {
 			agg.sessionStart ??= event;
 			break;
 		case "spawn":
-			agg.spawn ??= event;
-			agg.lastRunTs = Math.max(agg.lastRunTs, event.ts);
+			applySpawn(agg, event);
 			break;
 		case "progress":
 			agg.lastRunTs = Math.max(agg.lastRunTs, event.ts);
@@ -215,7 +223,7 @@ function applyEvent(agg: SidAgg, event: AgentRunEvent): void {
 			agg.resets += 1;
 			break;
 		case "finish":
-			if (!agg.lastFinish || event.ts >= agg.lastFinish.ts) agg.lastFinish = event;
+			applyFinish(agg, event);
 			break;
 		default:
 			break; // future event types: tolerated, ignored
@@ -254,13 +262,37 @@ function treeLastActivity(agg: RootAgg, mtimeMs: number | null): number {
 	return last;
 }
 
-function summarizeRoot(agg: RootAgg, now: number, statsFor: StatsFor, project: ProjectRef): SessionRow {
-	const rootAgg = agg.sids.get(agg.root);
-	const file = rootAgg?.sessionStart?.sessionFile;
-	const stats = file ? statsFor(file) : null;
-	const startTs = rootAgg?.sessionStart?.ts ?? agg.firstTs;
+/** Root-level view shared by the sessions row and the tree's root node — both must agree on "running". */
+interface RootView {
+	/** The root sid's own agg; empty when its rows were pruned. */
+	rootAgg: SidAgg;
+	stats: SessionFileStats | null;
+	startTs: number;
+	lastActivity: number;
+	running: boolean;
+}
+
+function rootStats(rootAgg: SidAgg, statsFor: StatsFor): SessionFileStats | null {
+	const file = rootAgg.sessionStart?.sessionFile;
+	return file ? statsFor(file) : null;
+}
+
+function viewRoot(agg: RootAgg, now: number, statsFor: StatsFor): RootView {
+	const rootAgg = agg.sids.get(agg.root) ?? emptySidAgg();
+	const stats = rootStats(rootAgg, statsFor);
 	const lastActivity = treeLastActivity(agg, stats?.mtimeMs ?? null);
-	let costUsd = stats?.costUsd ?? 0;
+	return {
+		rootAgg,
+		stats,
+		startTs: rootAgg.sessionStart?.ts ?? agg.firstTs,
+		lastActivity,
+		running: now - lastActivity < ACTIVE_WINDOW_MS,
+	};
+}
+
+/** Tree-wide counters for the sessions row: cost = root's own JSONL cost + each child's last finish. */
+function treeTotals(agg: RootAgg, rootCostUsd: number): { costUsd: number; agentCount: number; resetCount: number } {
+	let costUsd = rootCostUsd;
 	let agentCount = 0;
 	let resetCount = 0;
 	for (const [sid, sidAgg] of agg.sids) {
@@ -268,7 +300,12 @@ function summarizeRoot(agg: RootAgg, now: number, statsFor: StatsFor, project: P
 		resetCount += sidAgg.resets;
 		if (sid !== agg.root && sidAgg.lastFinish) costUsd += sidAgg.lastFinish.costUsd;
 	}
-	const running = now - lastActivity < ACTIVE_WINDOW_MS;
+	return { costUsd, agentCount, resetCount };
+}
+
+function summarizeRoot(agg: RootAgg, now: number, statsFor: StatsFor, project: ProjectRef): SessionRow {
+	const { stats, startTs, lastActivity, running } = viewRoot(agg, now, statsFor);
+	const { costUsd, agentCount, resetCount } = treeTotals(agg, stats?.costUsd ?? 0);
 	return {
 		sid: agg.root,
 		projectId: project.projectId,
@@ -292,40 +329,35 @@ export function deriveSessions(events: AgentRunEvent[], now: number, statsFor: S
 
 /** The root's own row: no finish events exist for it, so status is running|done by tree activity. */
 function rootNode(agg: RootAgg, now: number, statsFor: StatsFor): TreeNode {
-	const rootAgg = agg.sids.get(agg.root);
-	const file = rootAgg?.sessionStart?.sessionFile;
-	const stats = file ? statsFor(file) : null;
-	const lastActivity = treeLastActivity(agg, stats?.mtimeMs ?? null);
-	const running = now - lastActivity < ACTIVE_WINDOW_MS;
+	const { rootAgg, stats, startTs, lastActivity, running } = viewRoot(agg, now, statsFor);
 	return {
 		sid: agg.root,
 		label: "main",
 		kind: "main",
 		description: "",
 		parentSid: null,
-		startTs: rootAgg?.sessionStart?.ts ?? agg.firstTs,
+		startTs,
 		endTs: running ? null : lastActivity,
 		status: running ? "running" : "done",
 		costUsd: stats?.costUsd ?? null,
-		resets: rootAgg?.resets ?? 0,
+		resets: rootAgg.resets,
 		turns: stats?.turns ?? 0,
 	};
 }
 
-/** A spawned child's row. `settled` = latest finish covers all run activity (spawn/progress). */
-function childNode(sidAgg: SidAgg, spawn: RunSpawn, now: number): TreeNode {
+/** `settled` = latest finish covers all run activity (spawn/progress); unsettled + stale = abandoned. */
+function childTiming(sidAgg: SidAgg, now: number): { status: TreeNodeStatus; endTs: number | null } {
 	const finish = sidAgg.lastFinish;
 	const settled = finish !== undefined && finish.ts >= sidAgg.lastRunTs;
+	if (settled) return { status: finish.status, endTs: finish.ts };
 	const stale = now - sidAgg.lastEventTs >= ACTIVE_WINDOW_MS;
-	let status: TreeNodeStatus;
-	let endTs: number | null;
-	if (settled) {
-		status = finish.status;
-		endTs = finish.ts;
-	} else {
-		status = stale ? "abandoned" : "running";
-		endTs = stale ? sidAgg.lastEventTs : null;
-	}
+	return stale ? { status: "abandoned", endTs: sidAgg.lastEventTs } : { status: "running", endTs: null };
+}
+
+/** A spawned child's row. */
+function childNode(sidAgg: SidAgg, spawn: RunSpawn, now: number): TreeNode {
+	const finish = sidAgg.lastFinish;
+	const { status, endTs } = childTiming(sidAgg, now);
 	return {
 		sid: spawn.sid,
 		label: spawn.label,
