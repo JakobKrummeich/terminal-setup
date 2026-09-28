@@ -1,7 +1,7 @@
 // dependency-cruiser config for ../check.sh (run from the repo root:
 // `depcruise --config pi/extensions/test/tools/.dependency-cruiser.cjs pi/extensions pi/dashboard-daemon.mjs`).
 // Needs the test/node_modules symlink farm (farm.sh) so pi's packages resolve.
-// Each rule is proven to fire by ../check.sh --self-test.
+// Each rule is proven to fire by ../depcruise-selftest.sh (check.sh step 4).
 /** @type {import("dependency-cruiser").IConfiguration} */
 module.exports = {
 	forbidden: [

@@ -22,9 +22,11 @@ ensure_tools() {
 	want="$(sha256sum "$TOOLS/package-lock.json" | cut -d' ' -f1) shellcheck=$SHELLCHECK_RELEASE"
 	if [[ -f "$stamp" && "$(<"$stamp")" == "$want" ]]; then return 0; fi
 	echo "== installing pinned tools into $TOOLS/node_modules (npm ci)"
-	(cd "$TOOLS" && npm ci --no-audit --no-fund --loglevel=error)
+	(cd "$TOOLS" && npm ci --no-audit --no-fund --loglevel=error) ||
+		{ echo "tool install failed — first run needs network (registry.npmjs.org)" >&2; return 1; }
 	# The wrapper fetches the binary from GitHub releases on first call.
-	SHELLCHECKJS_RELEASE="$SHELLCHECK_RELEASE" "$BIN/shellcheck" --version >/dev/null
+	SHELLCHECKJS_RELEASE="$SHELLCHECK_RELEASE" "$BIN/shellcheck" --version >/dev/null ||
+		{ echo "shellcheck download failed — first run needs network (github.com releases)" >&2; return 1; }
 	if ! "$SHELLCHECK" --version | grep -qx "version: ${SHELLCHECK_RELEASE#v}"; then
 		echo "shellcheck binary is not $SHELLCHECK_RELEASE" >&2
 		return 1
