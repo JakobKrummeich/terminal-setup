@@ -94,6 +94,11 @@ export const CONTEXT_CAP_RESERVE_TOKENS_DEFAULT = 16_384;
 export function contextCapReserveTokens(): number {
 	const override = envIntOrNull("CONTEXT_CAP_RESERVE");
 	if (override != null) return override;
+	return settingsReserveTokens() ?? CONTEXT_CAP_RESERVE_TOKENS_DEFAULT;
+}
+
+/** `compaction.reserveTokens` from pi's live settings.json; undefined when absent or not a positive number. */
+function settingsReserveTokens(): number | undefined {
 	try {
 		const raw = readFileSync(path.join(agentDir(), "settings.json"), "utf8");
 		const value = (JSON.parse(raw) as { compaction?: { reserveTokens?: unknown } })?.compaction?.reserveTokens;
@@ -101,7 +106,7 @@ export function contextCapReserveTokens(): number {
 	} catch {
 		// Missing, unreadable or malformed settings: pi's own default applies.
 	}
-	return CONTEXT_CAP_RESERVE_TOKENS_DEFAULT;
+	return undefined;
 }
 
 /** Where the values in force came from. See resolveTriggers for the precedence. */
@@ -161,9 +166,25 @@ function softOfHard(hard: number): number {
 export function resolveTriggers(contextWindow: number | null | undefined): ResolvedTriggers {
 	const envSoft = envIntOrNull("CONTEXT_CAP_SOFT");
 	const envHard = envIntOrNull("CONTEXT_CAP_HARD");
-	const window =
-		contextWindow != null && Number.isFinite(contextWindow) && contextWindow > 0 ? Math.floor(contextWindow) : null;
-	const off: ResolvedTriggers = {
+	const window = knownWindow(contextWindow);
+	const off = disabledTriggers(envSoft, envHard, window);
+	const resolvedHard = resolveHard(envHard, window);
+	if (!resolvedHard) return off; // window smaller than pi's reserve
+	const { hard, hardSource } = resolvedHard;
+	if (hard <= 1) return off; // no room to place a soft trigger underneath
+	const { soft, softSource, clamped } = resolveSoft(envSoft, hard, hardSource);
+	if (soft <= 0) return off;
+	return { soft, hard, source: combinedSource(softSource, hardSource), contextWindow: window, disabled: false, clamped };
+}
+
+/** A usable context window (positive, finite, floored); null = unknown. */
+function knownWindow(contextWindow: number | null | undefined): number | null {
+	return contextWindow != null && Number.isFinite(contextWindow) && contextWindow > 0 ? Math.floor(contextWindow) : null;
+}
+
+/** The `disabled` result: both triggers +Infinity, source still reported. */
+function disabledTriggers(envSoft: number | null, envHard: number | null, window: number | null): ResolvedTriggers {
+	return {
 		soft: Number.POSITIVE_INFINITY,
 		hard: Number.POSITIVE_INFINITY,
 		source: envSoft != null && envHard != null ? "env" : window != null ? "dynamic" : "fallback",
@@ -171,39 +192,33 @@ export function resolveTriggers(contextWindow: number | null | undefined): Resol
 		disabled: true,
 		clamped: false,
 	};
+}
 
-	let hard: number;
-	let hardSource: TriggerSource;
-	if (envHard != null) {
-		hard = envHard;
-		hardSource = "env";
-	} else if (window != null) {
-		const ceiling = window - contextCapReserveTokens();
-		if (ceiling <= 0) return off; // window smaller than pi's reserve
-		hard = hardOfCeiling(ceiling);
-		hardSource = "dynamic";
-	} else {
-		hard = CONTEXT_CAP_HARD_TRIGGER;
-		hardSource = "fallback";
-	}
-	if (hard <= 1) return off; // no room to place a soft trigger underneath
+/** env → derived from the window → static fallback. null = the window cannot carry a cap (ceiling <= 0). */
+function resolveHard(envHard: number | null, window: number | null): { hard: number; hardSource: TriggerSource } | null {
+	if (envHard != null) return { hard: envHard, hardSource: "env" };
+	if (window == null) return { hard: CONTEXT_CAP_HARD_TRIGGER, hardSource: "fallback" };
+	const ceiling = window - contextCapReserveTokens();
+	if (ceiling <= 0) return null;
+	return { hard: hardOfCeiling(ceiling), hardSource: "dynamic" };
+}
 
-	let soft = envSoft ?? softOfHard(hard);
+/** env, else derived from the RESOLVED hard; clamped to hard-1 when it would not fire first. */
+function resolveSoft(
+	envSoft: number | null,
+	hard: number,
+	hardSource: TriggerSource,
+): { soft: number; softSource: TriggerSource; clamped: boolean } {
 	const softSource: TriggerSource = envSoft != null ? "env" : hardSource === "env" ? "dynamic" : hardSource;
-	let clamped = false;
-	if (soft >= hard) {
-		soft = hard - 1;
-		clamped = true;
-	}
-	if (soft <= 0) return off;
+	const soft = envSoft ?? softOfHard(hard);
+	if (soft >= hard) return { soft: hard - 1, softSource, clamped: true };
+	return { soft, softSource, clamped: false };
+}
 
-	const source: TriggerSource =
-		softSource === "env" && hardSource === "env"
-			? "env"
-			: softSource === "fallback" || hardSource === "fallback"
-				? "fallback"
-				: "dynamic";
-	return { soft, hard, source, contextWindow: window, disabled: false, clamped };
+function combinedSource(softSource: TriggerSource, hardSource: TriggerSource): TriggerSource {
+	if (softSource === "env" && hardSource === "env") return "env";
+	if (softSource === "fallback" || hardSource === "fallback") return "fallback";
+	return "dynamic";
 }
 
 /**
