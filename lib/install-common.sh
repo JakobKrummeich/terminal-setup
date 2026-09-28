@@ -240,7 +240,7 @@ install_tmux() {
 # Bump: set RTK_VERSION, then replace every hash in rtk_asset_sha256 with the
 # values from that release's checksums.txt (README "Bumping rtk"). A version
 # without matching hashes fails closed — nothing is extracted or installed.
-RTK_VERSION="0.43.0"
+RTK_VERSION="0.50.0"
 
 rtk_asset_name() { # <uname -s> <uname -m> → release asset name; empty if unsupported
     case "$1/$2" in
@@ -253,10 +253,10 @@ rtk_asset_name() { # <uname -s> <uname -m> → release asset name; empty if unsu
 
 rtk_asset_sha256() { # <asset-name> → expected SHA-256 for RTK_VERSION
     case "$1" in
-        rtk-x86_64-unknown-linux-musl.tar.gz) echo "ff8a1e7766496e175291a85aeca1dc97c9ff6df33e51e5893d1fbc78fea2a609" ;;
-        rtk-aarch64-unknown-linux-gnu.tar.gz) echo "5519f7ca12e5c143a609f0d28a0a77b97413a8dce31c2681f1a41c24519a8731" ;;
-        rtk-x86_64-apple-darwin.tar.gz) echo "a85f60e2637811be68366208b8d8b9c5ba1b748cb5df4477ab20cd73d3c5d9f8" ;;
-        rtk-aarch64-apple-darwin.tar.gz) echo "8a17e49acbd378997eb21d0eb6f7f861111f35b4fc9b1c74edf4c7448e576c65" ;;
+        rtk-x86_64-unknown-linux-musl.tar.gz) echo "bc2b8902b0d9c796c82ef45f16ae2307e17757afeca5ee156235a3dc7bda5f89" ;;
+        rtk-aarch64-unknown-linux-gnu.tar.gz) echo "d1cc49dfa2cd443fc32625444b59fe616b6c80478cca210985118347174dd758" ;;
+        rtk-x86_64-apple-darwin.tar.gz) echo "ac23e20024ab3c71e7f50069f8b34190aec1b2d8f0c2cc19834039b3dac73373" ;;
+        rtk-aarch64-apple-darwin.tar.gz) echo "fe54761a9950266e3a78ddb66a8af5e067251169da306a288e0751de63d836fe" ;;
     esac
 }
 
