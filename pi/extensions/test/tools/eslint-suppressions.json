@@ -30,18 +30,5 @@
     "max-lines-per-function": {
       "count": 2
     }
-  },
-  "pi/extensions/subagent.ts": {
-    "max-lines-per-function": {
-      "count": 1
-    }
-  },
-  "pi/extensions/timer.ts": {
-    "complexity": {
-      "count": 1
-    },
-    "max-lines-per-function": {
-      "count": 2
-    }
   }
 }

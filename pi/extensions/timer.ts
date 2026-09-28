@@ -139,6 +139,177 @@ function err(text: string) {
 	return { content: [{ type: "text" as const, text }], details: {}, isError: true };
 }
 
+type TimerUpdate = ((partial: ReturnType<typeof ok>) => void) | undefined;
+
+function secondsUntil(expiresAt: number): number {
+	return Math.max(0, Math.round((expiresAt - Date.now()) / 1000));
+}
+
+/**
+ * Headless path: block inside the tool call. The run stays active, so the process
+ * cannot exit and no wake-up (which nothing here could deliver) is promised.
+ */
+async function blockingWait(name: string, seconds: number, signal: AbortSignal | undefined, onUpdate: TimerUpdate) {
+	const requestedMs = seconds * 1000;
+	const maxWaitMs = headlessMaxWaitMs();
+	const waitMs = maxWaitMs > 0 ? Math.min(requestedMs, maxWaitMs) : requestedMs;
+	const startedAt = Date.now();
+	// Progress, so a long block never looks frozen: same channel the child-session
+	// tools use (lib/child-session.ts pushStatus), rendered as a live tool update.
+	const heartbeat = setInterval(() => {
+		const elapsed = Date.now() - startedAt;
+		const remainingS = Math.max(0, Math.round((waitMs - elapsed) / 1000));
+		onUpdate?.(ok(`Timer "${name}": waiting — ${Math.round(elapsed / 1000)}s elapsed, ${remainingS}s remaining.`));
+	}, heartbeatIntervalMs(waitMs));
+	const { aborted } = await waitOrAbort(waitMs, signal).finally(() => clearInterval(heartbeat));
+	const elapsedS = Math.round((Date.now() - startedAt) / 1000);
+	if (aborted) {
+		return ok(`Timer "${name}" wait aborted after ${elapsedS}s of ${seconds}s requested. No timer is left running.`);
+	}
+	if (waitMs < requestedMs) {
+		// Only reachable with PI_TIMER_MAX_WAIT_S set: loop instead of one long block.
+		const remainingS = Math.max(1, Math.round((requestedMs - waitMs) / 1000));
+		return ok(
+			`Timer "${name}": waited ${elapsedS}s of the ${seconds}s requested (one wait is capped at ${Math.round(maxWaitMs / 1000)}s). ${remainingS}s still to go — check the task; if it is not finished, call timer again with seconds: ${remainingS}. Keep working in this turn.`,
+		);
+	}
+	return ok(`Timer "${name}" fired after ${elapsedS}s. Continue your task.`);
+}
+
+/**
+ * The interactive (async) timer plus its wake-up delivery tracking. One instance
+ * per extension load — the state is per-session, never module-level.
+ */
+class WakeTimer {
+	readonly pi: ExtensionAPI;
+	active: ActiveTimer | undefined;
+	/** Expiry fired, wake-up run not settled yet. */
+	awaitingWake = false;
+	/** Exact wake-up text sent at expiry; matched against message_start. */
+	wakeText: string | undefined;
+	/** The wake-up message was observed entering a run. */
+	wakeDelivered = false;
+	wakeResends = 0;
+
+	constructor(pi: ExtensionAPI) {
+		this.pi = pi;
+	}
+
+	resetWakeState() {
+		this.awaitingWake = false;
+		this.wakeText = undefined;
+		this.wakeDelivered = false;
+		this.wakeResends = 0;
+	}
+
+	clearActive(): ActiveTimer | undefined {
+		const prev = this.active;
+		if (prev) clearTimeout(prev.timeout);
+		this.active = undefined;
+		return prev;
+	}
+
+	/** Also runs headless: no async timer is ever armed there, so clearActive() finds nothing. */
+	cancel(interactive: boolean) {
+		const prev = this.clearActive();
+		if (prev) return ok(`Cancelled timer "${prev.name}" (${secondsUntil(prev.expiresAt)}s remaining).`);
+		if (!interactive) {
+			return ok(
+				"No timer to cancel: in this mode timer waits inside the tool call, so there is never an armed timer running in the background. A wait in progress ends by aborting that tool call, not by cancelling.",
+			);
+		}
+		return ok("No active timer.");
+	}
+
+	/** Interactive: arm the async wake-up and hand the turn back. */
+	arm(name: string, seconds: number) {
+		const replaced = this.clearActive();
+		const expiresAt = Date.now() + seconds * 1000;
+		const timeout = setTimeout(() => this.expire(name), seconds * 1000);
+		timeout.unref?.();
+		this.active = { name, timeout, expiresAt };
+
+		const fireTime = new Date(expiresAt).toLocaleTimeString();
+		const replacedNote = replaced
+			? ` Replaced timer "${replaced.name}" (${secondsUntil(replaced.expiresAt)}s remaining).`
+			: "";
+		return ok(
+			`Timer "${name}" set — fires in ${seconds}s (${fireTime}).${replacedNote} End your turn now; the expiry message will wake you.`,
+		);
+	}
+
+	expire(name: string) {
+		this.active = undefined;
+		this.awaitingWake = true;
+		this.wakeText = `Timer "${name}" expired. Continue your task.`;
+		this.wakeDelivered = false;
+		this.wakeResends = 0;
+		try {
+			this.pi.sendUserMessage(this.wakeText, { deliverAs: "steer" });
+		} catch (e) {
+			// The wake-up can never arrive: nothing left to watch for.
+			console.warn("[timer] failed to deliver expiry message:", e);
+			this.resetWakeState();
+		}
+	}
+
+	// Watch for the wake-up message actually entering a run: only a settle AFTER
+	// delivery means the wake-up work happened.
+	onMessageStart(message: unknown) {
+		if (!this.awaitingWake || this.wakeDelivered || !this.wakeText) return;
+		const msg = message as { role?: string; content?: unknown };
+		if (msg.role !== "user") return;
+		if (messageText(msg.content).includes(this.wakeText)) this.wakeDelivered = true;
+	}
+
+	onSettled() {
+		if (!this.awaitingWake) return;
+		if (this.wakeDelivered) {
+			// The run containing the wake-up has finished.
+			this.resetWakeState();
+			return;
+		}
+		// Stranded wake-up: the expiry fired between this run's final queue drain and
+		// its settle, so the steer was queued into a loop that had already ended. The
+		// session is idle now — re-send to start the run the expiry meant to trigger.
+		// (The stranded original may be drained too; a duplicate wake-up is harmless.)
+		if (!this.wakeText || this.wakeResends >= MAX_WAKE_RESENDS) {
+			this.resetWakeState();
+			return;
+		}
+		this.wakeResends++;
+		try {
+			this.pi.sendUserMessage(this.wakeText, { deliverAs: "steer" });
+		} catch (e) {
+			console.warn("[timer] failed to re-send stranded wake-up:", e);
+			this.resetWakeState();
+		}
+	}
+}
+
+function registerTimerTool(pi: ExtensionAPI, timer: WakeTimer): void {
+	pi.registerTool({
+		name: "timer",
+		label: "Timer",
+		description:
+			"Wait out a long task (build, tests, deploy, download): start it in the background, then call timer with the full time you need. How the wait works depends on the run mode, and the tool result says which happened: either it blocks for the whole duration and returns when the time is up (continue working then), or it arms a wake-up message and tells you to end your turn. Follow the result text, not this description. One timer; new set replaces old.",
+		parameters: timerParams,
+
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			const interactive = isInteractive(ctx);
+			if (params.action === "cancel") return timer.cancel(interactive);
+
+			// action === "set"
+			if (params.seconds === undefined || params.seconds <= 0) {
+				return err("Error: 'seconds' must be a positive number when action is 'set'.");
+			}
+			const name = params.name?.trim() || "timer";
+			if (!interactive) return blockingWait(name, params.seconds, signal, onUpdate);
+			return timer.arm(name, params.seconds);
+		},
+	});
+}
+
 export default function timerExtension(pi: ExtensionAPI) {
 	// MAIN SESSION ONLY. A child session (Agent tool) is always headless
 	// (bindExtensions({}) → mode "print"), so its timer could only ever take the
@@ -150,161 +321,12 @@ export default function timerExtension(pi: ExtensionAPI) {
 	// Same bind-time ALS guard as wsstate.ts / agent-busy-tracker.ts.
 	if (inChildSession()) return;
 
-	let active: ActiveTimer | undefined;
-	/** Expiry fired, wake-up run not settled yet. */
-	let awaitingWake = false;
-	/** Exact wake-up text sent at expiry; matched against message_start. */
-	let wakeText: string | undefined;
-	/** The wake-up message was observed entering a run. */
-	let wakeDelivered = false;
-	let wakeResends = 0;
-
-	function resetWakeState() {
-		awaitingWake = false;
-		wakeText = undefined;
-		wakeDelivered = false;
-		wakeResends = 0;
-	}
-
-	function clearActive(): ActiveTimer | undefined {
-		const prev = active;
-		if (prev) clearTimeout(prev.timeout);
-		active = undefined;
-		return prev;
-	}
-
+	const timer = new WakeTimer(pi);
 	pi.on("session_shutdown", () => {
-		resetWakeState();
-		clearActive();
+		timer.resetWakeState();
+		timer.clearActive();
 	});
-
-	// Watch for the wake-up message actually entering a run: only a settle AFTER
-	// delivery means the wake-up work happened.
-	pi.on("message_start", (event) => {
-		if (!awaitingWake || wakeDelivered || !wakeText) return;
-		const msg = event.message as { role?: string; content?: unknown };
-		if (msg.role !== "user") return;
-		if (messageText(msg.content).includes(wakeText)) wakeDelivered = true;
-	});
-
-	pi.on("agent_settled", () => {
-		if (!awaitingWake) return;
-		if (wakeDelivered) {
-			// The run containing the wake-up has finished.
-			resetWakeState();
-			return;
-		}
-		// Stranded wake-up: the expiry fired between this run's final queue drain and
-		// its settle, so the steer was queued into a loop that had already ended. The
-		// session is idle now — re-send to start the run the expiry meant to trigger.
-		// (The stranded original may be drained too; a duplicate wake-up is harmless.)
-		if (!wakeText || wakeResends >= MAX_WAKE_RESENDS) {
-			resetWakeState();
-			return;
-		}
-		wakeResends++;
-		try {
-			pi.sendUserMessage(wakeText, { deliverAs: "steer" });
-		} catch (e) {
-			console.warn("[timer] failed to re-send stranded wake-up:", e);
-			resetWakeState();
-		}
-	});
-
-	pi.registerTool({
-		name: "timer",
-		label: "Timer",
-		description:
-			"Wait out a long task (build, tests, deploy, download): start it in the background, then call timer with the full time you need. How the wait works depends on the run mode, and the tool result says which happened: either it blocks for the whole duration and returns when the time is up (continue working then), or it arms a wake-up message and tells you to end your turn. Follow the result text, not this description. One timer; new set replaces old.",
-		parameters: timerParams,
-
-		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			const interactive = isInteractive(ctx);
-			if (params.action === "cancel") {
-				// Also runs headless: no async timer is ever armed there, so clearActive()
-				// finds nothing and the headless explanation below is returned.
-				const prev = clearActive();
-				if (prev) {
-					const remaining = Math.max(0, Math.round((prev.expiresAt - Date.now()) / 1000));
-					return ok(`Cancelled timer "${prev.name}" (${remaining}s remaining).`);
-				}
-				if (!interactive) {
-					return ok(
-						"No timer to cancel: in this mode timer waits inside the tool call, so there is never an armed timer running in the background. A wait in progress ends by aborting that tool call, not by cancelling.",
-					);
-				}
-				return ok("No active timer.");
-			}
-
-			// action === "set"
-			if (params.seconds === undefined || params.seconds <= 0) {
-				return err("Error: 'seconds' must be a positive number when action is 'set'.");
-			}
-
-			const name = params.name?.trim() || "timer";
-
-			if (!interactive) {
-				// Headless: block inside the tool call. The run stays active, so the process
-				// cannot exit and no wake-up (which nothing here could deliver) is promised.
-				const requestedMs = params.seconds * 1000;
-				const maxWaitMs = headlessMaxWaitMs();
-				const waitMs = maxWaitMs > 0 ? Math.min(requestedMs, maxWaitMs) : requestedMs;
-				const startedAt = Date.now();
-				// Progress, so a long block never looks frozen: same channel the child-session
-				// tools use (lib/child-session.ts pushStatus), rendered as a live tool update.
-				const heartbeat = setInterval(() => {
-					const elapsed = Date.now() - startedAt;
-					const remainingS = Math.max(0, Math.round((waitMs - elapsed) / 1000));
-					onUpdate?.(
-						ok(`Timer "${name}": waiting — ${Math.round(elapsed / 1000)}s elapsed, ${remainingS}s remaining.`),
-					);
-				}, heartbeatIntervalMs(waitMs));
-				const { aborted } = await waitOrAbort(waitMs, signal).finally(() => clearInterval(heartbeat));
-				const elapsedS = Math.round((Date.now() - startedAt) / 1000);
-				if (aborted) {
-					return ok(
-						`Timer "${name}" wait aborted after ${elapsedS}s of ${params.seconds}s requested. No timer is left running.`,
-					);
-				}
-				if (waitMs < requestedMs) {
-					// Only reachable with PI_TIMER_MAX_WAIT_S set: loop instead of one long block.
-					const remainingS = Math.max(1, Math.round((requestedMs - waitMs) / 1000));
-					return ok(
-						`Timer "${name}": waited ${elapsedS}s of the ${params.seconds}s requested (one wait is capped at ${Math.round(maxWaitMs / 1000)}s). ${remainingS}s still to go — check the task; if it is not finished, call timer again with seconds: ${remainingS}. Keep working in this turn.`,
-					);
-				}
-				return ok(`Timer "${name}" fired after ${elapsedS}s. Continue your task.`);
-			}
-
-			// Interactive: arm the async wake-up and hand the turn back.
-			const replaced = clearActive();
-			const expiresAt = Date.now() + params.seconds * 1000;
-
-			const timeout = setTimeout(() => {
-				active = undefined;
-				awaitingWake = true;
-				wakeText = `Timer "${name}" expired. Continue your task.`;
-				wakeDelivered = false;
-				wakeResends = 0;
-				try {
-					pi.sendUserMessage(wakeText, { deliverAs: "steer" });
-				} catch (e) {
-					// The wake-up can never arrive: nothing left to watch for.
-					console.warn("[timer] failed to deliver expiry message:", e);
-					resetWakeState();
-				}
-			}, params.seconds * 1000);
-			timeout.unref?.();
-
-			active = { name, timeout, expiresAt };
-
-			const fireTime = new Date(expiresAt).toLocaleTimeString();
-			const replacedNote = replaced
-				? ` Replaced timer "${replaced.name}" (${Math.max(0, Math.round((replaced.expiresAt - Date.now()) / 1000))}s remaining).`
-				: "";
-			return ok(
-				`Timer "${name}" set — fires in ${params.seconds}s (${fireTime}).${replacedNote} End your turn now; the expiry message will wake you.`,
-			);
-		},
-	});
+	pi.on("message_start", (event) => timer.onMessageStart(event.message));
+	pi.on("agent_settled", () => timer.onSettled());
+	registerTimerTool(pi, timer);
 }

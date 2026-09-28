@@ -71,16 +71,7 @@ Structure the final message as:
 1. What you did or found — specific: file paths, line numbers, snippets.
 2. Summary: one sentence the caller can relay.`;
 
-export default function (pi: ExtensionAPI) {
-	// Kill-switch for benchmark runs (context-cap impact study, ~/context-cap-study/plan.html):
-	// non-empty PI_SUBAGENT_DISABLE registers nothing — main and child sessions alike.
-	// Blast radius beyond the Agent tool: this file is also the single registration
-	// point for the child contract injection (before_agent_start), the F2 watch
-	// shortcut and the session_shutdown child-state reset — all of which cover
-	// EXPLORER children too. Setting this var alone degrades explorers; the study
-	// always sets PI_EXPLORE_DISABLE alongside.
-	if (process.env.PI_SUBAGENT_DISABLE) return;
-
+function registerAgentTool(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: AGENT_TOOL,
 		label: "Agent",
@@ -117,7 +108,9 @@ export default function (pi: ExtensionAPI) {
 			return renderChildResult(result, theme, context);
 		},
 	});
+}
 
+function registerChildContract(pi: ExtensionAPI): void {
 	// Delegate-contract injection. The contract lives in the child's SYSTEM prompt,
 	// appended fresh every turn, NOT in its first user message: context-cap's swap
 	// slices the message array at the swap marker, so a first-message contract would
@@ -137,9 +130,9 @@ export default function (pi: ExtensionAPI) {
 			systemPrompt: `${event.systemPrompt}\n\n${contract}`,
 		}));
 	}
+}
 
-	if (inChildSession()) return;
-
+function registerWatchShortcut(pi: ExtensionAPI): void {
 	pi.registerShortcut(WATCH_KEY, {
 		description: "Watch agent sessions (picker when several; running and finished)",
 		handler: async (ctx) => {
@@ -157,6 +150,24 @@ export default function (pi: ExtensionAPI) {
 			await openChildView(ctx, record);
 		},
 	});
+}
+
+export default function (pi: ExtensionAPI) {
+	// Kill-switch for benchmark runs (context-cap impact study, ~/context-cap-study/plan.html):
+	// non-empty PI_SUBAGENT_DISABLE registers nothing — main and child sessions alike.
+	// Blast radius beyond the Agent tool: this file is also the single registration
+	// point for the child contract injection (before_agent_start), the F2 watch
+	// shortcut and the session_shutdown child-state reset — all of which cover
+	// EXPLORER children too. Setting this var alone degrades explorers; the study
+	// always sets PI_EXPLORE_DISABLE alongside.
+	if (process.env.PI_SUBAGENT_DISABLE) return;
+
+	registerAgentTool(pi);
+	registerChildContract(pi);
+
+	if (inChildSession()) return;
+
+	registerWatchShortcut(pi);
 
 	pi.on("session_shutdown", () => {
 		// Counters too, not just records: the busy latch is normally released by each
