@@ -284,6 +284,10 @@ verify_sha256() { # <file> <expected-sha256>; sha256sum (Linux) or shasum (macOS
 
 install_rtk_from_url() { # <download-url> <expected-sha256>
     local url="$1" sha256="$2" download extract_dir extracted_rtk
+    if [ -z "$sha256" ]; then
+        echo "ERROR: no pinned SHA-256 for $url; rtk not downloaded"
+        return 1
+    fi
     mkdir -p "$HOME/.local/bin"
     download="$(mktemp)"
     if ! curl -fsSL "$url" -o "$download"; then
@@ -292,7 +296,7 @@ install_rtk_from_url() { # <download-url> <expected-sha256>
         return 1
     fi
     if ! verify_sha256 "$download" "$sha256"; then
-        echo "ERROR: rtk download failed SHA-256 verification (expected ${sha256:-<none>} for $url); not installed"
+        echo "ERROR: rtk download failed SHA-256 verification (expected $sha256 for $url); not installed"
         rm -f "$download"
         return 1
     fi
@@ -355,7 +359,7 @@ install_rtk() {
             echo "WARN: no rtk release asset for $os/$arch; install manually: https://github.com/rtk-ai/rtk"
         elif install_rtk_from_url "$(rtk_release_url "$asset")" "$(rtk_asset_sha256 "$asset")"; then
             rtk_bin="$HOME/.local/bin/rtk"
-            echo "INSTALLED: rtk $("$rtk_bin" --version 2>/dev/null || echo '?')"
+            echo "INSTALLED: $("$rtk_bin" --version 2>/dev/null || echo 'rtk ?')"
         fi
     fi
     if [ -n "$rtk_bin" ]; then

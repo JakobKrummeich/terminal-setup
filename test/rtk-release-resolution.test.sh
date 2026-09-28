@@ -78,7 +78,7 @@ assert_not_installed() { # <home> <what>
 # ── checksum match → installed + linked ────────────────────────────
 output="$(run_install "$FIXTURE/home")"
 [[ "$output" == *"Installing rtk $RTK_VERSION"* ]] || fail "expected pinned-version banner, got: $output"
-[[ "$output" == *"INSTALLED: rtk rtk $RTK_VERSION"* ]] || fail "expected RTK installation, got: $output"
+[[ "$output" == *"INSTALLED: rtk $RTK_VERSION"* ]] || fail "expected RTK installation, got: $output"
 [ -x "$FIXTURE/home/.local/bin/rtk" ] || fail "RTK tarball binary was not installed"
 [ "$(readlink "$FIXTURE/home/.pi/agent/bin/rtk")" = "$FIXTURE/home/.local/bin/rtk" ] || fail "RTK link points to wrong target"
 grep -qF "$RTK_ASSET_URL" "$CURL_LOG" || fail "download did not use the pinned URL: $(cat "$CURL_LOG")"
@@ -92,8 +92,10 @@ assert_not_installed "$FIXTURE/mismatch" "checksum mismatch"
 
 # ── no pinned hash for the asset → fail closed too ─────────────────
 rtk_asset_sha256() { :; }
+: > "$CURL_LOG"
 output="$(run_install "$FIXTURE/no-hash")"
-[[ "$output" == *"ERROR: rtk download failed SHA-256 verification (expected <none>"* ]] || fail "expected missing-hash error, got: $output"
+[[ "$output" == *"ERROR: no pinned SHA-256 for $RTK_ASSET_URL; rtk not downloaded"* ]] || fail "expected missing-hash error, got: $output"
+[ ! -s "$CURL_LOG" ] || fail "missing hash must be rejected before downloading: $(cat "$CURL_LOG")"
 assert_not_installed "$FIXTURE/no-hash" "missing hash"
 rtk_asset_sha256() { echo "$FIXTURE_SHA256"; }
 
