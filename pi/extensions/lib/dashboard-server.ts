@@ -43,6 +43,7 @@ import {
 	type TranscriptAnchor,
 	type TranscriptResponse,
 } from "./dashboard-api.ts";
+import type { CodeVersion } from "./dashboard-version.ts";
 import { parseTranscript, readSessionStats } from "./session-transcript.ts";
 
 /** Literal extension → content-type map for the static UI files. */
@@ -89,6 +90,8 @@ export interface DashboardServerOptions {
 	 * Default false — embedded servers (tests) must never hold their host up.
 	 */
 	keepProcessAlive?: boolean;
+	/** Served as /api/meta codeHash/codeRoot; the daemon passes computeCodeVersion(). */
+	codeVersion?: CodeVersion;
 }
 
 export interface DashboardServer {
@@ -106,6 +109,7 @@ interface ServerContext {
 	uiDir: string;
 	sseDebounceMs: number;
 	startedAt: number;
+	codeVersion: CodeVersion | undefined;
 }
 
 /** Resolves once listening (or once EADDRINUSE is known); rejects on other errors. */
@@ -115,6 +119,7 @@ export function startDashboardServer(options: DashboardServerOptions): Promise<S
 		uiDir: path.resolve(options.uiDir ?? defaultUiDir(process.env)),
 		sseDebounceMs: options.sseDebounceMs ?? 500,
 		startedAt: Date.now(),
+		codeVersion: options.codeVersion,
 	};
 	const keepProcessAlive = options.keepProcessAlive ?? false;
 	const sockets = new Set<Socket>();
@@ -233,6 +238,8 @@ function handleMeta(res: ServerResponse, ctx: ServerContext): void {
 		sessionsRoot: ctx.sessionsRoot,
 		pid: process.pid,
 		startedAt: ctx.startedAt,
+		codeHash: ctx.codeVersion?.hash,
+		codeRoot: ctx.codeVersion?.root,
 	};
 	json(res, 200, body);
 }

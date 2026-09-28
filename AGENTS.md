@@ -76,6 +76,9 @@ Read `README.md` first — layout, install, known issues live there. Don't dupli
   - jscpd — ≤ 1% copy-paste (≥ 50 tokens) in production TS/JS + bash.
   - shellcheck — installers, `lib/`, `shell/`, `tmux/`, shell tests, test scripts.
     Silence a finding only per line: `# shellcheck disable=SCxxxx # reason`.
+  - lua syntax — `tools/lua-syntax.mjs` (luaparse, Lua 5.3 grammar) parses every
+    `wezterm/*.lua`: they are live, and no lua binary is installed. Lua 5.4 local
+    attributes (`<const>`/`<close>`) fail it — extend the checker, don't drop it.
 - **ESLint ratchet:** `tools/eslint-suppressions.json` froze the pre-gate
   `complexity`/`max-lines`/`max-lines-per-function` offenders; all are split now
   and the file is empty (`{}`) — keep it that way. NEVER add to it (no
@@ -87,7 +90,10 @@ Read `README.md` first — layout, install, known issues live there. Don't dupli
 - bump a gate tool: `cd pi/extensions/test/tools && npm install --prefix . --save-exact <pkg>@<version>`,
   commit `package.json` + `package-lock.json`, re-run `./check.sh`. Keep
   typescript < 6.1 (typescript-eslint 8 peer range). The shellcheck binary version
-  is `SHELLCHECK_RELEASE` in check.sh (the npm wrapper would fetch "latest").
+  is `SHELLCHECK_RELEASE` in check.sh (the npm wrapper would fetch "latest");
+  bumping it also means re-pinning the per-platform binary SHA-256s in
+  `shellcheck_sha256` (derive them from the GitHub release tarballs, not from
+  the wrapper's download) — check.sh fails closed on a mismatch or unpinned platform.
   Never add a package.json to the repo root or `pi/extensions/` itself (pi's loader).
 
 ## Shipping

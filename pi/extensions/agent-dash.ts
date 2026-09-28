@@ -9,16 +9,20 @@
  *  2. Probe the machine-global dashboard daemon (pi/dashboard-daemon.mjs,
  *     systemd user unit pi-dash.service) once per process and print its URL.
  *     pi itself NEVER serves the dashboard (spec decisions 6/7): the daemon
- *     owns port PI_AGENT_DASH_PORT (default 7357) machine-wide.
+ *     owns port PI_AGENT_DASH_PORT (default 7357) machine-wide. When the
+ *     daemon runs stale code of this same checkout (e.g. after a git pull),
+ *     restart its unit (lib/dashboard-staleness.ts).
  *
  * The probe is SKIPPED when PI_OFFLINE or PI_AGENT_DASH_DISABLE is set: the
  * test suite exports PI_OFFLINE=1 (test/run.sh) and must not touch sockets;
- * PI_AGENT_DASH_DISABLE is the user-facing opt-out.
+ * PI_AGENT_DASH_DISABLE is the user-facing opt-out. PI_AGENT_DASH_SYSTEMCTL
+ * swaps the systemctl binary used for the stale-code restart (tests' stub).
  */
 import http from "node:http";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { appendEvent } from "./lib/agent-runs.ts";
 import { inChildSession } from "./lib/child-context.ts";
+import { assessDaemon, type DaemonCode, ownCheckoutVersion, restartDaemonUnit } from "./lib/dashboard-staleness.ts";
 import { sharedState } from "./lib/shared-state.ts";
 
 const DEFAULT_PORT = 7357;
@@ -45,13 +49,24 @@ function dashPort(env: NodeJS.ProcessEnv): number {
 	return Number.isInteger(port) && port > 0 ? port : DEFAULT_PORT;
 }
 
+function optionalString(value: unknown): string | undefined {
+	return typeof value === "string" ? value : undefined;
+}
+
+/** /api/meta body → DaemonCode; null when it isn't the daemon's shape. Throws on non-JSON. */
+function parseMeta(body: string): DaemonCode | null {
+	const meta = JSON.parse(body) as Record<string, unknown> | null;
+	if (typeof meta?.hostname !== "string") return null;
+	return { hostname: meta.hostname, codeHash: optionalString(meta.codeHash), codeRoot: optionalString(meta.codeRoot) };
+}
+
 /**
- * GET /api/meta from the daemon on localhost; resolves the daemon's hostname,
- * or null when nothing (or something that isn't the daemon) answers within
- * ~1s. agent:false — no keep-alive client socket may outlive the probe
+ * GET /api/meta from the daemon on localhost; resolves its meta, or null when
+ * nothing (or something that isn't the daemon) answers within ~1s.
+ * agent:false — no keep-alive client socket may outlive the probe
  * (AGENTS.md: lingering sockets hang the test suite).
  */
-function probeDaemon(port: number): Promise<{ hostname: string } | null> {
+function probeDaemon(port: number): Promise<DaemonCode | null> {
 	return new Promise((resolve) => {
 		const req = http.get(
 			{ host: "127.0.0.1", port, path: "/api/meta", agent: false, timeout: PROBE_TIMEOUT_MS },
@@ -61,8 +76,7 @@ function probeDaemon(port: number): Promise<{ hostname: string } | null> {
 				res.on("end", () => {
 					if (res.statusCode !== 200) return resolve(null);
 					try {
-						const meta = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { hostname?: unknown };
-						resolve(typeof meta.hostname === "string" ? { hostname: meta.hostname } : null);
+						resolve(parseMeta(Buffer.concat(chunks).toString("utf8")));
 					} catch {
 						resolve(null); // squatter speaking non-JSON on our port
 					}
@@ -75,16 +89,28 @@ function probeDaemon(port: number): Promise<{ hostname: string } | null> {
 	});
 }
 
+/** URL notify, then — if the daemon runs stale code of this checkout — restart it and report. */
+async function reportDaemon(ctx: ExtensionContext, port: number, meta: DaemonCode | null): Promise<void> {
+	if (!meta) {
+		ctx.ui.notify("agent dashboard daemon not running — re-run install-pi.sh to enable it", "warning");
+		return;
+	}
+	const staleness = assessDaemon(meta, ownCheckoutVersion(process.env));
+	const note = staleness.kind === "foreign" ? `; daemon runs code from ${staleness.where}, not this checkout` : "";
+	ctx.ui.notify(`agent dashboard: http://localhost:${port}/ (host ${meta.hostname}${note})`, "info");
+	if (staleness.kind !== "stale") return;
+	const failure = await restartDaemonUnit(process.env);
+	if (failure === null) ctx.ui.notify("dashboard daemon was running stale code — restarted", "info");
+	else ctx.ui.notify(`dashboard daemon was running stale code; restart failed: ${failure} — re-run install-pi.sh`, "warning");
+}
+
 function maybeProbeDaemon(ctx: ExtensionContext): void {
 	if (process.env.PI_OFFLINE || process.env.PI_AGENT_DASH_DISABLE) return;
 	const state = dashState();
 	if (state.probeAttempted) return;
 	state.probeAttempted = true;
 	const port = dashPort(process.env);
-	void probeDaemon(port).then((meta) => {
-		if (meta) ctx.ui.notify(`agent dashboard: http://localhost:${port}/ (host ${meta.hostname})`, "info");
-		else ctx.ui.notify("agent dashboard daemon not running — re-run install-pi.sh to enable it", "warning");
-	});
+	void probeDaemon(port).then((meta) => reportDaemon(ctx, port, meta));
 }
 
 export default function agentDashExtension(pi: ExtensionAPI) {

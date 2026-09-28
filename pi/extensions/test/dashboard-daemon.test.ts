@@ -13,10 +13,14 @@
  *    gate is covered in dashboard-server.test.ts.) The probe tests clear
  *    PI_OFFLINE around the handler call — safe because tests in one file run
  *    sequentially — and reset agent-dash's globalThis once-guard between runs.
+ *  - stale-code restart: /api/meta reports the daemon's codeHash/codeRoot;
+ *    agent-dash restarts the unit (PI_AGENT_DASH_SYSTEMCTL → a stub script
+ *    that logs its argv, set for the WHOLE file so no test can ever reach the
+ *    real systemctl) iff the daemon runs other code from this same checkout.
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import { hostname, tmpdir } from "node:os";
@@ -29,15 +33,28 @@ import { fileURLToPath } from "node:url";
 process.env.PI_CODING_AGENT_DIR = mkdtempSync(path.join(tmpdir(), "pi-daemon-agentdir-"));
 process.env.PI_CODING_AGENT_SESSION_DIR = mkdtempSync(path.join(tmpdir(), "pi-daemon-sessions-"));
 process.env.PI_OFFLINE = "1";
+const STUB_DIR = mkdtempSync(path.join(tmpdir(), "pi-daemon-systemctl-"));
+const SYSTEMCTL_LOG = path.join(STUB_DIR, "calls.log");
+const SYSTEMCTL_STUB = path.join(STUB_DIR, "systemctl");
+// Logs argv; STUB_SYSTEMCTL_FAIL=1 makes it fail like a missing user bus.
+writeFileSync(
+	SYSTEMCTL_STUB,
+	`#!/bin/sh\necho "$*" >> '${SYSTEMCTL_LOG}'\n` +
+		`if [ -n "$STUB_SYSTEMCTL_FAIL" ]; then echo 'Failed to connect to bus: No medium found' >&2; exit 1; fi\n`,
+);
+chmodSync(SYSTEMCTL_STUB, 0o755);
+process.env.PI_AGENT_DASH_SYSTEMCTL = SYSTEMCTL_STUB;
 
 import * as agentDashModule from "../agent-dash.ts";
 import type { MetaResponse, SessionsResponse } from "../lib/dashboard-api.ts";
 import { startDashboardServer } from "../lib/dashboard-server.ts";
+import { type CodeVersion, computeCodeVersion } from "../lib/dashboard-version.ts";
 import { sleep } from "./harness.ts";
 import { at } from "./assert-helpers.ts";
 
 const TEST_DIR = fileURLToPath(new URL(".", import.meta.url));
 const DAEMON = path.resolve(TEST_DIR, "../../dashboard-daemon.mjs");
+const REPO_ROOT = realpathSync(path.resolve(TEST_DIR, "../../.."));
 /** agent-dash's cross-copy once-guard (same literal key — bump both together). */
 const STATE_KEY = Symbol.for("terminal-setup.agent-dash.v2");
 
@@ -71,6 +88,9 @@ test("dashboard-daemon.mjs: plain node serves /api/meta and /api/sessions (pi-fr
 			PI_AGENT_DASH_PORT: "0", // ephemeral — never squat 7357 from the suite
 			PI_AGENT_DASH_HOST: "127.0.0.1",
 			PI_AGENT_DASH_SESSIONS_ROOT: root,
+			// If run.sh's timeout SIGKILLs this test process, `finally` never runs:
+			// the lever makes the daemon exit on its own instead of lingering.
+			PI_AGENT_DASH_EXIT_WITH_PARENT: "1",
 		},
 		stdio: ["ignore", "pipe", "pipe"],
 	});
@@ -95,6 +115,9 @@ test("dashboard-daemon.mjs: plain node serves /api/meta and /api/sessions (pi-fr
 		assert.equal(meta.hostname, hostname());
 		assert.equal(meta.sessionsRoot, root, "daemon serves the env-selected sessions root");
 		assert.equal(meta.pid, child.pid, "meta.pid is the daemon subprocess, not us");
+		assert.match(meta.codeHash ?? "", /^[0-9a-f]{64}$/, "codeHash is a sha256 hex digest");
+		assert.equal(meta.codeRoot, REPO_ROOT, "codeRoot is the daemon's own checkout");
+		assert.equal(meta.codeHash, computeCodeVersion(REPO_ROOT).hash, "same code on disk → same hash");
 		const sessions = await getJson<SessionsResponse>(port, "/api/sessions");
 		assert.deepEqual(sessions.sessions, [], "empty root → empty list over the daemon");
 	} finally {
@@ -103,6 +126,68 @@ test("dashboard-daemon.mjs: plain node serves /api/meta and /api/sessions (pi-fr
 			if (child.exitCode !== null) return resolve();
 			child.once("exit", () => resolve());
 		});
+	}
+});
+
+// --- no orphans: PI_AGENT_DASH_EXIT_WITH_PARENT ------------------------------
+
+/** Live and not a zombie (an unreaped zombie still answers kill(pid, 0)). */
+function processAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+	} catch {
+		return false;
+	}
+	try {
+		// /proc/<pid>/stat: "pid (comm) S ..." — state follows the last ')'.
+		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+		return stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) !== "Z";
+	} catch {
+		return false; // vanished between the two checks
+	}
+}
+
+/** Stand-in for a test process: spawns the daemon, prints its pid once it serves, then idles. */
+const INTERMEDIATE = `
+const { spawn } = require("node:child_process");
+const daemon = spawn(process.execPath, [process.argv[1]], { stdio: ["ignore", "pipe", "inherit"] });
+let out = "";
+daemon.stdout.setEncoding("utf8").on("data", (chunk) => {
+	out += chunk;
+	if (out.includes("pi-dash: serving")) console.log("daemon-pid " + daemon.pid);
+});
+`;
+
+test("dashboard-daemon.mjs: PI_AGENT_DASH_EXIT_WITH_PARENT → daemon exits when its parent is SIGKILLed", async () => {
+	const intermediate = spawn(process.execPath, ["-e", INTERMEDIATE, DAEMON], {
+		env: {
+			...process.env,
+			PI_AGENT_DASH_PORT: "0",
+			PI_AGENT_DASH_HOST: "127.0.0.1",
+			PI_AGENT_DASH_SESSIONS_ROOT: mkdtempSync(path.join(tmpdir(), "pi-daemon-orphan-root-")),
+			PI_AGENT_DASH_EXIT_WITH_PARENT: "1",
+		},
+		stdio: ["ignore", "pipe", "inherit"],
+	});
+	let stdout = "";
+	intermediate.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
+	let daemonPid: number | null = null;
+	try {
+		const deadline = Date.now() + 10_000;
+		while (daemonPid === null && Date.now() < deadline) {
+			const match = /daemon-pid (\d+)/.exec(stdout);
+			if (match) daemonPid = Number(match[1]);
+			else await sleep(50);
+		}
+		assert.ok(daemonPid, `daemon never came up; intermediate stdout=${JSON.stringify(stdout)}`);
+		assert.ok(processAlive(daemonPid), "daemon runs while its parent lives");
+		intermediate.kill("SIGKILL"); // what run.sh's `timeout` does to a hung test file
+		const gone = Date.now() + 5000;
+		while (processAlive(daemonPid) && Date.now() < gone) await sleep(100);
+		assert.equal(processAlive(daemonPid), false, "daemon must exit within 5s of its parent's SIGKILL");
+	} finally {
+		if (intermediate.exitCode === null && intermediate.signalCode === null) intermediate.kill("SIGKILL");
+		if (daemonPid !== null && processAlive(daemonPid)) process.kill(daemonPid, "SIGKILL");
 	}
 });
 
@@ -135,15 +220,15 @@ function fakeCtx(notifications: string[]) {
 	};
 }
 
-async function awaitNotification(notifications: string[]): Promise<string> {
+async function awaitNotifications(notifications: string[], count: number): Promise<string> {
 	const deadline = Date.now() + 5000;
-	while (notifications.length === 0 && Date.now() < deadline) await sleep(20);
-	assert.ok(notifications.length > 0, "probe must notify within 5s");
+	while (notifications.length < count && Date.now() < deadline) await sleep(20);
+	assert.ok(notifications.length >= count, `probe must notify ${count}x within 5s; got ${JSON.stringify(notifications)}`);
 	return at(notifications, 0);
 }
 
 /** Run one probe against `port` with PI_OFFLINE lifted; restores env + guard. */
-async function runProbe(port: number, notifications: string[], secondStart = false): Promise<void> {
+async function runProbe(port: number, notifications: string[], secondStart = false, expected = 1): Promise<void> {
 	const handlers = bindAgentDash();
 	const savedOffline = process.env.PI_OFFLINE;
 	process.env.PI_AGENT_DASH_PORT = String(port);
@@ -151,7 +236,7 @@ async function runProbe(port: number, notifications: string[], secondStart = fal
 	resetProbeGuard();
 	try {
 		handlers.get("session_start")!({ type: "session_start", reason: "startup" }, fakeCtx(notifications));
-		await awaitNotification(notifications);
+		await awaitNotifications(notifications, expected);
 		if (secondStart) {
 			// /new, /resume etc. re-fire session_start — the probe must not repeat.
 			handlers.get("session_start")!({ type: "session_start", reason: "new" }, fakeCtx(notifications));
@@ -195,4 +280,121 @@ test("agent-dash probe: nothing listening → install hint", async () => {
 	const notifications: string[] = [];
 	await runProbe(port, notifications);
 	assert.deepEqual(notifications, ["agent dashboard daemon not running — re-run install-pi.sh to enable it"]);
+});
+
+// --- stale-code restart ------------------------------------------------------
+
+function systemctlCalls(): string[] {
+	return existsSync(SYSTEMCTL_LOG) ? readFileSync(SYSTEMCTL_LOG, "utf8").split("\n").filter(Boolean) : [];
+}
+
+/**
+ * Probe an in-process daemon stand-in serving `codeVersion`, with the agent
+ * dir's extensions/ linked to this checkout (how install-pi.sh links it) so
+ * agent-dash can hash "its own" code. Returns notifications + systemctl calls.
+ */
+async function probeWithCode(
+	codeVersion: CodeVersion | undefined,
+	expected: number,
+): Promise<{ port: number; notifications: string[]; calls: string[] }> {
+	const result = await startDashboardServer({
+		sessionsRoot: mkdtempSync(path.join(tmpdir(), "pi-daemon-stale-root-")),
+		port: 0,
+		host: "127.0.0.1",
+		codeVersion,
+	});
+	assert.ok(result.started, "in-process daemon stand-in must bind");
+	try {
+		return { port: result.server.port, ...(await probeLinked(result.server.port, expected)) };
+	} finally {
+		await result.server.close();
+	}
+}
+
+/** Probe `port` with the agent dir's extensions/ linked to this checkout. */
+async function probeLinked(port: number, expected: number): Promise<{ notifications: string[]; calls: string[] }> {
+	const link = path.join(process.env.PI_CODING_AGENT_DIR!, "extensions");
+	symlinkSync(path.join(REPO_ROOT, "pi", "extensions"), link);
+	rmSync(SYSTEMCTL_LOG, { force: true });
+	const notifications: string[] = [];
+	try {
+		await runProbe(port, notifications, false, expected);
+		await sleep(200); // a wrongly-fired restart would land in the log by now
+	} finally {
+		rmSync(link);
+	}
+	return { notifications, calls: systemctlCalls() };
+}
+
+/** Probe a bare /api/meta stand-in (e.g. another host's daemon behind an `ssh -L` tunnel). */
+async function probeWithMeta(meta: Record<string, unknown>, expected: number) {
+	const server = http.createServer((_req, res) => {
+		res.setHeader("content-type", "application/json");
+		res.end(JSON.stringify(meta));
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const port = (server.address() as net.AddressInfo).port;
+	try {
+		return { port, ...(await probeLinked(port, expected)) };
+	} finally {
+		server.closeAllConnections();
+		await new Promise((resolve) => server.close(resolve));
+	}
+}
+
+const RESTART_CALL = "--user try-restart pi-dash.service";
+
+test("agent-dash stale check: same checkout, different hash → try-restart once", async () => {
+	const { port, notifications, calls } = await probeWithCode({ root: REPO_ROOT, hash: "0".repeat(64) }, 2);
+	assert.deepEqual(calls, [RESTART_CALL]);
+	assert.deepEqual(notifications, [
+		`agent dashboard: http://localhost:${port}/ (host ${hostname()})`,
+		"dashboard daemon was running stale code — restarted",
+	]);
+});
+
+test("agent-dash stale check: old daemon without codeHash/codeRoot counts as stale", async () => {
+	const { notifications, calls } = await probeWithCode(undefined, 2);
+	assert.deepEqual(calls, [RESTART_CALL]);
+	assert.equal(at(notifications, 1), "dashboard daemon was running stale code — restarted");
+});
+
+test("agent-dash stale check: failed restart → warning with reason + install hint", async () => {
+	process.env.STUB_SYSTEMCTL_FAIL = "1";
+	try {
+		const { notifications, calls } = await probeWithCode({ root: REPO_ROOT, hash: "0".repeat(64) }, 2);
+		assert.deepEqual(calls, [RESTART_CALL]);
+		assert.equal(
+			at(notifications, 1),
+			"dashboard daemon was running stale code; restart failed: Failed to connect to bus: No medium found — re-run install-pi.sh",
+		);
+	} finally {
+		delete process.env.STUB_SYSTEMCTL_FAIL;
+	}
+});
+
+test("agent-dash stale check: matching hash → no restart", async () => {
+	const { port, notifications, calls } = await probeWithCode(computeCodeVersion(REPO_ROOT), 1);
+	assert.deepEqual(calls, []);
+	assert.deepEqual(notifications, [`agent dashboard: http://localhost:${port}/ (host ${hostname()})`]);
+});
+
+test("agent-dash stale check: daemon from another checkout → no restart, noted in the URL notify", async () => {
+	const foreign = realpathSync(mkdtempSync(path.join(tmpdir(), "pi-daemon-foreign-checkout-")));
+	const { port, notifications, calls } = await probeWithCode({ root: foreign, hash: "0".repeat(64) }, 1);
+	assert.deepEqual(calls, []);
+	assert.deepEqual(notifications, [
+		`agent dashboard: http://localhost:${port}/ (host ${hostname()}; daemon runs code from ${foreign}, not this checkout)`,
+	]);
+});
+
+test("agent-dash stale check: daemon on another host (same checkout path) → no restart", async () => {
+	const remote = `${hostname()}-remote`;
+	for (const code of [{ codeRoot: REPO_ROOT, codeHash: "0".repeat(64) }, {}]) {
+		const { port, notifications, calls } = await probeWithMeta({ hostname: remote, ...code }, 1);
+		assert.deepEqual(calls, []);
+		assert.deepEqual(notifications, [
+			`agent dashboard: http://localhost:${port}/ (host ${remote}; daemon runs code from host ${remote}, not this checkout)`,
+		]);
+	}
 });
