@@ -23,7 +23,6 @@ type RegisteredTool = {
 interface BoundExtension {
 	handlers: Map<string, Handler>;
 	tool: RegisteredTool;
-	sentMarkers: unknown[];
 	notifications: string[];
 	statuses: string[];
 	ctx: ExtensionContext & { signal: AbortSignal };
@@ -43,9 +42,8 @@ function assistant(id: string, stopReason: "toolUse" | "stop", totalTokens: numb
 	};
 }
 
-function boundary(message: unknown, outcome = "completed", actionable = true) {
-	const base = { type: "turn_end", message, toolResults: [{}], outcome };
-	return actionable ? { ...base, entries: [], context: {}, continue: false } : base;
+function boundary(message: unknown, outcome = "completed") {
+	return { type: "turn_end", message, toolResults: [{}], outcome, entries: [], context: {}, continue: false };
 }
 
 async function bindExtension(): Promise<BoundExtension> {
@@ -56,7 +54,6 @@ async function bindExtension(): Promise<BoundExtension> {
 	const extension = typeof defaultValue === "function" ? defaultValue : defaultValue.default;
 	const handlers = new Map<string, Handler>();
 	let tool: RegisteredTool | undefined;
-	const sentMarkers: unknown[] = [];
 	const notifications: string[] = [];
 	const statuses: string[] = [];
 	const sessionId = `staged-boundary-${process.pid}-${Math.random().toString(16).slice(2)}`;
@@ -65,7 +62,6 @@ async function bindExtension(): Promise<BoundExtension> {
 		registerTool: (registered: RegisteredTool) => {
 			tool = registered;
 		},
-		sendMessage: (message: unknown) => void sentMarkers.push(message),
 		sendUserMessage: () => {},
 	};
 	extension(pi);
@@ -82,14 +78,13 @@ async function bindExtension(): Promise<BoundExtension> {
 		},
 		signal: new AbortController().signal,
 		getContextUsage: () => ({ tokens: 60, contextWindow: 1_000_000, percent: 0 }),
-		isIdle: () => true,
 		sessionManager: { getSessionId: () => sessionId, getSessionDir: () => "" },
 		ui: {
 			setStatus: (_key: string, status: string) => void statuses.push(status),
 			notify: (message: string) => void notifications.push(message),
 		},
 	} as unknown as BoundExtension["ctx"];
-	return { handlers, tool, sentMarkers, notifications, statuses, ctx, sessionId };
+	return { handlers, tool, notifications, statuses, ctx, sessionId };
 }
 
 async function stageHardSwap(bound: BoundExtension) {
@@ -106,7 +101,7 @@ async function stageHardSwap(bound: BoundExtension) {
 	return source;
 }
 
-async function finishPreservedCycle(bound: BoundExtension, actionable = true) {
+async function finishPreservedCycle(bound: BoundExtension) {
 	const message = assistant("recovery", "toolUse", 10);
 	await bound.handlers.get("message_end")!({ type: "message_end", message }, bound.ctx);
 	const toolResult = await bound.tool.execute(
@@ -117,7 +112,7 @@ async function finishPreservedCycle(bound: BoundExtension, actionable = true) {
 		bound.ctx,
 	);
 	assert.notEqual(toolResult.isError, true, "discarding stage must preserve armed handoff cycle");
-	return await bound.handlers.get("turn_end")!(boundary(message, "completed", actionable), bound.ctx);
+	return await bound.handlers.get("turn_end")!(boundary(message), bound.ctx);
 }
 
 function cleanup(bound: BoundExtension) {
@@ -138,7 +133,6 @@ for (const failure of ["aborted outcome", "error outcome", "aborted signal"] as 
 			const outcome = failure === "error outcome" ? "error" : failure === "aborted outcome" ? "aborted" : "completed";
 			const rejected = await bound.handlers.get("turn_end")!(boundary(source, outcome), bound.ctx);
 			assert.equal(rejected, undefined, "bad boundary must request no continuation or entries");
-			assert.equal(bound.sentMarkers.length, 0, "bad boundary must send no legacy marker");
 			assert.equal(bound.notifications.filter((text) => text.includes("context swapped")).length, 0);
 			assert.equal(bound.statuses.filter((status) => status.startsWith("swapped/")).length, 0);
 
@@ -155,29 +149,19 @@ for (const failure of ["aborted outcome", "error outcome", "aborted signal"] as 
 }
 
 test("staged swap ignores a mismatched boundary without resetting its cycle", async () => {
-	for (const actionable of [true, false]) {
-		const bound = await bindExtension();
-		try {
-			await stageHardSwap(bound);
-			const other = assistant("other", "stop", 10);
-			const rejected = await bound.handlers.get("turn_end")!(boundary(other, "completed", actionable), bound.ctx);
-			assert.equal(rejected, undefined, "mismatched boundary must request no continuation or entries");
-			assert.equal(bound.sentMarkers.length, 0, "mismatched boundary must send no marker");
+	const bound = await bindExtension();
+	try {
+		await stageHardSwap(bound);
+		const other = assistant("other", "stop", 10);
+		const rejected = await bound.handlers.get("turn_end")!(boundary(other), bound.ctx);
+		assert.equal(rejected, undefined, "mismatched boundary must request no continuation or entries");
 
-			const recovered = (await finishPreservedCycle(bound, actionable)) as
-				| { entries?: unknown[]; continue?: boolean }
-				| undefined;
-			if (actionable) {
-				assert.equal(recovered?.continue, true);
-				assert.equal(recovered?.entries?.length, 1);
-			} else {
-				assert.equal(recovered, undefined);
-				assert.equal(bound.sentMarkers.length, 1, "legacy boundary sends exactly one marker");
-			}
-			assert.equal(bound.notifications.filter((text) => text.includes("context swapped")).length, 1);
-			assert.equal(bound.statuses.filter((status) => status.startsWith("swapped/")).length, 1);
-		} finally {
-			cleanup(bound);
-		}
+		const recovered = (await finishPreservedCycle(bound)) as { entries?: unknown[]; continue?: boolean } | undefined;
+		assert.equal(recovered?.continue, true);
+		assert.equal(recovered?.entries?.length, 1);
+		assert.equal(bound.notifications.filter((text) => text.includes("context swapped")).length, 1);
+		assert.equal(bound.statuses.filter((status) => status.startsWith("swapped/")).length, 1);
+	} finally {
+		cleanup(bound);
 	}
 });

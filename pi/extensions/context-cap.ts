@@ -29,7 +29,8 @@
  *    than not having it.
  *    Sequencing: message_end/turn_end handlers are awaited all the way down
  *    (extensions/runner.js emit → agent-session `_handleAgentEvent` →
- *    pi-agent-core `processEvents`, which awaits each listener; agent-loop.js
+ *    pi-agent-core `processEvents`, which awaits each listener; turn_end runs
+ *    via runner.js emitBoundary from the agent's awaited finishTurn hook; agent-loop.js
  *    awaits the message_end emit BEFORE executing that message's tool calls and
  *    the turn_end emit before draining the steering queue). So awaiting an LLM
  *    call inside message_end stalls the loop instead of racing it — there is no
@@ -116,7 +117,12 @@
  * Full soft-cap cycle (steer → handoff write → swap) live-tested with lowered caps 2026-07-09.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	TurnEndEvent,
+	TurnEndEventResult,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -505,18 +511,6 @@ interface StagedSwap {
 	sourceMessage: unknown;
 }
 
-interface ActionableTurnBoundary {
-	entries: unknown[];
-	context: unknown;
-	continue: boolean;
-}
-
-function isActionableTurnBoundary(event: unknown): event is ActionableTurnBoundary {
-	if (!event || typeof event !== "object") return false;
-	const candidate = event as Partial<ActionableTurnBoundary>;
-	return Array.isArray(candidate.entries) && "context" in candidate && typeof candidate.continue === "boolean";
-}
-
 export default function contextCapExtension(pi: ExtensionAPI) {
 	let phase: Phase = "idle";
 	let expectedPath: string | undefined;
@@ -624,9 +618,9 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 	}
 
 	/**
-	 * Prepare a persistent marker for the imminent turn_end. Pi 0.87 makes that
-	 * boundary actionable, so injecting a steer from inside it loops; older Pi
-	 * still needs the legacy sendMessage transport after the boundary arrives.
+	 * Prepare a persistent marker for the imminent turn_end. The marker is committed
+	 * as a boundary entry of that turn_end (commitStagedSwap), not injected as a
+	 * steer: sending a message from inside the boundary loops.
 	 */
 	function stageSwap(
 		ctx: ExtensionContext,
@@ -672,38 +666,25 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		};
 	}
 
-	function commitStagedSwap(ctx: ExtensionContext, event: unknown) {
+	function commitStagedSwap(ctx: ExtensionContext, event: TurnEndEvent): TurnEndEventResult | undefined {
 		if (!stagedSwap) return undefined;
 		const swap = stagedSwap;
 		stagedSwap = null;
 		resetCycle();
 
-		let boundaryResult: { entries: unknown[]; continue: true } | undefined;
-		if (isActionableTurnBoundary(event)) {
-			boundaryResult = {
-				entries: [
-					...event.entries,
-					{
-						type: "custom_message",
-						customType: SWAP_MARKER_TYPE,
-						content: swap.content,
-						display: true,
-						details: swap.details,
-					},
-				],
-				continue: true,
-			};
-		} else if (ctx.isIdle()) {
-			pi.sendMessage(
-				{ customType: SWAP_MARKER_TYPE, content: swap.content, display: true, details: swap.details },
-				{ triggerTurn: true },
-			);
-		} else {
-			pi.sendMessage(
-				{ customType: SWAP_MARKER_TYPE, content: swap.content, display: true, details: swap.details },
-				{ deliverAs: "steer" },
-			);
-		}
+		const boundaryResult: TurnEndEventResult = {
+			entries: [
+				...event.entries,
+				{
+					type: "custom_message",
+					customType: SWAP_MARKER_TYPE,
+					content: swap.content,
+					display: true,
+					details: swap.details,
+				},
+			],
+			continue: true,
+		};
 
 		// These effects belong to the commit, not preparation: exactly one reset is
 		// reported even when a hard-cap message stages before its tools finish.
@@ -719,8 +700,8 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		return boundaryResult;
 	}
 
-	function continueActionableBoundary(event: unknown) {
-		return isActionableTurnBoundary(event) ? { entries: [...event.entries], continue: true as const } : undefined;
+	function continueBoundary(event: TurnEndEvent): TurnEndEventResult {
+		return { entries: [...event.entries], continue: true };
 	}
 
 	/**
@@ -964,9 +945,9 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		// Re-read per check: the model (and with it the window) can change mid-session
 		// and pi has no model-switch event.
 		const usage = ctx.getContextUsage();
-		// Pi 0.87 persists the assistant after message_end listeners, so context usage
+		// Pi persists the assistant after message_end listeners, so context usage
 		// can still describe the pre-response marker. Prefer this event's provider
-		// usage; older Pi reports the same value through getContextUsage().
+		// usage; getContextUsage() is the fallback when the message carries none.
 		const messageTokens = (msg as { usage?: { totalTokens?: unknown } }).usage?.totalTokens;
 		const tokens = typeof messageTokens === "number" && Number.isFinite(messageTokens) ? messageTokens : usage?.tokens;
 		const capsNow = capsFrom(ctx, usage);
@@ -1046,7 +1027,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	const handleTurnEnd = (event: any, ctx: ExtensionContext) => {
+	pi.on("turn_end", (event, ctx) => {
 		// Errored/aborted turns never reached the agent (the message is synthetic,
 		// toolResults always []). Treating them as refusals burned reminder retries
 		// during network flakes — two blips flipped the cycle to "exhausted" with
@@ -1054,7 +1035,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		// aborted run un-aborted it via pi's queued-message rescue (continue()).
 		// Skip; the cycle stays armed and the next real turn re-evaluates.
 		const stopReason = (event.message as { stopReason?: string }).stopReason;
-		const outcome = (event as { outcome?: string }).outcome;
+		const outcome = event.outcome;
 		if (
 			stopReason === "error" ||
 			stopReason === "aborted" ||
@@ -1096,7 +1077,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			if (retries < MAX_RETRIES) {
 				retries++;
 				send(reminderMessage(retries));
-				return continueActionableBoundary(event);
+				return continueBoundary(event);
 			} else {
 				phase = "exhausted";
 				updateStatus(ctx, tokens, capsNow);
@@ -1113,12 +1094,9 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			updateStatus(ctx, tokens, capsNow);
 			send(silentStopMessage(tokens, capsNow));
 			ctx.ui.notify(`context-cap: soft cap (${formatTokenCount(tokens)}) — last-turn handoff requested`, "info");
-			return continueActionableBoundary(event);
+			return continueBoundary(event);
 		}
-	};
-	// Cast only at registration: Pi <=0.86 types require void, while Pi 0.87
-	// accepts the boundary result. Runtime shape detection above selects behavior.
-	pi.on("turn_end", handleTurnEnd as any);
+	});
 
 	// -- pi's own compaction: last ditch ---------------------------------------
 

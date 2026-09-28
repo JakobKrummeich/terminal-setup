@@ -64,8 +64,7 @@ test("soft-cap handoff cycle completes inside a single prompt() call", async () 
 		);
 		assert.equal(texts.includes("(script exhausted)"), false, "swap must not start a continuation loop");
 
-		// Exactly one marker must be persisted. On Pi 0.87 it is returned through
-		// the actionable turn_end boundary; older Pi receives one legacy queued marker.
+		// Exactly one marker must be persisted, returned through the turn_end boundary.
 		const sessionMessages = t.session.messages as Array<{ role: string; customType?: string }>;
 		const markers = sessionMessages.filter((m) => m.role === "custom" && m.customType === SWAP_MARKER_TYPE);
 		assert.equal(markers.length, 1, "swap marker must appear exactly once");
