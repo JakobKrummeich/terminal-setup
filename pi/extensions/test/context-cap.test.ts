@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { createTestSession, textStep, toolStep } from "./harness.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";
+import { at } from "./assert-helpers.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const CONTEXT_CAP_EXTENSION = path.join(EXT_DIR, "context-cap.ts");
@@ -69,7 +70,7 @@ test("soft-cap handoff cycle completes inside a single prompt() call", async () 
 		const markers = sessionMessages.filter((m) => m.role === "custom" && m.customType === SWAP_MARKER_TYPE);
 		assert.equal(markers.length, 1, "swap marker must appear exactly once");
 		const lastToolResult = sessionMessages.map((m) => m.role).lastIndexOf("toolResult");
-		assert.ok(sessionMessages.indexOf(markers[0]) > lastToolResult, "swap marker must follow tool-result entries");
+		assert.ok(sessionMessages.indexOf(at(markers, 0)) > lastToolResult, "swap marker must follow tool-result entries");
 
 		// The handoff file was written by the tool.
 		const files = fs.readdirSync(contextCapDir()).filter((n) => n.startsWith(`${sessionId}-`));

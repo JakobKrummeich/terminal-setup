@@ -41,6 +41,7 @@ import { getModel } from "@earendil-works/pi-ai/compat";
 import { initTheme, ModelRuntime, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { liveChildren, runChildTool } from "../lib/child-session.ts";
 import { type ResponseStep, type ScriptedStep, sleep, textStep, toolStep } from "./harness.ts";
+import { at } from "./assert-helpers.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 
@@ -175,11 +176,11 @@ test("a real child has no timer tool: call errors fast, nothing blocks, no OSC",
 		// The timer call itself came back as a structural error: not registered.
 		assert.equal(calls.length, 2, "timer attempt + final answer");
 		assert.ok(
-			calls[1].messages.includes("Tool timer not found"),
+			at(calls, 1).messages.includes("Tool timer not found"),
 			"the child's timer call must fail as an unknown tool",
 		);
-		assert.ok(!calls[1].messages.includes("fired after"), "no blocking wait ran");
-		assert.ok(!calls[1].messages.includes("expired."), "no wake-up was injected");
+		assert.ok(!at(calls, 1).messages.includes("fired after"), "no blocking wait ran");
+		assert.ok(!at(calls, 1).messages.includes("expired."), "no wake-up was injected");
 
 		// The child loaded wsstate.ts and agent-busy-tracker.ts like production
 		// children do — and emitted NO terminal-state OSC: all main-session-only.

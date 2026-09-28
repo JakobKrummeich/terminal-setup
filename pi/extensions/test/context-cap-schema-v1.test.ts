@@ -23,6 +23,7 @@ import { getCurrentTools, withoutInitialSystemMessage } from "@earendil-works/pi
 import { createTestSession, textStep, toolStep, type TestSession } from "./harness.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";
+import { at } from "./assert-helpers.ts";
 
 // lib/handoff-writer.ts resolves the schema at module load, and ESM hoists every
 // static import above the assignments at the top of this file — so it must be
@@ -142,7 +143,7 @@ test("v1 + no tail: agent instructions, tool spec and post-swap context are unch
 		assert.equal(t.session.isIdle, true);
 
 		// Consumer 1: the tool spec the model reads (parameter description).
-		const toolSpec = JSON.stringify(contexts[0].tools);
+		const toolSpec = JSON.stringify(at(contexts, 0).tools);
 		assert.ok(
 			toolSpec.includes(JSON.stringify(V1_TOOL_PARAM_DESCRIPTION).slice(1, -1)),
 			`the context_handoff parameter description must be the v1 golden, got: ${toolSpec.slice(0, 400)}`,
@@ -155,11 +156,11 @@ test("v1 + no tail: agent instructions, tool spec and post-swap context are unch
 		assert.ok(steer.includes("soft cap 5, hard cap 50"), "trigger numbers still come from the env overrides");
 
 		// The swap itself: the model sees the handoff and NOTHING else.
-		const postSwap = contexts.find((c) => textOf(c.messages[c.messages.length - 1]).includes(SWAPPED_IN_TEXT));
+		const postSwap = contexts.find((c) => textOf(at(c.messages, -1)).includes(SWAPPED_IN_TEXT));
 		assert.ok(postSwap, "a post-swap LLM call must have happened");
 		assert.equal(postSwap.messages.length, 1, "no tail: the handoff is the entire context");
-		assert.equal(postSwap.messages[0].role, "user");
-		assert.equal(textOf(postSwap.messages[0]), SWAPPED_IN_TEXT, "swapped-in text is byte-identical");
+		assert.equal(at(postSwap.messages, 0).role, "user");
+		assert.equal(textOf(at(postSwap.messages, 0)), SWAPPED_IN_TEXT, "swapped-in text is byte-identical");
 
 		// New forensic fields only — the swap decision itself is unchanged.
 		const marker = (t.session.messages as { role: string; customType?: string; details?: any }[]).find(
@@ -173,13 +174,13 @@ test("v1 + no tail: agent instructions, tool spec and post-swap context are unch
 
 		const files = fs.readdirSync(contextCapDir()).filter((n) => n.startsWith(`${sessionId}-`));
 		assert.equal(files.length, 1);
-		const doc = fs.readFileSync(path.join(contextCapDir(), files[0]), "utf8");
+		const doc = fs.readFileSync(path.join(contextCapDir(), at(files, 0)), "utf8");
 		assert.ok(doc.includes("\nschema: v1\n"), `frontmatter must record the schema, got:\n${doc}`);
 		assert.ok(doc.includes("\ntailTokens: 0\n"));
 		assert.ok(doc.includes("\ntailKeptTokens: 0\n"));
 		// Frontmatter is host-written and must never reach the model.
-		assert.ok(!textOf(postSwap.messages[0]).includes("schema:"), "frontmatter must be stripped before injection");
-		assert.ok(!textOf(postSwap.messages[0]).includes("tailKeptTokens"));
+		assert.ok(!textOf(at(postSwap.messages, 0)).includes("schema:"), "frontmatter must be stripped before injection");
+		assert.ok(!textOf(at(postSwap.messages, 0)).includes("tailKeptTokens"));
 	} finally {
 		cleanup(t, sessionId);
 	}

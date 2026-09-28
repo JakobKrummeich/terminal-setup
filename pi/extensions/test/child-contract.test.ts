@@ -43,6 +43,7 @@ import { CHILD_CONTRACT } from "../subagent.ts";
 import { CONTEXT_CAP_TOOL_NAME } from "../lib/env.ts";
 import { type ResponseStep, type ScriptedStep, sleep, textStep, toolStep } from "./harness.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";
+import { at } from "./assert-helpers.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 // context-cap writes handoff files to contextCapDir() (<PI_CODING_AGENT_DIR>/context-cap,
@@ -224,17 +225,17 @@ test("contract survives the swap: still in the system prompt on post-swap and re
 		childId = (result.details as { id?: string }).id;
 		assert.equal(calls.length, 4);
 		// Injected from the very first turn…
-		assert.ok(calls[0].systemPrompt.includes(CONTRACT), "turn 1 system prompt must carry the contract");
+		assert.ok(at(calls, 0).systemPrompt.includes(CONTRACT), "turn 1 system prompt must carry the contract");
 		// …and never as a prompt prefix: no request's messages contain it.
 		for (const [i, call] of calls.entries()) {
 			assert.ok(!call.messages.includes("CONTRACT-SENTINEL"), `call ${i} messages must not carry the contract`);
 		}
 		// The last call really is post-swap: the original task is gone from the
 		// LLM-visible context, replaced by the handoff marker…
-		assert.ok(!calls[3].messages.includes("original task prompt"), "post-swap context must be sliced");
-		assert.ok(calls[3].messages.includes("continuing work from a previous session"));
+		assert.ok(!at(calls, 3).messages.includes("original task prompt"), "post-swap context must be sliced");
+		assert.ok(at(calls, 3).messages.includes("continuing work from a previous session"));
 		// …and — load-bearing — the system prompt STILL carries the contract.
-		assert.ok(calls[3].systemPrompt.includes(CONTRACT), "post-swap system prompt must carry the contract");
+		assert.ok(at(calls, 3).systemPrompt.includes(CONTRACT), "post-swap system prompt must carry the contract");
 
 		// Resume turns get the contract too (before_agent_start fires per prompt()).
 		assert.ok(childId, "result must carry the child id");
@@ -247,7 +248,7 @@ test("contract survives the swap: still in the system prompt on post-swap and re
 		);
 		assert.match(resultText(resumed), /resumed answer/);
 		assert.equal(calls.length, 5);
-		assert.ok(calls[4].systemPrompt.includes(CONTRACT), "resume-turn system prompt must carry the contract");
+		assert.ok(at(calls, 4).systemPrompt.includes(CONTRACT), "resume-turn system prompt must carry the contract");
 	} finally {
 		cleanup(childId);
 	}

@@ -45,6 +45,7 @@ import {
 import { CONTEXT_CAP_TOOL_NAME } from "../lib/env.ts";
 import { type ResponseStep, type ScriptedStep, sleep, textStep, toolStep } from "./harness.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";
+import { at } from "./assert-helpers.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 
@@ -92,7 +93,9 @@ test("replay: two swap markers get numbered dividers at the recorded anchors", (
 	assert.equal(view.handoffCount, 2);
 	const lines = plain(view.render(80));
 	assert.equal(view.handoffAnchors.length, 2);
-	const [first, second] = view.handoffAnchors.map((i) => lines[i]!);
+	const dividers = view.handoffAnchors.map((i) => at(lines, i));
+	const first = at(dividers, 0);
+	const second = at(dividers, 1);
 	assert.match(first, /^── ⇄ handoff 1\/2 · at 162k tokens · soft cap ─+$/);
 	assert.match(second, /^── ⇄ handoff 2\/2 · at 58k tokens · hard cap, no handoff file ─+$/);
 	assert.equal([...first].length, 80, "divider is padded to the render width");

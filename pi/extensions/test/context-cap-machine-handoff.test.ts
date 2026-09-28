@@ -36,6 +36,7 @@ import {
 import { createTestSession, textStep, toolStep, type TestSession } from "./harness.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";
+import { at } from "./assert-helpers.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const CONTEXT_CAP_EXTENSION = path.join(EXT_DIR, "context-cap.ts");
@@ -58,6 +59,11 @@ const MESSAGES = [
 interface RecordedCall {
 	context: { systemPrompt?: string; messages: { content: { type: string; text: string }[] }[] };
 	options: { maxTokens?: number; cacheRetention?: string; sessionId?: string; signal?: AbortSignal };
+}
+
+/** Text of the single user message the writer sent. */
+function sentText(call: RecordedCall): string {
+	return at(at(call.context.messages, 0).content, 0).text;
 }
 
 /** A `Pick<ModelRegistry, "complete">` stub that records what the writer sent. */
@@ -104,15 +110,15 @@ test("draftHandoff: success returns the markdown, the shared spec and the standa
 	assert.equal(draft.usage?.output, 22, "usage is forwarded (pi stores it in session totals)");
 
 	assert.equal(calls.length, 1, "exactly one LLM call");
-	assert.equal(calls[0].context.systemPrompt, HANDOFF_SYSTEM_PROMPT);
-	const sent = calls[0].context.messages[0].content[0].text;
+	assert.equal(at(calls, 0).context.systemPrompt, HANDOFF_SYSTEM_PROMPT);
+	const sent = sentText(at(calls, 0));
 	assert.ok(sent.includes(handoffSections()), "the agent-facing section list is reused verbatim");
 	assert.ok(sent.includes("USER-TURN-SENTINEL"), "history is serialized into the prompt");
 	assert.ok(sent.includes("[User]:"), "history goes through serializeConversation, not raw messages");
-	assert.equal(calls[0].options.cacheRetention, "none", "standalone call must not touch the prompt cache");
-	assert.ok(calls[0].options.sessionId, "standalone call uses a fresh routing session id");
-	assert.ok((calls[0].options.maxTokens ?? 0) > 0, "the call is token-bounded");
-	assert.ok(calls[0].options.signal, "the call is abortable");
+	assert.equal(at(calls, 0).options.cacheRetention, "none", "standalone call must not touch the prompt cache");
+	assert.ok(at(calls, 0).options.sessionId, "standalone call uses a fresh routing session id");
+	assert.ok((at(calls, 0).options.maxTokens ?? 0) > 0, "the call is token-bounded");
+	assert.ok(at(calls, 0).options.signal, "the call is abortable");
 });
 
 test("draftHandoff: previousSummary and extraInstructions reach the prompt", async () => {
@@ -124,7 +130,7 @@ test("draftHandoff: previousSummary and extraInstructions reach the prompt", asy
 		previousSummary: "PREVIOUS-SUMMARY-SENTINEL",
 		extraInstructions: "EXTRA-INSTRUCTION-SENTINEL",
 	});
-	const sent = calls[0].context.messages[0].content[0].text;
+	const sent = sentText(at(calls, 0));
 	assert.ok(sent.includes("PREVIOUS-SUMMARY-SENTINEL"));
 	assert.ok(sent.includes("EXTRA-INSTRUCTION-SENTINEL"));
 });
@@ -269,17 +275,17 @@ test("hard cap without a fresh handoff: one LLM call writes the handoff that is 
 
 		const markers = swapMarkers(t);
 		assert.equal(markers.length, 1, "one swap");
-		assert.equal(markers[0].details?.trigger, "hard");
-		assert.equal(markers[0].details?.author, "machine", "forensics must distinguish machine from agent");
-		assert.equal(markers[0].details?.stale, false, "a freshly written handoff is not stale");
-		const content = String(markers[0].content);
+		assert.equal(at(markers, 0).details?.trigger, "hard");
+		assert.equal(at(markers, 0).details?.author, "machine", "forensics must distinguish machine from agent");
+		assert.equal(at(markers, 0).details?.stale, false, "a freshly written handoff is not stale");
+		const content = String(at(markers, 0).content);
 		assert.ok(content.includes("MACHINE-DRAFT-SENTINEL"), "the drafted handoff is what gets injected");
 		assert.ok(content.includes("reconstructed automatically"), "the next session is told it is second-hand");
 		assert.ok(!content.includes("Ask the user for direction"), "the no-context fallback must not appear");
 
 		const files = capFiles(sessionId);
 		assert.equal(files.length, 1, "written through the normal <sessionId>-<seq>.md path");
-		const doc = fs.readFileSync(path.join(contextCapDir(), files[0]), "utf8");
+		const doc = fs.readFileSync(path.join(contextCapDir(), at(files, 0)), "utf8");
 		assert.ok(doc.includes("author: machine"), `frontmatter must record the author, got: ${doc.slice(0, 200)}`);
 		assert.ok(doc.includes("MACHINE-DRAFT-SENTINEL"));
 	} finally {
@@ -303,10 +309,10 @@ test("a failing writer leaves the hard cap doing exactly what it did before (no 
 
 		const markers = swapMarkers(t);
 		assert.equal(markers.length, 1, "the swap still happens — the backstop must not depend on the writer");
-		assert.equal(markers[0].details?.trigger, "hard-no-file", "today's trigger, unchanged");
-		assert.equal(markers[0].details?.author, null, "no document ⇒ no author");
-		assert.equal(markers[0].details?.handoffPath, null);
-		assert.ok(String(markers[0].content).includes("Ask the user for direction"), "today's fallback text");
+		assert.equal(at(markers, 0).details?.trigger, "hard-no-file", "today's trigger, unchanged");
+		assert.equal(at(markers, 0).details?.author, null, "no document ⇒ no author");
+		assert.equal(at(markers, 0).details?.handoffPath, null);
+		assert.ok(String(at(markers, 0).content).includes("Ask the user for direction"), "today's fallback text");
 		assert.equal(capFiles(sessionId).length, 0, "a failed draft must not leave a file behind");
 	} finally {
 		cleanup(t, sessionId);
@@ -328,10 +334,10 @@ test("a failing writer still falls back to the stale file, staleness noted, as b
 
 		const markers = swapMarkers(t);
 		assert.equal(markers.length, 1);
-		assert.equal(markers[0].details?.trigger, "hard");
-		assert.equal(markers[0].details?.stale, true, "the substituted older file is still flagged stale");
-		assert.equal(markers[0].details?.author, "agent");
-		const content = String(markers[0].content);
+		assert.equal(at(markers, 0).details?.trigger, "hard");
+		assert.equal(at(markers, 0).details?.stale, true, "the substituted older file is still flagged stale");
+		assert.equal(at(markers, 0).details?.author, "agent");
+		const content = String(at(markers, 0).content);
 		assert.ok(content.includes("STALE-DOC-SENTINEL"));
 		assert.ok(content.includes("may not reflect the very latest work"), "today's stale note");
 		assert.equal(capFiles(sessionId).length, 1, "no new file was written");
@@ -410,21 +416,21 @@ test("pi's own compaction is answered with a handoff-shaped summary", async () =
 		assert.equal(calls.length, 1, "the handoff writer ran once");
 		const entries = compactionEntries(t);
 		assert.equal(entries.length, 1, "one compaction entry");
-		assert.ok(entries[0].summary.includes("COMPACT-DRAFT-SENTINEL"), "our summary won");
+		assert.ok(at(entries, 0).summary.includes("COMPACT-DRAFT-SENTINEL"), "our summary won");
 		assert.ok(
-			entries[0].summary.includes("most recent messages follow it unchanged"),
+			at(entries, 0).summary.includes("most recent messages follow it unchanged"),
 			"pi keeps recent messages — the preamble must say so",
 		);
-		assert.ok(!entries[0].summary.includes("PI-OWN-SUMMARY-SENTINEL"), "pi's own summarizer must not have run");
-		assert.equal(entries[0].fromHook, true);
-		assert.equal(entries[0].details?.author, "machine");
-		assert.equal(entries[0].details?.reason, "manual");
+		assert.ok(!at(entries, 0).summary.includes("PI-OWN-SUMMARY-SENTINEL"), "pi's own summarizer must not have run");
+		assert.equal(at(entries, 0).fromHook, true);
+		assert.equal(at(entries, 0).details?.author, "machine");
+		assert.equal(at(entries, 0).details?.reason, "manual");
 
 		// firstKeptEntryId / tokensBefore are echoed verbatim: pi forwards them to
 		// appendCompaction unvalidated, and a wrong id desyncs the session on reload.
 		const ids = new Set((t.session.sessionManager.getBranch() as { id: string }[]).map((e) => e.id));
-		assert.ok(ids.has(entries[0].firstKeptEntryId), "firstKeptEntryId must be a real entry on the branch");
-		assert.ok(entries[0].tokensBefore > 0, "tokensBefore must be echoed, not invented");
+		assert.ok(ids.has(at(entries, 0).firstKeptEntryId), "firstKeptEntryId must be a real entry on the branch");
+		assert.ok(at(entries, 0).tokensBefore > 0, "tokensBefore must be echoed, not invented");
 	} finally {
 		cleanup(t, sessionId);
 	}
@@ -448,10 +454,10 @@ test("a failing handoff writer lets pi's own compaction proceed", async () => {
 		const entries = compactionEntries(t);
 		assert.equal(entries.length, 1, "compaction still happened");
 		assert.ok(
-			entries[0].summary.includes("PI-OWN-SUMMARY-SENTINEL"),
-			`pi's own summarizer must have produced the summary, got: ${entries[0].summary.slice(0, 200)}`,
+			at(entries, 0).summary.includes("PI-OWN-SUMMARY-SENTINEL"),
+			`pi's own summarizer must have produced the summary, got: ${at(entries, 0).summary.slice(0, 200)}`,
 		);
-		assert.notEqual(entries[0].fromHook, true, "the entry must not claim an extension summary");
+		assert.notEqual(at(entries, 0).fromHook, true, "the entry must not claim an extension summary");
 	} finally {
 		cleanup(t, sessionId);
 	}
@@ -476,7 +482,7 @@ test(`${COMPACT_FLAG}=0 disables the compaction hook without touching the hard c
 		assert.equal(attempts, 0, "the flag is read at call time — no writer call at all");
 		const entries = compactionEntries(t);
 		assert.equal(entries.length, 1);
-		assert.ok(entries[0].summary.includes("PI-OWN-SUMMARY-SENTINEL"), "pi's own compaction ran");
+		assert.ok(at(entries, 0).summary.includes("PI-OWN-SUMMARY-SENTINEL"), "pi's own compaction ran");
 	} finally {
 		if (previous === undefined) delete process.env[COMPACT_FLAG];
 		else process.env[COMPACT_FLAG] = previous;

@@ -36,6 +36,7 @@ import { movePickerSelection, nextChild, prevChild, resetWatchCursor, watchTarge
 import type * as ChildSessionModule from "../lib/child-session.ts";
 import type * as ChildWatchModule from "../lib/child-watch.ts";
 import { sleep } from "./harness.ts";
+import { at } from "./assert-helpers.ts";
 
 // --- resolveExplorerConfig (pure) ---
 
@@ -57,8 +58,8 @@ test("resolveExplorerConfig: unset env → parent model with loud setup warning"
 	assert.equal(config.model, parentModel);
 	assert.equal(config.thinkingLevel, "low");
 	assert.equal(config.warnings.length, 1);
-	assert.match(config.warnings[0], /WARNING: no dedicated explorer model configured/);
-	assert.match(config.warnings[0], /anthropic\/claude-sonnet-4-5/);
+	assert.match(at(config.warnings, 0), /WARNING: no dedicated explorer model configured/);
+	assert.match(at(config.warnings, 0), /anthropic\/claude-sonnet-4-5/);
 	assert.equal(config.parentFallbackWarning, config.warnings[0]);
 });
 
@@ -80,8 +81,8 @@ test("resolveExplorerConfig: unknown model → parent model + warnings", () => {
 	);
 	assert.equal(config.model, parentModel);
 	assert.equal(config.warnings.length, 2);
-	assert.match(config.warnings[0], /PI_EXPLORER_MODEL "nope\/missing" not found/);
-	assert.ok(config.warnings[1].includes(parentModel.id), "warning names the fallback model");
+	assert.match(at(config.warnings, 0), /PI_EXPLORER_MODEL "nope\/missing" not found/);
+	assert.ok(at(config.warnings, 1).includes(parentModel.id), "warning names the fallback model");
 });
 
 test("resolveExplorerConfig: splits on the first slash only (model ids may contain slashes)", () => {
@@ -128,7 +129,7 @@ test("resolveExplorerConfig: broken PI_EXPLORER_MODEL falls back to a matching c
 	const config = resolveExplorerConfig({ PI_EXPLORER_MODEL: "nope/missing" }, registry, parentModel, ["file/pick"]);
 	assert.equal(config.model, fastModel);
 	assert.equal(config.warnings.length, 1, "env warning only — the candidate resolved");
-	assert.match(config.warnings[0], /PI_EXPLORER_MODEL/);
+	assert.match(at(config.warnings, 0), /PI_EXPLORER_MODEL/);
 });
 
 test("resolveExplorerConfig: malformed candidate entries (empty, trailing slash) are skipped", () => {
@@ -142,8 +143,8 @@ test("resolveExplorerConfig: no candidate matches → parent model + warnings", 
 	const config = resolveExplorerConfig({}, registryOf({}), parentModel, ["a/b", "c/d"]);
 	assert.equal(config.model, parentModel);
 	assert.equal(config.warnings.length, 2);
-	assert.match(config.warnings[0], /no explorer-models\.json candidate found \(a\/b, c\/d\)/);
-	assert.ok(config.warnings[1].includes(parentModel.id), "warning names the fallback model");
+	assert.match(at(config.warnings, 0), /no explorer-models\.json candidate found \(a\/b, c\/d\)/);
+	assert.ok(at(config.warnings, 1).includes(parentModel.id), "warning names the fallback model");
 });
 
 // --- loadExplorerCandidates (file parsing) ---
@@ -183,7 +184,7 @@ test("loadExplorerCandidates: JSON null is valid JSON but wrong shape → shape 
 	const result = loadExplorerCandidates(file);
 	assert.deepEqual(result.candidates, []);
 	assert.equal(result.warnings.length, 1);
-	assert.match(result.warnings[0], /expected \{ "candidates": string\[\] \}/);
+	assert.match(at(result.warnings, 0), /expected \{ "candidates": string\[\] \}/);
 });
 
 test("loadExplorerCandidates: invalid JSON → ignored with warning", () => {
@@ -191,7 +192,7 @@ test("loadExplorerCandidates: invalid JSON → ignored with warning", () => {
 	const result = loadExplorerCandidates(file);
 	assert.deepEqual(result.candidates, []);
 	assert.equal(result.warnings.length, 1);
-	assert.match(result.warnings[0], /not valid JSON/);
+	assert.match(at(result.warnings, 0), /not valid JSON/);
 });
 
 test("loadExplorerCandidates: wrong shape → ignored with warning", () => {
@@ -199,7 +200,7 @@ test("loadExplorerCandidates: wrong shape → ignored with warning", () => {
 	const result = loadExplorerCandidates(file);
 	assert.deepEqual(result.candidates, []);
 	assert.equal(result.warnings.length, 1);
-	assert.match(result.warnings[0], /expected \{ "candidates": string\[\] \}/);
+	assert.match(at(result.warnings, 0), /expected \{ "candidates": string\[\] \}/);
 });
 
 test("resolveExplorerConfig: valid thinking level honored", () => {
@@ -220,7 +221,7 @@ test("resolveExplorerConfig: invalid thinking level → low + warning", () => {
 	);
 	assert.equal(config.thinkingLevel, "low");
 	assert.equal(config.warnings.length, 1);
-	assert.match(config.warnings[0], /PI_EXPLORER_THINKING "ultra"/);
+	assert.match(at(config.warnings, 0), /PI_EXPLORER_THINKING "ultra"/);
 	assert.equal(config.parentFallbackWarning, undefined);
 });
 
@@ -652,8 +653,8 @@ test("old finished children are evicted beyond the cap; running children survive
 	}
 	// The cap is 8 finished children, checked on each fresh spawn: spawning fast
 	// child 9 saw 9 finished (0..8) and evicted fastIds[0]; child 10 evicted fastIds[1].
-	assert.ok(!liveChildren.has(fastIds[0]), "oldest finished child must be evicted");
-	assert.ok(!liveChildren.has(fastIds[1]), "second-oldest finished child must be evicted");
+	assert.ok(!liveChildren.has(at(fastIds, 0)), "oldest finished child must be evicted");
+	assert.ok(!liveChildren.has(at(fastIds, 1)), "second-oldest finished child must be evicted");
 	for (const id of fastIds.slice(2)) {
 		assert.ok(liveChildren.has(id), `recent finished child ${id} must be kept`);
 	}
@@ -670,7 +671,7 @@ test("old finished children are evicted beyond the cap; running children survive
 	);
 	assert.equal((resumed.details as { error?: string }).error, undefined, resultText(resumed));
 	assert.match(resultText(resumed), /fast child done/);
-	assert.ok(liveChildren.has(fastIds[0]), "reopened child must be live again");
+	assert.ok(liveChildren.has(at(fastIds, 0)), "reopened child must be live again");
 	const slow = await slowPromise;
 	assert.equal(isBusyError(slow), false, "the running child must be unaffected by evictions");
 	assert.match(resultText(slow), /slow child done/);

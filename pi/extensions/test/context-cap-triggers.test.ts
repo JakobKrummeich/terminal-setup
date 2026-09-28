@@ -33,6 +33,7 @@ import {
 } from "../lib/env.ts";
 import { createTestSession, textStep, toolStep } from "./harness.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
+import { at } from "./assert-helpers.ts";
 
 const CAP_KEYS = ["CONTEXT_CAP_SOFT", "CONTEXT_CAP_HARD", "CONTEXT_CAP_RESERVE", "PI_CODING_AGENT_DIR"] as const;
 
@@ -241,13 +242,13 @@ test("resolver warns once per condition, not once per check", () => {
 	for (let i = 0; i < 5; i++) resolveDegenerate(usage(1_000), (m) => void degenerate.push(m));
 	for (let i = 0; i < 5; i++) resolveDegenerate(undefined, (m) => void degenerate.push(m));
 	assert.equal(degenerate.length, 1, `one warning for a degenerate window, got ${JSON.stringify(degenerate)}`);
-	assert.match(degenerate[0], /cap disabled/);
+	assert.match(at(degenerate, 0), /cap disabled/);
 
 	const unknown: string[] = [];
 	const resolveUnknown = createCapResolver();
 	for (let i = 0; i < 5; i++) resolveUnknown(undefined, (m) => void unknown.push(m));
 	assert.equal(unknown.length, 1, `one note for an unknown window, got ${JSON.stringify(unknown)}`);
-	assert.match(unknown[0], /window unknown/);
+	assert.match(at(unknown, 0), /window unknown/);
 });
 
 // ---------------------------------------------------------------------------
@@ -292,7 +293,7 @@ test("mid-session model switch moves the soft cap: no steer at 1M, steer at 200k
 
 		const steers = t.deliveredUserMessages.filter((m) => m.text.includes("[context-cap]"));
 		assert.equal(steers.length, 1, `expected exactly one steer, got ${JSON.stringify(steers.map((s) => s.text))}`);
-		assert.match(steers[0].text, /soft cap 132203, hard cap 165254/, "the steer must quote the dynamic pair");
+		assert.match(at(steers, 0).text, /soft cap 132203, hard cap 165254/, "the steer must quote the dynamic pair");
 
 		const marker = (
 			t.session.messages as Array<{ role: string; customType?: string; details?: Record<string, unknown> }>
@@ -316,7 +317,7 @@ test("mid-session model switch moves the soft cap: no steer at 1M, steer at 200k
 		// Same four fields in the handoff file's frontmatter.
 		const files = fs.readdirSync(contextCapDir()).filter((n) => n.startsWith(`${sessionId}-`));
 		assert.equal(files.length, 1, "exactly one handoff file");
-		const fm = fs.readFileSync(path.join(contextCapDir(), files[0]), "utf8");
+		const fm = fs.readFileSync(path.join(contextCapDir(), at(files, 0)), "utf8");
 		assert.match(fm, /\ncontextWindow: 200000\n/);
 		assert.match(fm, /\nsoftCap: 132203\n/);
 		assert.match(fm, /\nhardCap: 165254\n/);

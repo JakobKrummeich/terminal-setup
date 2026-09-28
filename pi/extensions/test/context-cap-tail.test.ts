@@ -29,6 +29,7 @@ import { withoutInitialSystemMessage } from "@earendil-works/pi-ai";
 import { createTestSession, textStep, toolStep, type TestSession } from "./harness.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";
+import { at } from "./assert-helpers.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const CONTEXT_CAP_EXTENSION = path.join(EXT_DIR, "context-cap.ts");
@@ -124,7 +125,7 @@ test("the swapped-in context is [recent turns …, handoff], pairing-safe and in
 		assert.ok(postSwap, "a post-swap LLM call must have happened");
 
 		// The handoff is last: it is the instruction the successor acts on.
-		const last = postSwap.messages[postSwap.messages.length - 1];
+		const last = at(postSwap.messages, -1);
 		assert.equal(last.role, "user");
 		assert.ok(textOf(last).startsWith("You are continuing work from a previous session"));
 
@@ -135,8 +136,8 @@ test("the swapped-in context is [recent turns …, handoff], pairing-safe and in
 		// The over-budget first turn was dropped; the cut landed on a turn boundary.
 		const all = postSwap.messages.map(textOf).join("\n");
 		assert.ok(!all.includes("OLD-PROMPT-SENTINEL"), "the oversized older turn must not fit the budget");
-		assert.equal(postSwap.messages[0].role, "user", "the tail starts at a complete turn");
-		assert.ok(textOf(postSwap.messages[0]).includes("NEW-TURN-SENTINEL"), "…here, the second run's prompt");
+		assert.equal(at(postSwap.messages, 0).role, "user", "the tail starts at a complete turn");
+		assert.ok(textOf(at(postSwap.messages, 0)).includes("NEW-TURN-SENTINEL"), "…here, the second run's prompt");
 		// Structural staleness guarantee: the steer that opened the cycle sits in
 		// the kept region of the session, but its cycle is over (marker behind it)
 		// — the scrub must keep it away from the model, clause or no clause.
@@ -157,7 +158,7 @@ test("the swapped-in context is [recent turns …, handoff], pairing-safe and in
 
 		const files = fs.readdirSync(contextCapDir()).filter((n) => n.startsWith(`${sessionId}-`));
 		assert.equal(files.length, 1);
-		const doc = fs.readFileSync(path.join(contextCapDir(), files[0]), "utf8");
+		const doc = fs.readFileSync(path.join(contextCapDir(), at(files, 0)), "utf8");
 		assert.ok(doc.includes(`\ntailTokens: ${TAIL_BUDGET}\n`), `frontmatter must record the lever:\n${doc}`);
 		assert.match(doc, /\ntailKeptTokens: [1-9][0-9]*\n/);
 		// Frontmatter is host-written and never sent to the model.

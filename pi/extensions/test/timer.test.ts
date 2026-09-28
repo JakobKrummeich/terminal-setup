@@ -22,6 +22,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createTestSession, type ExtensionMode, sleep, textStep, toolStep } from "./harness.ts";
+import { at } from "./assert-helpers.ts";
 
 const TIMER_EXTENSION = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "../timer.ts");
 
@@ -325,7 +326,7 @@ test("headless: a wait far longer than the old 600s default is not clamped", asy
 				.map(Number);
 			assert.ok(remaining.length > 0, `progress updates carry no remaining time: ${JSON.stringify(updates)}`);
 			assert.ok(
-				remaining[0] > 3500,
+				at(remaining, 0) > 3500,
 				`first update reported ${remaining[0]}s remaining — the 3600s request was clamped`,
 			);
 

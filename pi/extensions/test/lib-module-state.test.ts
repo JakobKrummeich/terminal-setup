@@ -46,7 +46,7 @@ function findModuleState(source: string, file: string): string[] {
 		}
 		const constMatch = TOP_LEVEL_CONST.exec(line);
 		if (!constMatch) return;
-		const [, name, type = "", rest] = constMatch;
+		const [, name, type = "", rest = ""] = constMatch;
 		// `const x =` with the value on the next line.
 		const value = rest.trim() || (lines[i + 1] ?? "").trim();
 		const ctor = MUTABLE_CONSTRUCTOR.exec(value);

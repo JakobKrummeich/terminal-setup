@@ -18,6 +18,7 @@ import * as path from "node:path";
 import test from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { contextCapDir } from "../lib/agent-dir.ts";
+import { at } from "./assert-helpers.ts";
 
 type Handler = (event: any, ctx: ExtensionContext) => unknown | Promise<unknown>;
 type ExecuteTool = (
@@ -96,7 +97,7 @@ async function bind(): Promise<Driver> {
 		},
 		async handoff(markdown) {
 			const r = await execute!("h", { markdown }, undefined, undefined, ctx);
-			return `${r.isError ? "error" : "ok"}: ${r.content[0].text.split(":")[0]}`;
+			return `${r.isError ? "error" : "ok"}: ${at(r.content, 0).text.split(":")[0]}`;
 		},
 	};
 	let last: unknown;

@@ -27,6 +27,7 @@ import { getCurrentTools, withoutInitialSystemMessage } from "@earendil-works/pi
 import { createTestSession, textStep, toolStep, type TestSession } from "./harness.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";
+import { at } from "./assert-helpers.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const CONTEXT_CAP_EXTENSION = path.join(EXT_DIR, "context-cap.ts");
@@ -116,7 +117,7 @@ test("v2 reaches the tool spec, the agent instructions and the machine writer", 
 		assert.equal(t.session.isIdle, true);
 
 		// Consumer 1: the tool spec the model reads.
-		const toolSpec = JSON.stringify(contexts[0].tools);
+		const toolSpec = JSON.stringify(at(contexts, 0).tools);
 		assert.ok(toolSpec.includes("~60 lines."), `tool parameter description must carry the v2 budget: ${toolSpec.slice(0, 400)}`);
 
 		// Consumer 2: the agent-facing instructions.
@@ -128,8 +129,8 @@ test("v2 reaches the tool spec, the agent instructions and the machine writer", 
 
 		// Consumer 3: the machine writer's prompt.
 		assert.equal(writerPrompts.length, 1, "exactly one writer call");
-		assert.ok(writerPrompts[0].includes(V2_FILES_LINE), "the writer is asked for the same schema");
-		assert.ok(writerPrompts[0].includes("~60 lines total"), "including its line budget");
+		assert.ok(at(writerPrompts, 0).includes(V2_FILES_LINE), "the writer is asked for the same schema");
+		assert.ok(at(writerPrompts, 0).includes("~60 lines total"), "including its line budget");
 
 		// Instrumentation: marker details and frontmatter.
 		const marker = (t.session.messages as { role: string; customType?: string; details?: any }[]).find(
@@ -144,7 +145,7 @@ test("v2 reaches the tool spec, the agent instructions and the machine writer", 
 
 		const files = fs.readdirSync(contextCapDir()).filter((n) => n.startsWith(`${sessionId}-`));
 		assert.equal(files.length, 1);
-		const doc = fs.readFileSync(path.join(contextCapDir(), files[0]), "utf8");
+		const doc = fs.readFileSync(path.join(contextCapDir(), at(files, 0)), "utf8");
 		assert.ok(doc.includes("\nauthor: machine\n"), `existing frontmatter survives:\n${doc}`);
 		assert.ok(doc.includes("\nschema: v2\n"));
 		assert.ok(doc.includes("\ntailTokens: 0\n"));

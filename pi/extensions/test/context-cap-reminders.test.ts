@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { createTestSession, textStep, toolStep, type TestSession } from "./harness.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";
+import { at } from "./assert-helpers.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const CONTEXT_CAP_EXTENSION = path.join(EXT_DIR, "context-cap.ts");
@@ -67,7 +68,7 @@ test("two reminders, then exhausted and silent; a late handoff still swaps", asy
 			(m) => m.role === "custom" && m.customType === SWAP_MARKER_TYPE,
 		);
 		assert.equal(markers.length, 1, "one swap");
-		assert.equal(markers[0].details?.trigger, "soft", "the exhausted cycle still collects the agent's handoff");
+		assert.equal(at(markers, 0).details?.trigger, "soft", "the exhausted cycle still collects the agent's handoff");
 	} finally {
 		try {
 			for (const n of fs.readdirSync(contextCapDir())) {

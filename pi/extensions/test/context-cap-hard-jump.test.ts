@@ -47,6 +47,7 @@ import { CONTEXT_CAP_TOOL_NAME } from "../lib/env.ts";
 import { type ResponseStep, type ScriptedStep, sleep, textStep, toolStep } from "./harness.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";
+import { at } from "./assert-helpers.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 // context-cap writes handoff files to contextCapDir() (<PI_CODING_AGENT_DIR>/context-cap).
@@ -188,21 +189,21 @@ test("one-jump hard-cap crossing: emergency steer, handoff survives into the swa
 		assert.equal(calls.length, 3, "jump turn, handoff turn, post-swap turn — nothing more");
 
 		// The emergency steer reached the agent before the handoff turn.
-		assert.ok(calls[1].messages.includes("[context-cap]"), "handoff turn must have seen the emergency steer");
+		assert.ok(at(calls, 1).messages.includes("[context-cap]"), "handoff turn must have seen the emergency steer");
 
 		// The load-bearing assertion: the post-swap context carries the REAL
 		// handoff body, not the "context lost" fallback.
 		assert.ok(
-			calls[2].messages.includes("Survive-the-jump-SENTINEL"),
-			`post-swap context must contain the handoff body, got: ${calls[2].messages.slice(0, 400)}`,
+			at(calls, 2).messages.includes("Survive-the-jump-SENTINEL"),
+			`post-swap context must contain the handoff body, got: ${at(calls, 2).messages.slice(0, 400)}`,
 		);
-		assert.ok(calls[2].messages.includes("continuing work from a previous session"));
+		assert.ok(at(calls, 2).messages.includes("continuing work from a previous session"));
 		assert.ok(
-			!calls[2].messages.includes("hit its hard context limit"),
+			!at(calls, 2).messages.includes("hit its hard context limit"),
 			"post-swap context must not be the no-handoff fallback",
 		);
 		// Sliced: the original prompt is gone from the LLM-visible context.
-		assert.ok(!calls[2].messages.includes("explore something huge"), "post-swap context must be sliced");
+		assert.ok(!at(calls, 2).messages.includes("explore something huge"), "post-swap context must be sliced");
 
 		// Session forensics: the swap was a fresh-handoff swap, and the tool was
 		// never refused (the old code reset the cycle before the tool ran).

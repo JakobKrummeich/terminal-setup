@@ -41,6 +41,7 @@ import {
 } from "../lib/agent-runs.ts";
 import { liveChildren, runChildTool } from "../lib/child-session.ts";
 import { sleep } from "./harness.ts";
+import { at } from "./assert-helpers.ts";
 
 // --- pure reader/writer tests -----------------------------------------------
 
@@ -232,8 +233,8 @@ test("agent-dash writes a session-start row for the main session", async () => {
 	handlers.get("session_start")!({ type: "session_start", reason: "startup" }, ctx);
 	const events = readRuns(dir);
 	assert.equal(events.length, 1);
-	assert.equal(events[0].event, "session-start");
-	assert.equal(events[0].sid, "main-sid-1");
+	assert.equal(at(events, 0).event, "session-start");
+	assert.equal(at(events, 0).sid, "main-sid-1");
 	assert.equal((events[0] as { sessionFile?: string }).sessionFile, sessionFile);
 });
 
@@ -326,8 +327,8 @@ test("runChildTool writes spawn/progress/finish rows; a child-spawned child thre
 
 		const progress = events.filter((e): e is RunProgress => e.event === "progress");
 		assert.ok(progress.length >= 1, "at least one progress heartbeat");
-		assert.equal(progress[0].sid, firstRecord.sid);
-		assert.equal(progress[0].turn, 1, "single-turn child: heartbeat says turn 1");
+		assert.equal(at(progress, 0).sid, firstRecord.sid);
+		assert.equal(at(progress, 0).turn, 1, "single-turn child: heartbeat says turn 1");
 
 		const finish = events.find((e): e is RunFinish => e.event === "finish");
 		assert.ok(finish, "finish row must be written");

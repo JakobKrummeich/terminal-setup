@@ -23,6 +23,10 @@
 		// which cannot run enums/namespaces/parameter properties — pi's jiti loader
 		// can, so without this flag such syntax would pass pi and break the tests.
 		"erasableSyntaxOnly": true,
+		// WHY: `arr[i]` / `record[key]` are typed as always present without it, so an
+		// empty array or a missing key from malformed disk/wire input type-checks and
+		// crashes at runtime; this forces an explicit guard at every such read.
+		"noUncheckedIndexedAccess": true,
 
 		"paths": {
 			"@earendil-works/pi-coding-agent": ["./node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"],

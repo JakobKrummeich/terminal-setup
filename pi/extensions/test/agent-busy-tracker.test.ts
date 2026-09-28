@@ -25,6 +25,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as trackerModule from "../agent-busy-tracker.ts";
+import { at } from "./assert-helpers.ts";
 
 type Handler = (event?: unknown, ctx?: unknown) => void;
 
@@ -107,7 +108,7 @@ function emittedStates(chunks: string[]): string[] {
 	const states: string[] = [];
 	for (const chunk of chunks) {
 		for (const match of chunk.matchAll(/SetUserVar=wswait=([A-Za-z0-9+/=]+)\x07/g)) {
-			states.push(Buffer.from(match[1], "base64").toString());
+			states.push(Buffer.from(at(match, 1), "base64").toString());
 		}
 	}
 	return states;

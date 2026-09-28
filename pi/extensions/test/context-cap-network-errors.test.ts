@@ -34,6 +34,7 @@ import { withoutInitialSystemMessage } from "@earendil-works/pi-ai";
 import { abortedStep, createTestSession, errorStep, textStep, toolStep, type TestSession } from "./harness.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";
+import { at } from "./assert-helpers.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const CONTEXT_CAP_EXTENSION = path.join(EXT_DIR, "context-cap.ts");
@@ -140,11 +141,11 @@ test("errored turns don't burn reminder retries; the cycle survives a flaky patc
 			1,
 			`exactly one reminder, sent for the real refusal turn, got: ${JSON.stringify(reminders)}`,
 		);
-		assert.ok(reminders[0].includes("reminder 1/2"), "the two errored turns must not have consumed retries");
+		assert.ok(at(reminders, 0).includes("reminder 1/2"), "the two errored turns must not have consumed retries");
 
 		const markers = swapMarkers(t);
 		assert.equal(markers.length, 1, "one swap");
-		assert.equal(markers[0].details?.trigger, "soft", "handoff-backed swap, not a backstop wipe");
+		assert.equal(at(markers, 0).details?.trigger, "soft", "handoff-backed swap, not a backstop wipe");
 
 		const files = fs.readdirSync(contextCapDir()).filter((n) => n.startsWith(`${sessionId}-`));
 		assert.equal(files.length, 1, "the handoff file was written");
@@ -184,11 +185,11 @@ test("an aborted turn is skipped the same way: no retry burn, no spurious swap",
 
 		const reminders = delivered(t, "No handoff was recorded");
 		assert.equal(reminders.length, 1, `one reminder for the real refusal turn, got: ${JSON.stringify(reminders)}`);
-		assert.ok(reminders[0].includes("reminder 1/2"), "the aborted turn must not have consumed a retry");
+		assert.ok(at(reminders, 0).includes("reminder 1/2"), "the aborted turn must not have consumed a retry");
 
 		const markers = swapMarkers(t);
 		assert.equal(markers.length, 1, "one swap");
-		assert.equal(markers[0].details?.trigger, "soft", "handoff-backed swap, not a backstop wipe");
+		assert.equal(at(markers, 0).details?.trigger, "soft", "handoff-backed swap, not a backstop wipe");
 	} finally {
 		cleanup(t, sessionId);
 	}
@@ -221,8 +222,8 @@ test("a network error during a hard-cap cycle must not fire the no-file backstop
 
 		const markers = swapMarkers(t);
 		assert.equal(markers.length, 1, `exactly one swap, got: ${JSON.stringify(markers.map((m) => m.details))}`);
-		assert.equal(markers[0].details?.trigger, "soft", "swap must carry the handoff, not hard-no-file");
-		assert.ok(markers[0].details?.handoffPath, "handoff file recorded on the marker");
+		assert.equal(at(markers, 0).details?.trigger, "soft", "swap must carry the handoff, not hard-no-file");
+		assert.ok(at(markers, 0).details?.handoffPath, "handoff file recorded on the marker");
 
 		const refusals = toolResultTexts(t).filter((text) => text.includes("Refused: no handoff was requested"));
 		assert.equal(refusals.length, 0, "the handoff tool call must be accepted, not refused post-wipe");
@@ -262,7 +263,7 @@ test("a cycle stranded in a fresh window resets instead of demanding a handoff",
 		const steers = delivered(t, "CONTEXT LIMIT WARNING");
 		assert.equal(steers.length, 1, "the original steer was delivered");
 		assert.ok(
-			!steers[0].includes("this warning is stale"),
+			!at(steers, 0).includes("this warning is stale"),
 			"no self-invalidation clause — staleness is handled structurally by the scrub",
 		);
 
@@ -271,11 +272,11 @@ test("a cycle stranded in a fresh window resets instead of demanding a handoff",
 		// from the LLM view (call 3) — stale demands are invisible, not disclaimed.
 		assert.equal(contexts.length, 3, "three LLM calls");
 		assert.ok(
-			contextText(contexts[1]).includes("CONTEXT LIMIT WARNING"),
+			contextText(at(contexts, 1)).includes("CONTEXT LIMIT WARNING"),
 			"the armed cycle's warning reaches the model",
 		);
 		assert.ok(
-			!contextText(contexts[2]).includes("[context-cap]"),
+			!contextText(at(contexts, 2)).includes("[context-cap]"),
 			"after the reset the stranded warning must be scrubbed from the LLM view",
 		);
 		assert.ok(

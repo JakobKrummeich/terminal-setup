@@ -29,6 +29,7 @@ import * as agentDashModule from "../agent-dash.ts";
 import { appendEvent } from "../lib/agent-runs.ts";
 import type { MetaResponse, SessionsResponse, TranscriptResponse, TreeResponse } from "../lib/dashboard-api.ts";
 import { type DashboardServer, startDashboardServer } from "../lib/dashboard-server.ts";
+import { at } from "./assert-helpers.ts";
 
 /** The repo's real static UI (also sanity-checked by a test below). */
 const REAL_UI_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "../lib/dashboard-ui");
@@ -237,9 +238,9 @@ test("GET /api/sessions: rows aggregate cost/agents/resets; newest first; recent
 		const { sessions } = await getJson<SessionsResponse>(server.port, "/api/sessions");
 		assert.equal(sessions.length, 2);
 		// Newest first: root-2 started ~30s ago, root-1 ~10min ago.
-		assert.equal(sessions[0].sid, "root-2");
-		assert.equal(sessions[0].running, true, "fresh mtime + fresh event → running");
-		const row = sessions[1];
+		assert.equal(at(sessions, 0).sid, "root-2");
+		assert.equal(at(sessions, 0).running, true, "fresh mtime + fresh event → running");
+		const row = at(sessions, 1);
 		assert.equal(row.sid, "root-1");
 		assert.equal(row.running, false, "10-minute-old activity → finished");
 		assert.equal(row.startTs, T0);
@@ -380,10 +381,10 @@ test("GET /api/transcript: entries, tool output truncation, handoff + spawn anch
 			transcript.entries.map((entry) => entry.role),
 			["user", "assistant", "assistant"],
 		);
-		assert.equal(transcript.entries[0].text, "hello");
-		assert.equal(transcript.entries[0].tsMs, T0 + 100);
+		assert.equal(at(transcript.entries, 0).text, "hello");
+		assert.equal(at(transcript.entries, 0).tsMs, T0 + 100);
 
-		const [call] = transcript.entries[1].toolCalls;
+		const call = at(at(transcript.entries, 1).toolCalls, 0);
 		assert.equal(call.name, "bash");
 		assert.match(call.argsSummary, /ls -la/);
 		assert.ok(call.output.startsWith("x".repeat(2000)), "output keeps the first 2000 chars");
@@ -693,7 +694,7 @@ test("multi-project: /api/sessions merges all indexed dirs (skipping index-less 
 		const transcript = await getJson<TranscriptResponse>(server.port, "/api/transcript?sid=agent-1");
 		assert.equal(transcript.sid, "agent-1");
 		assert.equal(transcript.entries.length, 1, "child transcript from dirA");
-		assert.equal(sessions[1].startTs, T0, "dirA row keeps its own tree's start time");
+		assert.equal(at(sessions, 1).startTs, T0, "dirA row keeps its own tree's start time");
 	} finally {
 		await server.close();
 	}

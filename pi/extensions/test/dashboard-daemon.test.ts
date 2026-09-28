@@ -34,6 +34,7 @@ import * as agentDashModule from "../agent-dash.ts";
 import type { MetaResponse, SessionsResponse } from "../lib/dashboard-api.ts";
 import { startDashboardServer } from "../lib/dashboard-server.ts";
 import { sleep } from "./harness.ts";
+import { at } from "./assert-helpers.ts";
 
 const TEST_DIR = fileURLToPath(new URL(".", import.meta.url));
 const DAEMON = path.resolve(TEST_DIR, "../../dashboard-daemon.mjs");
@@ -138,7 +139,7 @@ async function awaitNotification(notifications: string[]): Promise<string> {
 	const deadline = Date.now() + 5000;
 	while (notifications.length === 0 && Date.now() < deadline) await sleep(20);
 	assert.ok(notifications.length > 0, "probe must notify within 5s");
-	return notifications[0];
+	return at(notifications, 0);
 }
 
 /** Run one probe against `port` with PI_OFFLINE lifted; restores env + guard. */
