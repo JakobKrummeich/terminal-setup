@@ -1,8 +1,9 @@
 // ESLint flat config for ../check.sh. Lives next to tools/node_modules because
 // ESM config imports resolve relative to this file (npx cannot supply plugins).
 // check.sh runs eslint from the repo root with `-c`, so `files` globs below are
-// repo-root relative. Size/complexity offenders that predate the gate are
-// frozen in eslint-suppressions.json (ratchet — never add to it, see AGENTS.md).
+// repo-root relative. Size/complexity offenders that predate the gate were
+// frozen in eslint-suppressions.json; all are split now and it is empty
+// (ratchet — never add to it, see AGENTS.md).
 import js from "@eslint/js";
 import globals from "globals";
 import tseslint from "typescript-eslint";

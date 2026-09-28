@@ -225,6 +225,15 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | `lib/alt-screen.ts` | `enterAltScreenWatch`: moves the F2 overlay onto the terminal's alternate screen via pi-tui's internal render-state API (re-verify after `pi update`) |
 | `lib/child-view.ts` | `ChildView`: one child's transcript as the F2 watch view renders it (live events and replay of a reopened child), with a `⇄ handoff i/N` divider before each context-cap swap marker |
 | `lib/context-cap-decide.ts` | `context-cap.ts`'s state machine, pure half: the per-cycle `CycleState` (lifecycle documented on the type) and the `decideMessageEnd` / `decideTurnGate` / `decideTurnEnd` functions the handlers call before running the chosen action's side effects; each branch is one row in `test/context-cap-decisions.test.ts`, the effect order is pinned by `test/context-cap-effects.test.ts` |
+| `lib/context-cap-session.ts` | `CapSession`: one `context-cap.ts` instance's state (cycle, cap resolver, last LLM-visible context) plus the helpers every effect path shares (status footer, cycle arming, cap stamping, handoff file write); passed explicitly to the `context-cap-*` modules below — no module state |
+| `lib/context-cap-view.ts` | the `context` handler's pure half: the `[context-cap]` scrub key (`isCapWarning`), the token estimate, the pairing-safe recency-tail cut (`selectContextTail`) and `llmView` |
+| `lib/context-cap-messages.ts` | the agent-facing cap warnings: soft steer, silent-stop prompt, one-jump emergency steer, reminder |
+| `lib/context-cap-tool.ts` | the `context_handoff` tool: writes the agent's handoff host-side |
+| `lib/context-cap-swap.ts` | `stageSwap` (build the swap marker) and `commitStagedSwap` (append it at the turn_end boundary, report the reset) |
+| `lib/context-cap-hard.ts` | the hard-cap backstop `hardCap`: fresh agent handoff → machine-drafted one → stale file → no summary |
+| `lib/context-cap-compact.ts` | the `session_before_compact` hook: pi's own compaction summarized as a handoff |
+| `lib/context-cap-files.ts` | handoff files `<sessionId>-<seq>.md`: seq/paths, frontmatter write and strip |
+| `lib/context-cap-resolver.ts` | `createCapResolver`: per-session cap resolution (last known window, warn-once) |
 | `lib/format.ts` | `formatTokenCount()` (`950`, `162k`, `1.0M`; a disabled cap shows `off`) and `formatCapStatus()` (`<tokens>/<soft cap>`): the one token format for the main footer (`context-cap.ts`) and the F2 watch |
 | `lib/session-quiet.ts` | `waitForSessionQuiet()`: the definition of "child is done" — agent idle *and* no queued steer/follow-up messages (bounded ~2s grace for a queued run about to start) |
 | `handoff.ts` | `/handoff` command: the agent writes a handoff document as a normal reply (same schema + line budget as context-cap — both quote `lib/handoff-writer.ts`, so the `CONTEXT_CAP_SCHEMA` lever governs both), then a fresh session is seeded with it under the same preamble as a cap swap — but with `triggerTurn: false`: the successor waits for the user instead of continuing on its own |
@@ -328,9 +337,9 @@ for t in test/*.test.sh; do bash "$t" || echo "FAIL: $t"; done   # installer/pat
 `check.sh` is a local gate (no CI, no git hook) with exact-pinned tools in
 `pi/extensions/test/tools/` (`package.json` + `package-lock.json`); it
 `npm ci`s them into the gitignored `tools/node_modules` on first run or when the
-lockfile changes — the only step that needs network. Pre-existing
-complexity/size offenders are frozen in `tools/eslint-suppressions.json` and may
-only shrink. Rules and bump procedure: AGENTS.md "Verify changes".
+lockfile changes — the only step that needs network. The complexity/size
+ratchet `tools/eslint-suppressions.json` is empty — every pre-gate offender has
+been split — and must stay empty. Rules and bump procedure: AGENTS.md "Verify changes".
 
 `node --test` with Node's type stripping (node >= 22.6), no build step. Tests drive a real
 pi `AgentSession` with `session.agent.streamFunction` replaced by a scripted fake

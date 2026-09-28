@@ -25,7 +25,8 @@
  * with its own jiti instance, so a lib/ file imported by two extensions exists
  * twice and module-level state would silently split. This file holds constants
  * and pure functions only — no mutable module state, no caches. The caller owns
- * every cache (context-cap.ts caches the LLM-visible message array itself).
+ * every cache (context-cap keeps the LLM-visible message array on its CapSession,
+ * lib/context-cap-session.ts).
  */
 
 import { contentText, uuidv7 } from "@earendil-works/pi-ai";
@@ -52,9 +53,10 @@ export const HANDOFF_MAX_CONVERSATION_CHARS = 400_000;
 
 /**
  * The handoff document shape — ONE source of truth per schema, shared by the
- * agent-facing tool instructions in context-cap.ts (CONTENT_SPEC and the tool's
- * `markdown` parameter description) and by this writer's prompt. WHICH schema is
- * live is decided in lib/env.ts (CONTEXT_CAP_SCHEMA) and nowhere else.
+ * agent-facing tool instructions (CONTENT_SPEC in lib/context-cap-messages.ts and
+ * the tool's `markdown` parameter description in lib/context-cap-tool.ts) and by
+ * this writer's prompt. WHICH schema is live is decided in lib/env.ts
+ * (CONTEXT_CAP_SCHEMA) and nowhere else.
  *
  * v1 — the original shape. It is the A/B control: keep it byte-for-byte.
  */

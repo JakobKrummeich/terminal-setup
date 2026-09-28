@@ -10,7 +10,7 @@
  * lib files are re-imported per extension, so no mutable module state).
  */
 
-/** customType of the context-cap swap marker (context-cap.ts stageSwap). */
+/** customType of the context-cap swap marker (lib/context-cap-swap.ts stageSwap). */
 export const SWAP_MARKER_TYPE = "context-cap-swap";
 
 /** customType of the message /handoff seeds the successor session with (handoff.ts). */

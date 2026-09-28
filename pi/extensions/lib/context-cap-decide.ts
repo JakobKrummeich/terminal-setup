@@ -73,7 +73,7 @@ export interface StagedSwap {
  * One handoff cycle. Lifecycle:
  *  - `idleCycle()` on session_start, after every committed swap, after a failed
  *    handoff-file read, and when the window shrank mid-cycle (reset-shrunk).
- *  - startCycle (context-cap.ts) arms it: seq/expectedPath/retries/
+ *  - startCycle (lib/context-cap-session.ts) arms it: seq/expectedPath/retries/
  *    tokensAtTrigger/handoffWritten/cycleCaps — the caller then sets `phase`.
  *    The hard-cap backstop can arm a cycle while `phase` stays "idle".
  *  - the `context_handoff` tool sets `handoffWritten`; turn_end then swaps.

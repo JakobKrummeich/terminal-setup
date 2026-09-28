@@ -76,10 +76,13 @@ Read `README.md` first — layout, install, known issues live there. Don't dupli
   - jscpd — ≤ 1% copy-paste (≥ 50 tokens) in production TS/JS + bash.
   - shellcheck — installers, `lib/`, `shell/`, `tmux/`, shell tests, test scripts.
     Silence a finding only per line: `# shellcheck disable=SCxxxx # reason`.
-- **ESLint ratchet:** `tools/eslint-suppressions.json` freezes pre-existing
-  `complexity`/`max-lines`/`max-lines-per-function` offenders. NEVER add to it
-  (no `--suppress-*` runs) — split the function instead. After fixing an offender,
-  check.sh fails on the now-unused suppression; prune it from the repo root:
+- **ESLint ratchet:** `tools/eslint-suppressions.json` froze the pre-gate
+  `complexity`/`max-lines`/`max-lines-per-function` offenders; all are split now
+  and the file is empty (`{}`) — keep it that way. NEVER add to it (no
+  `--suppress-*` runs) — split the function instead. check.sh still passes it to
+  eslint, so a stray entry shows up as a diff of that tracked file; should one
+  ever be removed again, check.sh fails on the now-unused suppression; prune it
+  from the repo root:
   `pi/extensions/test/tools/node_modules/.bin/eslint -c pi/extensions/test/tools/eslint.config.mjs --suppressions-location pi/extensions/test/tools/eslint-suppressions.json --prune-suppressions 'pi/extensions/**/*.ts' 'pi/extensions/lib/dashboard-ui/*.js' pi/dashboard-daemon.mjs`
 - bump a gate tool: `cd pi/extensions/test/tools && npm install --prefix . --save-exact <pkg>@<version>`,
   commit `package.json` + `package-lock.json`, re-run `./check.sh`. Keep

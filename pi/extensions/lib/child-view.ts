@@ -29,7 +29,7 @@ const TRIGGER_LABELS: Record<SwapTrigger, string> = {
 	"hard-no-file": "hard cap, no handoff file",
 };
 
-/** The swap-marker `details` fields the divider shows (context-cap.ts stageSwap). */
+/** The swap-marker `details` fields the divider shows (lib/context-cap-swap.ts stageSwap). */
 interface HandoffDetails {
 	tokensAtSwap?: unknown;
 	trigger?: unknown;

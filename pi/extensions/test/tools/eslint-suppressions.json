@@ -1,13 +1,2 @@
 {
-  "pi/extensions/context-cap.ts": {
-    "complexity": {
-      "count": 4
-    },
-    "max-lines": {
-      "count": 1
-    },
-    "max-lines-per-function": {
-      "count": 1
-    }
-  }
 }
