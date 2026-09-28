@@ -104,4 +104,19 @@ out="$(run_install "$home")" || fail "unterminated block must not fail the insta
 cmp -s "$home/.bashrc" "$FIXTURE/unterminated.orig" || fail ".bashrc rewritten despite unterminated block: $(cat "$home/.bashrc")"
 assert_no_temp_files "$home"
 
+# ── unreadable .bashrc: generic warning, not the marker one; file untouched ──
+# (root reads mode-000 files, so the case only holds for a regular user.)
+if [ "$(id -u)" -ne 0 ]; then
+    home="$FIXTURE/unreadable"
+    mkdir -p "$home"
+    printf 'secret\n' > "$home/.bashrc"
+    chmod 000 "$home/.bashrc"
+    out="$(run_install "$home" 2>/dev/null)" || fail "unreadable .bashrc must not fail the installer"
+    chmod 600 "$home/.bashrc"
+    [[ "$out" == "WARN: could not rewrite $home/.bashrc (awk exit "*"); wsstate hook not installed" ]] \
+        || fail "expected generic rewrite warning, got: $out"
+    [ "$(cat "$home/.bashrc")" = secret ] || fail "unreadable .bashrc modified: $(cat "$home/.bashrc")"
+    assert_no_temp_files "$home"
+fi
+
 printf 'PASS: shell wsstate hook is idempotent and preserves the user .bashrc\n'
