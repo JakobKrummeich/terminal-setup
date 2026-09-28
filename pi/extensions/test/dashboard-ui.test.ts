@@ -5,8 +5,10 @@
  *  - gantt-layout.js is pure math (bar %, ticks, tree rows, formatting) and is
  *    imported directly. It is plain browser JS outside tsconfig (allowJs off),
  *    so the import uses a computed file URL — tsc types the result as any.
+ *    The page modules (session-view.js, transcript-view.js) import the same
+ *    way — they touch the DOM only inside functions — for their pure helpers.
  *  - server smoke: the real dashboard server serves the real UI files with the
- *    right content types; index.html wires app.js, app.js imports gantt-layout.
+ *    right content types; index.html wires app.js, app.js imports the modules.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
@@ -27,6 +29,11 @@ const UI_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "../li
 // Browser module, deliberately outside tsconfig — computed specifier keeps tsc away.
 const gantt = await import(pathToFileURL(path.join(UI_DIR, "gantt-layout.js")).href);
 const { barGeometry, computeTicks, formatCost, formatDuration, formatTick, orderTreeRows, timeRange } = gantt;
+// The page modules touch the DOM only inside functions, so node can import them:
+// this proves the split modules load and link, and exposes the pure helpers.
+const transcriptView = await import(pathToFileURL(path.join(UI_DIR, "transcript-view.js")).href);
+const { transcriptCrumbs } = transcriptView;
+await import(pathToFileURL(path.join(UI_DIR, "session-view.js")).href);
 
 function assertClose(actual: number, expected: number, what: string): void {
 	assert.ok(Math.abs(actual - expected) < 1e-9, `${what}: ${actual} !== ${expected}`);
@@ -153,6 +160,38 @@ test("gantt-layout: orderTreeRows reattaches null and self-referential parents u
 	);
 });
 
+// --- transcript-view: breadcrumb ----------------------------------------------
+
+test("transcript-view: transcriptCrumbs walks the parent chain; degrades without root or tree data", () => {
+	const tree = {
+		nodes: [
+			{ sid: "root-sid-000000", label: "main", parentSid: null },
+			{ sid: "agent-sid", label: "agent#1", parentSid: "root-sid-000000" },
+			{ sid: "exp-sid", label: "explorer#2", parentSid: "agent-sid" },
+		],
+	};
+	assert.deepEqual(transcriptCrumbs("exp-sid", "root-sid-000000", tree), [
+		{ text: "sessions", href: "#/" },
+		{ text: "session root-sid", href: "#/session/root-sid-000000" },
+		{ text: "main", href: "#/view/root-sid-000000?root=root-sid-000000" },
+		{ text: "agent#1", href: "#/view/agent-sid?root=root-sid-000000" },
+		{ text: "explorer#2", href: null },
+	]);
+	assert.deepEqual(transcriptCrumbs("exp-sid-0000000", null, null), [
+		{ text: "sessions", href: "#/" },
+		{ text: "exp-sid-", href: null },
+	], "no ?root= and no tree: sid shortened, current");
+	assert.deepEqual(transcriptCrumbs("ghost", "r", tree), [
+		{ text: "sessions", href: "#/" },
+		{ text: "session r", href: "#/session/r" },
+		{ text: "ghost", href: null },
+	], "sid missing from the tree");
+	const cyclic = { nodes: [{ sid: "a", label: "A", parentSid: "b" }, { sid: "b", label: "B", parentSid: "a" }] };
+	const crumbs = transcriptCrumbs("a", null, cyclic);
+	assert.equal(crumbs.length, 1 + 32, "parentSid cycle stops at the 32-step guard");
+	assert.deepEqual(crumbs.at(-1), { text: "A", href: null });
+});
+
 // --- gantt-layout: formatting ------------------------------------------------
 
 test("gantt-layout: formatters — cost null → '—', durations, tick labels", () => {
@@ -216,7 +255,12 @@ test("dashboard-ui: server serves shell + assets with correct content types; wir
 		const shell = await get(result.server.port, "/");
 		assert.match(shell.body, /<script type="module" src="\/app\.js">/, "shell loads the SPA entry as a module");
 		const appJs = readFileSync(path.join(UI_DIR, "app.js"), "utf8");
-		assert.match(appJs, /from "\.\/gantt-layout\.js"/, "app.js imports the pure layout module");
+		for (const module of ["dom.js", "session-view.js", "transcript-view.js", "gantt-layout.js"]) {
+			assert.ok(appJs.includes(`from "./${module}"`), `app.js imports ${module}`);
+			const res = await get(result.server.port, `/${module}`);
+			assert.equal(res.status, 200, `/${module} must be served`);
+			assert.match(res.contentType, /text\/javascript/, `/${module} content-type`);
+		}
 		for (const route of ["#/view/", "#/session/"]) {
 			assert.ok(appJs.includes(route), `route table keeps literal prefix ${route}`);
 		}

@@ -33,10 +33,7 @@
   },
   "pi/extensions/lib/dashboard-ui/app.js": {
     "complexity": {
-      "count": 3
-    },
-    "max-lines": {
-      "count": 1
+      "count": 2
     }
   },
   "pi/extensions/subagent.ts": {

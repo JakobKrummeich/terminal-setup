@@ -13,7 +13,7 @@
  * project component.
  *
  * Safety rule: EVERY server-derived string reaches the DOM via textContent
- * (the el() helper) — never innerHTML. Transcripts contain arbitrary markup
+ * (the el() helper, dom.js) — never innerHTML. Transcripts contain arbitrary markup
  * and the server binds 0.0.0.0 (spec "Risks": exposure); this is the XSS
  * boundary.
  *
@@ -21,29 +21,14 @@
  * when SSE errors. Session pages add a 5s timer while running so bars grow.
  * 404 mid-view (session pruned) → back to the landing page with a notice.
  */
-import {
-	barGeometry,
-	computeTicks,
-	formatClock,
-	formatCost,
-	formatDateTime,
-	formatDuration,
-	formatTick,
-	orderTreeRows,
-	timeRange,
-} from "./gantt-layout.js";
+import { badge, el, sessionHref, shortSid } from "./dom.js";
+import { formatCost, formatDateTime, formatDuration } from "./gantt-layout.js";
+import { drawSessionPage } from "./session-view.js";
+import { drawTranscript } from "./transcript-view.js";
 
 const app = document.getElementById("app");
 
-// --- tiny helpers ------------------------------------------------------------
-
-/** The one DOM factory: text always goes through textContent. */
-function el(tag, className, text) {
-	const node = document.createElement(tag);
-	if (className) node.className = className;
-	if (text !== undefined) node.textContent = text;
-	return node;
-}
+// --- fetch helpers -----------------------------------------------------------
 
 class HttpError extends Error {
 	constructor(status, url) {
@@ -66,25 +51,6 @@ function safeDecode(text) {
 	}
 }
 
-function shortSid(sid) {
-	return sid.length > 10 ? sid.slice(0, 8) : sid;
-}
-
-function sessionHref(root) {
-	return `#/session/${encodeURIComponent(root)}`;
-}
-
-function viewHref(sid, root) {
-	const base = `#/view/${encodeURIComponent(sid)}`;
-	return root ? `${base}?root=${encodeURIComponent(root)}` : base;
-}
-
-function badge(running) {
-	const span = el("span", "badge", running ? "running" : "finished");
-	span.dataset.status = running ? "running" : "finished";
-	return span;
-}
-
 // --- daemon identity (/api/meta) ---------------------------------------------
 
 /** MetaResponse payload; null until loaded (badge stays empty, titles fall back). */
@@ -102,19 +68,6 @@ async function loadMeta() {
 	} catch {
 		// no /api/meta (daemon restarting?): badge stays empty, pages still work
 	}
-}
-
-/** parts: [{ text, href|null }] — null href renders the current (plain) crumb. */
-function buildBreadcrumb(parts) {
-	const nav = el("nav", "crumbs");
-	parts.forEach((part, i) => {
-		if (i > 0) nav.append(el("span", "crumb-sep", "/"));
-		if (!part.href) return nav.append(el("span", "crumb current", part.text));
-		const link = el("a", "crumb", part.text);
-		link.href = part.href;
-		nav.append(link);
-	});
-	return nav;
 }
 
 // --- live updates (SSE with polling fallback) --------------------------------
@@ -316,112 +269,8 @@ function renderSessionPage(hash) {
 			clearInterval(state.growTimer);
 			state.growTimer = null;
 		}
-		drawSessionPage(root, tree, state);
+		drawSessionPage(app, root, tree, state);
 	}
-}
-
-function drawSessionPage(root, tree, state) {
-	const now = Date.now();
-	const ctx = {
-		root,
-		now,
-		range: timeRange(tree.nodes, now),
-		toggle: (sid) => {
-			if (state.collapsed.has(sid)) state.collapsed.delete(sid);
-			else state.collapsed.add(sid);
-			drawSessionPage(root, state.lastTree, state); // redraw only — no refetch
-		},
-	};
-	const page = el("div", "page");
-	page.append(buildSessionHeader(root, tree, ctx));
-	const gantt = el("div", "gantt");
-	gantt.append(buildAxisRow(ctx.range));
-	const body = el("div", "gantt-body");
-	body.append(buildGridlines(ctx.range));
-	for (const row of orderTreeRows(tree.nodes, state.collapsed)) body.append(buildGanttRow(row, ctx));
-	gantt.append(body);
-	page.append(gantt);
-	app.replaceChildren(page);
-}
-
-function buildSessionHeader(root, tree, ctx) {
-	const rootNode = tree.nodes[0];
-	const running = tree.nodes.some((node) => node.status === "running");
-	const head = el("div", "session-head");
-	head.append(buildBreadcrumb([
-		{ text: "sessions", href: "#/" },
-		{ text: `session ${shortSid(root)}`, href: null },
-	]));
-	const meta = el("div", "session-meta");
-	meta.append(badge(running));
-	meta.append(el("span", "", `started ${formatDateTime(rootNode.startTs)}`));
-	meta.append(el("span", "", `span ${formatDuration(ctx.range.maxTs - ctx.range.minTs)}`));
-	meta.append(el("span", "", `${tree.nodes.length - 1} children`)); // agents AND explorers, like landing's count
-	head.append(meta);
-	return head;
-}
-
-function buildAxisRow(range) {
-	const row = el("div", "gantt-row axis-row");
-	row.append(el("div", "tree-cell axis-caption", "agent"));
-	const lane = el("div", "lane axis");
-	const { stepMs, ticks } = computeTicks(range.minTs, range.maxTs);
-	for (const tick of ticks) {
-		const label = el("span", "tick-label", formatTick(tick.ts, stepMs));
-		label.style.left = `${tick.leftPct}%`;
-		lane.append(label);
-	}
-	row.append(lane);
-	return row;
-}
-
-/** Vertical tick lines behind the bars, aligned with the axis labels. */
-function buildGridlines(range) {
-	const overlay = el("div", "gridlines");
-	for (const tick of computeTicks(range.minTs, range.maxTs).ticks) {
-		const line = el("div", "gridline");
-		line.style.left = `${tick.leftPct}%`;
-		overlay.append(line);
-	}
-	return overlay;
-}
-
-function buildGanttRow(rowInfo, ctx) {
-	const { node, depth, childCount, collapsed } = rowInfo;
-	const row = el("div", "gantt-row");
-	const cell = el("div", "tree-cell");
-	cell.style.paddingLeft = `${depth * 18 + 8}px`;
-	const toggle = el("button", "toggle", childCount > 0 ? (collapsed ? "▸" : "▾") : "·");
-	if (childCount > 0) toggle.addEventListener("click", () => ctx.toggle(node.sid));
-	else toggle.disabled = true;
-	cell.append(toggle);
-	const link = el("a", "node-label", node.label);
-	link.href = viewHref(node.sid, ctx.root);
-	link.title = node.description || node.sid;
-	cell.append(link);
-	cell.append(el("span", "node-kind", node.kind));
-	row.append(cell, buildBarLane(node, ctx));
-	return row;
-}
-
-function buildBarLane(node, ctx) {
-	const lane = el("div", "lane");
-	const geo = barGeometry(node, ctx.range, ctx.now);
-	const bar = el("a", "bar");
-	bar.href = viewHref(node.sid, ctx.root);
-	bar.dataset.status = node.status; // unknown statuses fall back to the base bar color
-	bar.style.left = `${geo.leftPct}%`;
-	bar.style.width = `${geo.widthPct}%`;
-	bar.title = `${node.label} · ${node.status} · ${formatDuration((node.endTs ?? ctx.now) - node.startTs)}`;
-	bar.append(el("span", "bar-label", barLabel(node)));
-	lane.append(bar);
-	return lane;
-}
-
-function barLabel(node) {
-	const parts = [node.label, formatCost(node.costUsd)];
-	if (node.resets > 0) parts.push(`↺${node.resets}`);
-	return parts.join(" · ");
 }
 
 // --- #/view/<sid>?root=<root> transcript --------------------------------------
@@ -459,112 +308,8 @@ function renderTranscriptPage(hash) {
 			state.liveStarted = true;
 			onPageLeave(startLive(sid, refresh));
 		}
-		drawTranscript(sid, root, transcript, tree);
+		drawTranscript(app, sid, root, transcript, tree);
 	}
-}
-
-function drawTranscript(sid, root, transcript, tree) {
-	// Preserve reading position across live refetches; stick to the bottom only
-	// if the user already was there.
-	const doc = document.documentElement;
-	const wasAtBottom = window.innerHeight + window.scrollY >= doc.scrollHeight - 60;
-	const prevScrollY = window.scrollY;
-	const openKeys = new Set(
-		[...document.querySelectorAll("details[data-key]")].filter((d) => d.open).map((d) => d.dataset.key),
-	);
-	const page = el("div", "page");
-	page.append(buildBreadcrumb(transcriptCrumbs(sid, root, tree)));
-	const grid = el("div", "transcript-grid");
-	const entries = el("div", "entries");
-	if (transcript.entries.length === 0) entries.append(el("div", "empty", "(no transcript entries)"));
-	transcript.entries.forEach((entry, index) => entries.append(buildEntry(entry, index, openKeys)));
-	grid.append(entries, buildAnchorPanel(transcript.anchors, root));
-	page.append(grid);
-	app.replaceChildren(page);
-	window.scrollTo(0, wasAtBottom ? doc.scrollHeight : prevScrollY);
-}
-
-/** sessions / session <root> / <parent chain from tree data> (current plain). */
-function transcriptCrumbs(sid, root, tree) {
-	const parts = [{ text: "sessions", href: "#/" }];
-	if (root) parts.push({ text: `session ${shortSid(root)}`, href: sessionHref(root) });
-	const chain = [];
-	if (tree) {
-		const bySid = new Map(tree.nodes.map((node) => [node.sid, node]));
-		let cursor = bySid.get(sid);
-		for (let guard = 0; cursor && guard < 32; guard++) {
-			chain.unshift(cursor);
-			cursor = cursor.parentSid === null ? undefined : bySid.get(cursor.parentSid);
-		}
-	}
-	for (const node of chain) {
-		parts.push({ text: node.label, href: node.sid === sid ? null : viewHref(node.sid, root) });
-	}
-	if (chain.length === 0) parts.push({ text: shortSid(sid), href: null });
-	return parts;
-}
-
-function buildEntry(entry, index, openKeys) {
-	const article = el("article", entry.role === "user" ? "entry user" : "entry assistant");
-	article.id = `entry-${index}`;
-	const head = el("header", "entry-head");
-	head.append(el("span", "entry-role", entry.role));
-	if (entry.tsMs !== null) head.append(el("span", "entry-ts", formatClock(entry.tsMs)));
-	article.append(head);
-	if (entry.text) article.append(el("pre", "entry-text", entry.text));
-	entry.toolCalls.forEach((call, callIndex) => {
-		article.append(buildToolCall(call, `${index}:${callIndex}`, openKeys));
-	});
-	return article;
-}
-
-function buildToolCall(call, key, openKeys) {
-	const details = el("details", "tool");
-	details.dataset.key = key; // survives live redraws via openKeys
-	if (openKeys.has(key)) details.open = true;
-	const summary = el("summary");
-	summary.append(el("code", "tool-name", call.name));
-	summary.append(el("span", "tool-args", call.argsSummary));
-	details.append(summary);
-	details.append(el("pre", "tool-output", call.output || "(no output)"));
-	return details;
-}
-
-/** Human captions for the known anchor types; unknown types render verbatim. */
-const ANCHOR_TYPE_LABELS = {
-	"handoff": "handoff",
-	"agent-spawn": "agent spawn",
-	"explorer-spawn": "explorer spawn",
-};
-
-function buildAnchorPanel(anchors, root) {
-	const panel = el("aside", "anchors");
-	panel.append(el("h2", "side-title", "anchors"));
-	if (anchors.length === 0) panel.append(el("div", "empty", "none"));
-	for (const anchor of anchors) panel.append(buildAnchor(anchor, root));
-	return panel;
-}
-
-function buildAnchor(anchor, root) {
-	const item = el("div", "anchor");
-	item.dataset.type = anchor.type;
-	const jump = el("button", "anchor-jump");
-	const caption = Object.hasOwn(ANCHOR_TYPE_LABELS, anchor.type) ? ANCHOR_TYPE_LABELS[anchor.type] : anchor.type;
-	jump.append(el("span", "anchor-type", caption));
-	if (anchor.label) jump.append(el("span", "anchor-label", anchor.label));
-	jump.addEventListener("click", () => {
-		// entryIndex 0 with zero entries: element absent → no-op.
-		const target = document.getElementById(`entry-${anchor.entryIndex}`);
-		if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
-	});
-	item.append(jump);
-	if (anchor.targetSid) {
-		const open = el("a", "anchor-open", "open transcript ↗");
-		open.href = viewHref(anchor.targetSid, root);
-		item.append(open);
-	}
-	if (anchor.description) item.append(el("div", "anchor-desc", anchor.description));
-	return item;
 }
 
 // --- boot --------------------------------------------------------------------
