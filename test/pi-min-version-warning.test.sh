@@ -30,4 +30,23 @@ done
 out="$(run_with_pi_version "not a version")"
 [[ "$out" == *"WARNING: could not read pi version"* ]] || fail "unparsable version must warn, got: $out"
 
+# version_lt: pure-bash dotted compare (numeric per component, not lexical).
+(
+    . "$REPO/lib/install-common.sh"
+    for pair in 0.86.1:0.87.0 0.87.0:0.87.1 0.9.9:0.10.0 1.2:1.2.1 0.87.09:0.87.10; do
+        version_lt "${pair%%:*}" "${pair#*:}" || fail "$pair: expected ${pair%%:*} < ${pair#*:}"
+    done
+    for pair in 0.87.0:0.87.0 0.87.1:0.87.0 0.10.0:0.9.9 1.0.0:0.99.99 1.2.0:1.2 x.1:0.1; do
+        ! version_lt "${pair%%:*}" "${pair#*:}" || fail "$pair: expected ${pair%%:*} >= ${pair#*:}"
+    done
+)
+
+# The check must never abort the installer: a failing `sort` (e.g. no -V) is irrelevant.
+sort_stub="$FIXTURE/no-sort-v"
+mkdir -p "$sort_stub"
+printf '#!/bin/sh\necho "sort: invalid option" >&2\nexit 2\n' > "$sort_stub/sort"
+chmod +x "$sort_stub/sort"
+out="$(PATH="$sort_stub:$PATH" run_with_pi_version 0.86.1)" || fail "warn_if_pi_too_old aborted with a broken sort"
+[[ "$out" == *"WARNING: pi 0.86.1 is older than the supported minimum"* ]] || fail "broken sort must still warn, got: $out"
+
 printf 'PASS: installer warns about pi older than the supported minimum\n'

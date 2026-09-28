@@ -55,18 +55,31 @@ EOF
 # Oldest pi the extensions (and the Azure retry patch) support; README "Install pi runtime".
 PI_MIN_VERSION="0.87.0"
 
+version_lt() { # <a> <b>: true if dotted numeric version a < b; pure bash (no sort -V)
+    local -a a b
+    local i x y
+    IFS=. read -r -a a <<< "$1"
+    IFS=. read -r -a b <<< "$2"
+    for ((i = 0; i < ${#a[@]} || i < ${#b[@]}; i++)); do
+        x="${a[i]:-0}" y="${b[i]:-0}"
+        [[ "$x" =~ ^[0-9]+$ && "$y" =~ ^[0-9]+$ ]] || return 1
+        ((10#$x < 10#$y)) && return 0
+        ((10#$x > 10#$y)) && return 1
+    done
+    return 1
+}
+
 warn_if_pi_too_old() {
-    # Warning only: pi keeps working, but the extensions target pi >= PI_MIN_VERSION.
+    # Warning only — must never abort the installer (set -e callers).
     command -v pi >/dev/null || return 0
-    local version oldest
+    local version
     version="$(pi --version 2>/dev/null)" || version=""
     version="${version%%$'\n'*}"
     if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
         echo "WARNING: could not read pi version; extensions require pi >= $PI_MIN_VERSION."
         return 0
     fi
-    oldest="$(printf '%s\n%s\n' "$PI_MIN_VERSION" "${BASH_REMATCH[0]}" | sort -V | head -n 1)"
-    if [ "$oldest" != "$PI_MIN_VERSION" ]; then
+    if version_lt "${BASH_REMATCH[0]}" "$PI_MIN_VERSION"; then
         echo "WARNING: pi $version is older than the supported minimum $PI_MIN_VERSION; upgrade pi (extensions and the Azure retry patch target >= $PI_MIN_VERSION)."
     fi
 }
