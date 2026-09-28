@@ -2,10 +2,11 @@
  * context-cap handoff continuation: the whole soft-cap cycle — steer, handoff
  * write, swap marker, post-swap turn — must complete INSIDE one `session.prompt()`
  * call. This is the invariant that lets the Agent tool await a child's prompt()
- * without a pending-work claim for handoffs: every continuation (steered marker,
- * followUp reminders) is drained by pi's `_runAgentPrompt` loop before the run
- * settles. If this test ever fails after a `pi update`, handoffs need a claim
- * again (see lib/pending-work.ts).
+ * (plus the queue grace in lib/session-quiet.ts) and treat the child as done:
+ * every continuation (steered marker, followUp reminders) is drained by pi's
+ * `_runAgentPrompt` loop before the run settles. If this test ever fails after a
+ * `pi update`, the Agent tool needs a new "child not finished yet" signal for
+ * handoffs.
  */
 
 // Must be set before createTestSession loads the extension (env is read at module load).
@@ -17,7 +18,6 @@ import * as path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createTestSession, textStep, toolStep } from "./harness.ts";
-import { hasPendingWork } from "../lib/pending-work.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";
 
@@ -75,9 +75,6 @@ test("soft-cap handoff cycle completes inside a single prompt() call", async () 
 		// The handoff file was written by the tool.
 		const files = fs.readdirSync(contextCapDir()).filter((n) => n.startsWith(`${sessionId}-`));
 		assert.equal(files.length, 1, "exactly one handoff file for this session");
-
-		// And no pending-work claim was ever needed for any of it.
-		assert.equal(hasPendingWork(sessionId), false);
 	} finally {
 		try {
 			for (const n of fs.readdirSync(contextCapDir())) {

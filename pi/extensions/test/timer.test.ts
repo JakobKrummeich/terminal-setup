@@ -21,7 +21,6 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { hasPendingWork } from "../lib/pending-work.ts";
 import { createTestSession, type ExtensionMode, sleep, textStep, toolStep } from "./harness.ts";
 
 const TIMER_EXTENSION = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "../timer.ts");
@@ -213,11 +212,6 @@ for (const mode of ["print", "json", "rpc"] as const) {
 				0,
 				"headless must not inject a wake-up message — nothing would be alive to receive it",
 			);
-			assert.equal(
-				hasPendingWork(t.session.sessionManager.getSessionId()),
-				false,
-				"a blocking wait outlives nothing, so it must not claim pending work",
-			);
 		} finally {
 			t.dispose();
 		}
@@ -261,7 +255,6 @@ test("headless: aborting a long wait ends it promptly and leaves no timer", asyn
 			results.some((text) => text.includes('Timer "long" wait aborted after')),
 			`aborted result missing, got: ${JSON.stringify(results)}`,
 		);
-		assert.equal(hasPendingWork(t.session.sessionManager.getSessionId()), false, "abort must leave no claim");
 
 		// Nothing may remain scheduled: the aborted wait must not deliver anything later.
 		await sleep(300);
@@ -388,7 +381,7 @@ test("headless: cancel reports that there is nothing armed to cancel", async () 
 // Interactive: unchanged async behaviour.
 // ---------------------------------------------------------------------------
 
-test("interactive: set arms the async timer, claims pending work and hands the turn back", async () => {
+test("interactive: set arms the async timer and hands the turn back", async () => {
 	const t = await createTestSession({
 		extensionPaths: [TIMER_EXTENSION],
 		mode: "tui",
@@ -414,17 +407,12 @@ test("interactive: set arms the async timer, claims pending work and hands the t
 			),
 			`interactive result changed, got: ${JSON.stringify(results)}`,
 		);
-		assert.equal(
-			hasPendingWork(t.session.sessionManager.getSessionId()),
-			true,
-			"an armed timer must claim pending work so a supervising caller keeps waiting",
-		);
 	} finally {
-		t.dispose(); // session_shutdown disarms the 300s timer and releases the claim
+		t.dispose(); // session_shutdown disarms the 300s timer
 	}
 });
 
-test("interactive: cancel disarms the timer and releases the claim", async () => {
+test("interactive: cancel disarms the timer", async () => {
 	const t = await createTestSession({
 		extensionPaths: [TIMER_EXTENSION],
 		mode: "tui",
@@ -445,8 +433,60 @@ test("interactive: cancel disarms the timer and releases the claim", async () =>
 			`cancel result missing, got: ${JSON.stringify(results)}`,
 		);
 		assert.ok(results.includes("No active timer."), `second cancel should be a no-op, got: ${JSON.stringify(results)}`);
-		assert.equal(hasPendingWork(t.session.sessionManager.getSessionId()), false, "cancel must release the claim");
 	} finally {
 		t.dispose();
 	}
 });
+
+// The settle race: expiry fires between a run's final queue-drain check and its
+// agent_settled, so the steered wake-up lands in a loop that already ended. The
+// timer must re-send it (the session is idle at settle) instead of losing it.
+test("interactive: a wake-up stranded by the settle race is re-sent, not lost", async () => {
+	const t = await createTestSession({
+		extensionPaths: [TIMER_EXTENSION],
+		mode: "tui",
+		tools: ["timer"],
+		llmDelayMs: 20,
+		script: [
+			toolStep("s1", "timer", { action: "set", name: "t1", seconds: 0.2 }),
+			textStep("run over, waiting"),
+			textStep("woke up after resend"),
+		],
+	});
+	try {
+		// Deterministically open the race window: hold the run between its final
+		// queue-drain check (_handlePostAgentRun → false) and agent_settled, so the
+		// 200ms expiry fires exactly where its steer gets stranded. Patches a private
+		// method of the installed pi build — re-verify after `pi update`.
+		const sessionAny = t.session as unknown as { _handlePostAgentRun: () => Promise<boolean> };
+		const orig = sessionAny._handlePostAgentRun.bind(t.session);
+		sessionAny._handlePostAgentRun = async () => {
+			const more = await orig();
+			if (!more) await sleep(400);
+			return more;
+		};
+
+		await t.session.prompt("start");
+
+		const deadline = Date.now() + 5000;
+		while (Date.now() < deadline && !t.deliveredUserMessages.some((m) => isExpiry(m.text))) await sleep(20);
+		assert.ok(t.deliveredUserMessages.some((m) => isExpiry(m.text)), "stranded wake-up must be re-delivered");
+		while (Date.now() < deadline && !assistantTexts(t).includes("woke up after resend")) await sleep(20);
+		await t.session.waitForIdle();
+
+		assert.ok(
+			assistantTexts(t).includes("woke up after resend"),
+			`wake-up run must have executed, got: ${JSON.stringify(assistantTexts(t))}`,
+		);
+	} finally {
+		t.dispose();
+	}
+});
+
+function assistantTexts(t: { session: { messages: unknown } }): string[] {
+	return (t.session.messages as Array<{ role: string; content?: unknown }>)
+		.filter((m) => m.role === "assistant")
+		.flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+		.filter((c: { type?: string }) => c?.type === "text")
+		.map((c: { text?: string }) => c.text ?? "");
+}

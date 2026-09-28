@@ -35,18 +35,12 @@
  * the next LLM call), which is what "wake me when the time is up" means.
  * When the agent is idle, deliverAs is ignored and the message starts a turn.
  *
- * Pending-work claims: an armed timer means "this session will do more work after
- * the current run ends". A child session (Agent tool) must not be reported as
- * finished in that window, so the timer claims pending work from `set` until the
- * wake-up run has settled (see lib/pending-work.ts). Release is evidence-based:
- * the claim is dropped only after the wake-up message was actually DELIVERED
- * (observed via message_start) and its run settled — not merely because some run
- * settled. If a settle finds the wake-up undelivered (expiry fired in the gap
- * between a run's final queue drain and agent_settled, stranding the steer in a
- * dead loop), the wake-up is re-sent — the session is idle at that point, so the
- * re-send starts the run the expiry was meant to trigger. Claims carry a cancel
- * callback so a caller that stops supervising the session (abort) can disarm the
- * timer entirely instead of leaving it to fire unsupervised.
+ * Stranded wake-ups: if the expiry fires in the gap between a run's final queue
+ * drain and agent_settled, the steer is queued into a loop that already ended and
+ * would never be delivered. So after expiry the timer watches for the wake-up
+ * message actually entering a run (message_start); a settle that finds it
+ * undelivered re-sends it — the session is idle at that point, so the re-send
+ * starts the run the expiry was meant to trigger.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -54,14 +48,8 @@ import { Type } from "typebox";
 import { inChildSession } from "./lib/child-context.ts";
 import { envInt } from "./lib/env.ts";
 import { messageText } from "./lib/message-text.ts";
-import { claimPendingWork, releasePendingWork } from "./lib/pending-work.ts";
 
-const CLAIM = "timer";
-/** Safety margin on the armed claim; refreshed with a longer budget once it fires. */
-const ARMED_GRACE_MS = 60_000;
-/** Cap on how long the woken-up run may keep a caller waiting. */
-const WAKE_TIMEOUT_MS = 30 * 60_000;
-/** Re-send attempts for a stranded wake-up before giving up and releasing. */
+/** Re-send attempts for a stranded wake-up before giving up. */
 const MAX_WAKE_RESENDS = 3;
 /**
  * Optional cap on ONE blocking (headless) wait, in seconds. Unset (or <= 0) means
@@ -163,18 +151,13 @@ export default function timerExtension(pi: ExtensionAPI) {
 	if (inChildSession()) return;
 
 	let active: ActiveTimer | undefined;
-	let sessionId: string | undefined;
-	/** Expiry fired, wake-up run not settled yet — still pending work. */
+	/** Expiry fired, wake-up run not settled yet. */
 	let awaitingWake = false;
 	/** Exact wake-up text sent at expiry; matched against message_start. */
 	let wakeText: string | undefined;
 	/** The wake-up message was observed entering a run. */
 	let wakeDelivered = false;
 	let wakeResends = 0;
-
-	function release() {
-		if (sessionId) releasePendingWork(sessionId, CLAIM);
-	}
 
 	function resetWakeState() {
 		awaitingWake = false;
@@ -183,20 +166,10 @@ export default function timerExtension(pi: ExtensionAPI) {
 		wakeResends = 0;
 	}
 
-	/** Claim cancel callback: the caller walked away — disarm everything. */
-	function disarm() {
-		if (active) {
-			clearTimeout(active.timeout);
-			active = undefined;
-		}
-		resetWakeState();
-	}
-
 	function clearActive(): ActiveTimer | undefined {
 		const prev = active;
 		if (prev) clearTimeout(prev.timeout);
 		active = undefined;
-		if (!awaitingWake) release();
 		return prev;
 	}
 
@@ -205,8 +178,8 @@ export default function timerExtension(pi: ExtensionAPI) {
 		clearActive();
 	});
 
-	// Watch for the wake-up message actually entering a run. This is the release
-	// evidence: only a settle AFTER delivery means the wake-up work happened.
+	// Watch for the wake-up message actually entering a run: only a settle AFTER
+	// delivery means the wake-up work happened.
 	pi.on("message_start", (event) => {
 		if (!awaitingWake || wakeDelivered || !wakeText) return;
 		const msg = event.message as { role?: string; content?: unknown };
@@ -217,10 +190,8 @@ export default function timerExtension(pi: ExtensionAPI) {
 	pi.on("agent_settled", () => {
 		if (!awaitingWake) return;
 		if (wakeDelivered) {
-			// The run containing the wake-up has finished: nothing is outstanding
-			// unless another timer was set during that run.
+			// The run containing the wake-up has finished.
 			resetWakeState();
-			if (!active) release();
 			return;
 		}
 		// Stranded wake-up: the expiry fired between this run's final queue drain and
@@ -229,7 +200,6 @@ export default function timerExtension(pi: ExtensionAPI) {
 		// (The stranded original may be drained too; a duplicate wake-up is harmless.)
 		if (!wakeText || wakeResends >= MAX_WAKE_RESENDS) {
 			resetWakeState();
-			if (!active) release();
 			return;
 		}
 		wakeResends++;
@@ -238,7 +208,6 @@ export default function timerExtension(pi: ExtensionAPI) {
 		} catch (e) {
 			console.warn("[timer] failed to re-send stranded wake-up:", e);
 			resetWakeState();
-			if (!active) release();
 		}
 	});
 
@@ -250,11 +219,10 @@ export default function timerExtension(pi: ExtensionAPI) {
 		parameters: timerParams,
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			sessionId = ctx.sessionManager.getSessionId();
 			const interactive = isInteractive(ctx);
 			if (params.action === "cancel") {
-				// Also runs headless: no async timer is ever armed there, but clearActive()
-				// keeps the pending-work registry consistent either way.
+				// Also runs headless: no async timer is ever armed there, so clearActive()
+				// finds nothing and the headless explanation below is returned.
 				const prev = clearActive();
 				if (prev) {
 					const remaining = Math.max(0, Math.round((prev.expiresAt - Date.now()) / 1000));
@@ -318,21 +286,17 @@ export default function timerExtension(pi: ExtensionAPI) {
 				wakeText = `Timer "${name}" expired. Continue your task.`;
 				wakeDelivered = false;
 				wakeResends = 0;
-				if (sessionId) claimPendingWork(sessionId, CLAIM, WAKE_TIMEOUT_MS, disarm);
 				try {
 					pi.sendUserMessage(wakeText, { deliverAs: "steer" });
 				} catch (e) {
-					// The wake-up can never arrive: release instead of holding a caller
-					// hostage for the full claim timeout.
+					// The wake-up can never arrive: nothing left to watch for.
 					console.warn("[timer] failed to deliver expiry message:", e);
 					resetWakeState();
-					release();
 				}
 			}, params.seconds * 1000);
 			timeout.unref?.();
 
 			active = { name, timeout, expiresAt };
-			claimPendingWork(sessionId, CLAIM, params.seconds * 1000 + ARMED_GRACE_MS, disarm);
 
 			const fireTime = new Date(expiresAt).toLocaleTimeString();
 			const replacedNote = replaced

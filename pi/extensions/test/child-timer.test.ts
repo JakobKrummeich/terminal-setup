@@ -17,7 +17,7 @@
  *  - a scripted timer call comes back "Tool timer not found" — the tool is
  *    structurally absent, not merely discouraged;
  *  - nothing blocks: the child's run completes far quicker than the requested
- *    wait, and no pending-work claim is left behind;
+ *    wait;
  *  - the child emits NO wsstate/wswait OSC on the shared stdout (those
  *    extensions are main-session-only, agent-busy-tracker.test.ts has the
  *    positive side).
@@ -40,7 +40,6 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { initTheme, ModelRuntime, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { liveChildren, runChildTool } from "../lib/child-session.ts";
-import { hasPendingWork } from "../lib/pending-work.ts";
 import { type ResponseStep, type ScriptedStep, sleep, textStep, toolStep } from "./harness.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
@@ -138,7 +137,7 @@ async function makeCtx(script: ScriptedStep[], calls: CapturedCall[]): Promise<E
 	} as unknown as ExtensionContext;
 }
 
-test("a real child has no timer tool: call errors fast, nothing blocks, no OSC, no claim", async () => {
+test("a real child has no timer tool: call errors fast, nothing blocks, no OSC", async () => {
 	const calls: CapturedCall[] = [];
 	const ctx = await makeCtx(
 		[
@@ -181,16 +180,6 @@ test("a real child has no timer tool: call errors fast, nothing blocks, no OSC, 
 		);
 		assert.ok(!calls[1].messages.includes("fired after"), "no blocking wait ran");
 		assert.ok(!calls[1].messages.includes("expired."), "no wake-up was injected");
-
-		// No pending-work claim outlives the call (the interactive path's claim
-		// machinery never engaged).
-		for (const record of liveChildren.values()) {
-			assert.equal(
-				hasPendingWork(record.session.sessionManager.getSessionId()),
-				false,
-				"child must hold no pending-work claim",
-			);
-		}
 
 		// The child loaded wsstate.ts and agent-busy-tracker.ts like production
 		// children do — and emitted NO terminal-state OSC: all main-session-only.

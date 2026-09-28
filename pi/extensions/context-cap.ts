@@ -148,10 +148,11 @@ const MAX_RETRIES = 2;
 const TOOL_NAME = CONTEXT_CAP_TOOL_NAME;
 /** Read at call time (not import time) so it can be flipped per test / per run. */
 const COMPACT_HANDOFF_ENV = "CONTEXT_CAP_COMPACT_HANDOFF";
-// No pending-work claim here (unlike timer.ts): every handoff continuation — the
-// steered swap marker, followUp reminders, the post-swap turns — is drained inside
-// the same `_runAgentPrompt` loop, so a caller awaiting `session.prompt()` already
-// sees the whole cycle. Regression-tested in test/context-cap.test.ts.
+// Child done-detection needs nothing from this extension: every handoff
+// continuation — the steered swap marker, followUp reminders, the post-swap turns —
+// is drained inside the same `_runAgentPrompt` loop, so a caller awaiting
+// `session.prompt()` (lib/child-session.ts) already sees the whole cycle.
+// Regression-tested in test/context-cap.test.ts.
 
 // ---------------------------------------------------------------------------
 // Messages

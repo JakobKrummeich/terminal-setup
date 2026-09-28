@@ -23,7 +23,6 @@ import { appendEvent, findSpawnsByLabel, type RunStatus } from "./agent-runs.ts"
 import { type ChildSessionInfo, runInChildSession } from "./child-context.ts";
 import { ChildView, formatTokenCount } from "./child-view.ts";
 import { messageText } from "./message-text.ts";
-import { cancelPendingWork } from "./pending-work.ts";
 import { sharedState } from "./shared-state.ts";
 import { waitForSessionQuiet } from "./session-quiet.ts";
 import { CONTEXT_CAP_TOOL_NAME } from "./env.ts";
@@ -53,8 +52,6 @@ export interface ChildRecord {
 	turns: number;
 	elapsedMs: number;
 	currentTool?: string;
-	/** Reasons the child is between runs but not finished (timer, context handoff). */
-	waitingFor?: string;
 	running: boolean;
 	/**
 	 * Epoch ms the current run started (runChildRecord); undefined between runs.
@@ -107,7 +104,7 @@ interface BusyGroup {
 // State lives on globalThis, NOT in module scope: pi's extension loader creates a
 // fresh jiti instance with `moduleCache: false` per extension file, so subagent.ts
 // and explore.ts each import their own *copy* of this module (same reasoning as
-// lib/pending-work.ts). Module-level state would split into per-copy islands:
+// lib/shared-state.ts). Module-level state would split into per-copy islands:
 // explorers would be invisible to the F2 watch (registered via subagent.ts's copy)
 // and session_shutdown would clear only agent children.
 interface SharedState {
@@ -344,11 +341,7 @@ function labelFromPrompt(prompt: string): string {
 }
 
 export function statusLine(record: ChildRecord): string {
-	const activity = record.waitingFor
-		? `waiting for ${record.waitingFor}`
-		: record.currentTool
-			? `running ${record.currentTool}`
-			: "thinking";
+	const activity = record.currentTool ? `running ${record.currentTool}` : "thinking";
 	return `${record.kind}#${record.id} · ${record.description} · turn ${record.turns + 1} · ${activity}`;
 }
 
@@ -727,39 +720,9 @@ function busyGroup(name: string): BusyGroup {
 }
 
 /**
- * Wait until the child is really done, not merely between runs.
- *
- * `session.prompt()` resolves when the model stops calling tools — but an extension
- * may restart the session from the outside (the classic case: a `timer` wake-up
- * message). Extensions announce such restarts as pending-work claims
- * (lib/pending-work.ts); the child is done only when it is idle with an empty queue
- * and no claim left (lib/session-quiet.ts). Claims are self-expiring, so a lost
- * wake-up delays the result instead of hanging it.
- *
- * Note: nothing inside a child currently produces claims — `timer` (the only claim
- * producer today) is main-session-only and registers nothing in a child, and
- * children wait on background jobs by blocking in `bash`. So for a child this wait
- * is in practice the queue grace (a queued steer/follow-up about to run) plus any
- * claim some extension registers for the child's session id; the claim path stays
- * the contract for any future out-of-band restart.
- */
-async function waitForChildDone(
-	record: ChildRecord,
-	signal: AbortSignal | undefined,
-	pushStatus: () => void,
-): Promise<void> {
-	const sessionId = record.session.sessionManager.getSessionId();
-	await waitForSessionQuiet(record.session, sessionId, signal, (reasons) => {
-		record.waitingFor = reasons.length > 0 ? reasons.join(", ") : undefined;
-		pushStatus();
-	});
-}
-
-/**
- * Cap on how long a settling child may keep its semaphore slot. Same rationale
- * as pending-work claims being self-expiring: if waitForIdle() never resolves
- * (hung child), the slot would otherwise be stranded for the rest of the pi
- * session — at limit 1 (Agent group) the tool would be permanently busy.
+ * Cap on how long a settling child may keep its semaphore slot: if waitForIdle()
+ * never resolves (hung child), the slot would otherwise be stranded for the rest
+ * of the pi session — at limit 1 (Agent group) the tool would be permanently busy.
  */
 const SETTLE_TIMEOUT_MS = 60_000;
 
@@ -871,8 +834,8 @@ async function resumeChildRecord(
 		}
 		// With explorers running in parallel, two calls can pass the semaphore and
 		// resume the same child at once — session.prompt() on a busy session throws,
-		// and the loser's wind-down would mark the winner's record as not running and
-		// cancel its pending work. Also covers a session still draining after an abort.
+		// and the loser's wind-down would mark the winner's record as not running.
+		// Also covers a session still draining after an abort.
 		// No await between this check and the claim below.
 		if (existing.running || !existing.session.isIdle) return stillRunning();
 		record = existing;
@@ -945,7 +908,7 @@ async function spawnChildRecord(
 
 /**
  * Run one prompt on a claimed record and do the run's bookkeeping: elapsed time,
- * runStartedAt, pending-work cancel and the agent-runs finish row.
+ * runStartedAt and the agent-runs finish row.
  */
 async function runChildRecord(
 	record: ChildRecord,
@@ -973,7 +936,9 @@ async function runChildRecord(
 	let failed = false;
 	try {
 		await record.session.prompt(params.prompt);
-		await waitForChildDone(record, signal, watcher.pushStatus);
+		// prompt() resolving means the model stopped calling tools; a queued
+		// steer/follow-up may still be about to run (lib/session-quiet.ts).
+		await waitForSessionQuiet(record.session, signal);
 	} catch (error) {
 		failed = true; // finish row must say "error", not "done"
 		throw error;
@@ -983,12 +948,7 @@ async function runChildRecord(
 		watcher.stop();
 		record.running = false;
 		record.currentTool = undefined;
-		record.waitingFor = undefined;
 		signal?.removeEventListener("abort", onAbort);
-		// The tool call is over: nothing may keep working unsupervised in the shared
-		// worktree. No-op on a clean finish (no claims left); on abort or claim
-		// self-expiry this disarms the child's timer via the claim's cancel callback.
-		cancelPendingWork(record.session.sessionManager.getSessionId());
 		// After elapsedMs is final: the finish row carries this run's cumulative numbers.
 		writeFinishEvent(record, signal?.aborted ? "cancelled" : failed ? "error" : "done");
 	}
