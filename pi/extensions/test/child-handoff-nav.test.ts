@@ -4,7 +4,7 @@
  * ChildView prefixes every context-cap swap marker ("context-cap-swap") with a
  * one-line `── ⇄ handoff i/N · at …k tokens · <trigger> ──` divider whose line
  * index render() records in handoffAnchors — the Shift+↑/↓ jump targets. Covered
- * for replay (saved branch), both live transports (message_start and Pi >=0.87
+ * for replay (saved branch), both live transports (message_start and
  * entry_appended), and a real child run whose swap is delivered by pi itself.
  */
 
@@ -149,7 +149,7 @@ test("live: both transports add one anchor each; N grows at render time", () => 
 	assert.equal(view.handoffCount, 1);
 	let lines = plain(view.render(80));
 	assert.match(lines[view.handoffAnchors[0]!]!, /^── ⇄ handoff 1\/1 · at 2k tokens · hard cap ─+$/);
-	// Pi >=0.87 boundary-committed marker: entry_appended only.
+	// Boundary-committed marker: entry_appended only.
 	view.handle({
 		type: "entry_appended",
 		entry: marker("LIVE-TWO-SENTINEL", { tokensAtSwap: 900, trigger: "soft" }),

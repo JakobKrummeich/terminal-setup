@@ -221,7 +221,7 @@ test("one-jump hard-cap crossing: emergency steer, handoff survives into the swa
 		assert.equal(refused, false, "the handoff tool must not be refused");
 
 		// F2 watch view, fed by the REAL child event stream: the marker must be
-		// visible whichever transport pi used to deliver it (Pi >=0.87 commits it
+		// visible whichever transport pi used to deliver it (context-cap commits it
 		// as a turn_end boundary entry — entry_appended, no message_start).
 		const watched = liveChildren.get(childId)!.view.render(200).join("\n");
 		assert.ok(watched.includes("Survive-the-jump-SENTINEL"), "F2 view must render the swap marker's handoff body");
@@ -247,7 +247,7 @@ test("ChildView renders injected steers and swap markers; prompt renders once", 
 	view.handle(
 		event({ role: "custom", customType: "context-cap-swap", content: "MARKER-SENTINEL", display: true }),
 	);
-	// Pi >=0.87 boundary-committed marker: entry_appended only, no message_start.
+	// Boundary-committed marker: entry_appended only, no message_start.
 	const appended = (entry: Record<string, unknown>) =>
 		({ type: "entry_appended", entry }) as unknown as AgentSessionEvent;
 	view.handle(

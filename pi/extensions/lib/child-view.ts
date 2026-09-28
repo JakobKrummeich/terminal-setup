@@ -225,9 +225,10 @@ export class ChildView {
 	 * the F2 view shows a handoff tool call with no visible cause and no visible
 	 * post-swap injection. The child's own prompt() delivery re-emits the prompt
 	 * already shown by addUserMessage; pendingManualPrompts swallows exactly those.
-	 * Two transports reach here: message_start (queued/steered messages) and, on
-	 * Pi >=0.87, entry_appended — context-cap commits its swap marker as a turn_end
-	 * boundary entry, which pi persists WITHOUT any message_start. Each delivery
+	 * Two transports reach here: message_start (queued/steered messages, e.g.
+	 * context-cap steers and reminders, sendMessage deliveries) and entry_appended
+	 * (boundary entries — context-cap commits its swap marker as a turn_end
+	 * boundary entry, which pi persists WITHOUT any message_start). Each delivery
 	 * emits exactly one of the two, so handling both never double-renders.
 	 */
 	private addInjectedMessage(message: MessageBlock) {
