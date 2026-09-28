@@ -15,7 +15,8 @@ byte-exact.
 ```
 pi/extensions/    pi TUI extensions (symlinked as ~/.pi/agent/extensions)
 pi/extensions/test/  extension tests: real AgentSession + scripted fake LLM
-                  (`./pi/extensions/test/run.sh`)
+                  (`./pi/extensions/test/run.sh`); quality gate
+                  `./pi/extensions/test/check.sh` (pinned tools in test/tools/)
 pi/skills/        agent skills (each dir symlinked into ~/.pi/agent/skills/;
                   per-skill links so non-repo skills can coexist there)
 pi/settings.json  reference copy (copied on fresh install, never symlinked --
@@ -313,11 +314,18 @@ nesting at one layer (structural, not a counter — nothing to configure).
 ```bash
 ./pi/extensions/test/run.sh          # all extension tests
 ./pi/extensions/test/run.sh --test-name-pattern=timer
-cd pi/extensions/test && command npx -y -p typescript tsc -p .   # typecheck (run run.sh once first: it builds the node_modules symlink farm)
+./pi/extensions/test/check.sh        # quality gate: typecheck, eslint, dependency-cruiser, jscpd, shellcheck
 for t in test/*.test.sh; do bash "$t" || echo "FAIL: $t"; done   # installer/patch shell tests (repo root; sandboxed in mktemp dirs)
 ```
 
-`node --test` with on-the-fly type transform (node >= 22), no build step. Tests drive a real
+`check.sh` is a local gate (no CI, no git hook) with exact-pinned tools in
+`pi/extensions/test/tools/` (`package.json` + `package-lock.json`); it
+`npm ci`s them into the gitignored `tools/node_modules` on first run or when the
+lockfile changes — the only step that needs network. Pre-existing
+complexity/size offenders are frozen in `tools/eslint-suppressions.json` and may
+only shrink. Rules and bump procedure: AGENTS.md "Verify changes".
+
+`node --test` with Node's type stripping (node >= 22.6), no build step. Tests drive a real
 pi `AgentSession` with `session.agent.streamFunction` replaced by a scripted fake
 LLM (`test/harness.ts`) — no network, no API key, real agent loop and real
 steering/follow-up queues. The runner creates a gitignored `test/node_modules`
