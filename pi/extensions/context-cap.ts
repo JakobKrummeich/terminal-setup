@@ -112,6 +112,11 @@
  * values in force and their source are recorded in every swap marker and handoff
  * frontmatter (contextWindow / softCap / hardCap / capSource).
  *
+ * Code layout: the state machine's decisions (which branch a message_end /
+ * turn_end takes) are pure functions over one CycleState in
+ * lib/context-cap-decide.ts, table-tested per branch; the handlers here gather
+ * input, call them and run the chosen action's side effects.
+ *
  * Config: the levers below; CONTEXT_CAP_COMPACT_HANDOFF=0 disables the pi-compaction hook (default on).
  * Live-verified (compaction-hijack predecessor + this design's API surface) 2026-07-08.
  * Full soft-cap cycle (steer → handoff write → swap) live-tested with lowered caps 2026-07-09.
