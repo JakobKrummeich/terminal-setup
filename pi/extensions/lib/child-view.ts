@@ -18,6 +18,7 @@ import {
 	type TUI,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
+import { formatTokenCount } from "./format.ts";
 import { messageText } from "./message-text.ts";
 import { SWAP_MARKER_TYPE, type SwapTrigger } from "./message-types.ts";
 
@@ -309,10 +310,4 @@ export class ChildView {
 		}
 		this.requestRender();
 	}
-}
-
-export function formatTokenCount(count: number): string {
-	if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
-	if (count >= 1000) return `${Math.round(count / 1000)}k`;
-	return String(count);
 }

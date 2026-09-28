@@ -15,8 +15,8 @@ import {
 	metaLine,
 	statusLine,
 } from "./child-session.ts";
-import { formatTokenCount } from "./child-view.ts";
 import { CONTEXT_CAP_STATUS_KEY, resolveTriggers } from "./env.ts";
+import { formatCapStatus } from "./format.ts";
 import { renderFooterLines } from "./footer.ts";
 import { sharedState } from "./shared-state.ts";
 
@@ -257,11 +257,10 @@ function gitBranch(cwd: string): string | null {
 function childFooterData(ctx: ExtensionContext, record: ChildRecord, branch: string | null) {
 	const session = record.session;
 	const usage = session.getContextUsage();
-	const tokens = usage?.tokens == null ? "?" : formatTokenCount(usage.tokens);
 	// The child has its own model, so resolve ITS soft cap rather than showing the
 	// static ceiling — a small-window child swaps far below 260k (see lib/env.ts).
+	// A disabled cap is +Infinity, which formatCapStatus renders as "off".
 	const caps = resolveTriggers(usage?.contextWindow);
-	const soft = caps.disabled || !Number.isFinite(caps.soft) ? "off" : formatTokenCount(caps.soft);
 	return {
 		cost: session.getSessionStats().cost,
 		usingSubscription: session.model ? ctx.modelRegistry.isUsingOAuth(session.model) : false,
@@ -271,7 +270,7 @@ function childFooterData(ctx: ExtensionContext, record: ChildRecord, branch: str
 		modelId: session.model?.id,
 		reasoning: session.model?.reasoning === true,
 		thinkingLevel: session.thinkingLevel,
-		statuses: new Map([[CONTEXT_CAP_STATUS_KEY, `${tokens}/${soft}`]]),
+		statuses: new Map([[CONTEXT_CAP_STATUS_KEY, formatCapStatus(usage?.tokens, caps.soft)]]),
 	};
 }
 

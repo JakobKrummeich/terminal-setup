@@ -134,6 +134,7 @@ import {
 	type ResolvedTriggers,
 	type TriggerSource,
 } from "./lib/env.ts";
+import { formatCapStatus, formatTokenCount } from "./lib/format.ts";
 import { draftHandoff, handoffLineBudget, handoffSections, type HandoffMessage } from "./lib/handoff-writer.ts";
 import { HANDOFF_PREAMBLE, SWAP_MARKER_TYPE, type SwapTrigger } from "./lib/message-types.ts";
 
@@ -295,11 +296,6 @@ function writeHandoff(
 /** null / +Infinity (a disabled cap) are not YAML numbers — emit the null literal. */
 function yamlNumber(n: number | null): string {
 	return n != null && Number.isFinite(n) ? String(n) : "null";
-}
-
-function fmtTokens(n: number): string {
-	if (!Number.isFinite(n)) return "off";
-	return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
 }
 
 // ---------------------------------------------------------------------------
@@ -580,11 +576,10 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 	}
 
 	function updateStatus(ctx: ExtensionContext, tokens: number | null | undefined, resolved?: ResolvedTriggers) {
-		const t = tokens == null ? "?" : fmtTokens(tokens);
 		let suffix = "";
 		if (phase === "steered" || phase === "prompted") suffix = " ⚠ handoff";
 		else if (phase === "exhausted") suffix = " ⚠ awaiting hard cap";
-		ctx.ui.setStatus(CONTEXT_CAP_STATUS_KEY, `${t}/${fmtTokens((resolved ?? caps(ctx)).soft)}${suffix}`);
+		ctx.ui.setStatus(CONTEXT_CAP_STATUS_KEY, formatCapStatus(tokens, (resolved ?? caps(ctx)).soft, suffix));
 	}
 
 	// deliverAs is ignored when idle (agent-session.js: isStreaming ? streamingBehavior
@@ -716,9 +711,9 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			ctx.ui.notify("context-cap: hard cap hit with no handoff file — swapping without summary", "warning");
 		}
 		appendEvent(ctx.sessionManager.getSessionDir(), { ts: Date.now(), event: "reset", sid: sessionId(ctx) });
-		ctx.ui.setStatus(CONTEXT_CAP_STATUS_KEY, `swapped/${fmtTokens(swap.swapCaps.soft)}`);
+		ctx.ui.setStatus(CONTEXT_CAP_STATUS_KEY, `swapped/${formatTokenCount(swap.swapCaps.soft)}`);
 		ctx.ui.notify(
-			`context-cap: context swapped (${swap.details.trigger}, ${fmtTokens(swap.details.tokensAtSwap)} tokens)`,
+			`context-cap: context swapped (${swap.details.trigger}, ${formatTokenCount(swap.details.tokensAtSwap)} tokens)`,
 			"info",
 		);
 		return boundaryResult;
@@ -741,7 +736,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		// message that crossed the cap must be appended by hand.
 		if (lastMessage) messages.push(lastMessage as HandoffMessage);
 		if (messages.length === 0 || !expectedPath) return undefined;
-		ctx.ui.setStatus(CONTEXT_CAP_STATUS_KEY, `writing handoff/${fmtTokens(stampCaps(ctx).soft)}`);
+		ctx.ui.setStatus(CONTEXT_CAP_STATUS_KEY, `writing handoff/${formatTokenCount(stampCaps(ctx).soft)}`);
 		ctx.ui.notify("context-cap: no fresh handoff — writing one from the context (one LLM call)", "warning");
 		// Never throws (lib/handoff-writer.ts contract); honors the run's abort signal.
 		const draft = await draftHandoff({
@@ -787,7 +782,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			tokensAtTrigger = tokens;
 		}
 		const fresh = expectedPath && handoffWritten ? expectedPath : undefined;
-		ctx.ui.notify(`context-cap: hard cap (${fmtTokens(tokens)}) — forcing handoff`, "warning");
+		ctx.ui.notify(`context-cap: hard cap (${formatTokenCount(tokens)}) — forcing handoff`, "warning");
 		if (!fresh) {
 			// No handoff from this cycle: rather than re-injecting a possibly minutes-old
 			// file (or nothing at all), spend one LLM call on a current one.
@@ -1014,7 +1009,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 				updateStatus(ctx, tokens, capsNow);
 				pi.sendUserMessage(hardSteerMessage(tokens, capsNow), { deliverAs: "steer" });
 				ctx.ui.notify(
-					`context-cap: hard cap (${fmtTokens(tokens)}) crossed in one jump — emergency handoff requested`,
+					`context-cap: hard cap (${formatTokenCount(tokens)}) crossed in one jump — emergency handoff requested`,
 					"warning",
 				);
 				return;
@@ -1047,7 +1042,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			// stopReason "toolUse" ⇒ run is streaming, so steer is the live path;
 			// deliverAs is ignored when idle (plain prompt), making one call safe for both.
 			pi.sendUserMessage(steerMessage(tokens, capsNow), { deliverAs: "steer" });
-			ctx.ui.notify(`context-cap: soft cap (${fmtTokens(tokens)}) — handoff requested`, "info");
+			ctx.ui.notify(`context-cap: soft cap (${formatTokenCount(tokens)}) — handoff requested`, "info");
 		}
 	});
 
@@ -1117,7 +1112,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			phase = "prompted";
 			updateStatus(ctx, tokens, capsNow);
 			send(silentStopMessage(tokens, capsNow));
-			ctx.ui.notify(`context-cap: soft cap (${fmtTokens(tokens)}) — last-turn handoff requested`, "info");
+			ctx.ui.notify(`context-cap: soft cap (${formatTokenCount(tokens)}) — last-turn handoff requested`, "info");
 			return continueActionableBoundary(event);
 		}
 	};

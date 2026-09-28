@@ -21,7 +21,8 @@ import {
 import { Text } from "@earendil-works/pi-tui";
 import { appendEvent, findSpawnsByLabel, type RunStatus } from "./agent-runs.ts";
 import { type ChildSessionInfo, runInChildSession } from "./child-context.ts";
-import { ChildView, formatTokenCount } from "./child-view.ts";
+import { ChildView } from "./child-view.ts";
+import { formatTokenCount } from "./format.ts";
 import { messageText } from "./message-text.ts";
 import { sharedState } from "./shared-state.ts";
 import { waitForSessionQuiet } from "./session-quiet.ts";
