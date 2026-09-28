@@ -138,10 +138,15 @@ import {
 	type HandoffSchema,
 	resolveTriggers,
 	type ResolvedTriggers,
-	type TriggerSource,
 } from "./lib/env.ts";
 import { formatCapStatus, formatTokenCount } from "./lib/format.ts";
 import { draftHandoff, handoffLineBudget, handoffSections, type HandoffMessage } from "./lib/handoff-writer.ts";
+import {
+	type CycleState,
+	type HandoffAuthor,
+	idleCycle,
+	MAX_RETRIES,
+} from "./lib/context-cap-decide.ts";
 import { HANDOFF_PREAMBLE, SWAP_MARKER_TYPE, type SwapTrigger } from "./lib/message-types.ts";
 
 // ---------------------------------------------------------------------------
@@ -151,7 +156,6 @@ import { HANDOFF_PREAMBLE, SWAP_MARKER_TYPE, type SwapTrigger } from "./lib/mess
 /** A/B levers, resolved once in lib/env.ts (see the header). */
 const SCHEMA: HandoffSchema = CONTEXT_CAP_SCHEMA;
 const TAIL_TOKENS = CONTEXT_CAP_TAIL_TOKENS;
-const MAX_RETRIES = 2;
 const TOOL_NAME = CONTEXT_CAP_TOOL_NAME;
 /** Read at call time (not import time) so it can be flipped per test / per run. */
 const COMPACT_HANDOFF_ENV = "CONTEXT_CAP_COMPACT_HANDOFF";
@@ -474,83 +478,28 @@ export function selectContextTail(
 // Extension
 // ---------------------------------------------------------------------------
 
-type Phase = "idle" | "steered" | "prompted" | "exhausted";
-/** Who wrote the handoff document: the agent via the tool, or the writer LLM call. */
-type HandoffAuthor = "agent" | "machine";
-
-/** Forensic metadata persisted on the swap-marker session entry (never sent to LLM). */
-interface SwapDetails {
-	seq: number | null;
-	trigger: SwapTrigger;
-	tokensAtSwap: number;
-	handoffPath: string | null;
-	stale: boolean;
-	/** null = no document at all (hard-no-file). Lets reconstruction tell the paths apart. */
-	author: HandoffAuthor | null;
-	/** A/B lever: handoff document schema the writer was asked for. */
-	schema: HandoffSchema;
-	/** A/B lever: configured recency-tail budget (CONTEXT_CAP_TAIL_TOKENS). */
-	tailTokens: number;
-	/** Estimated tokens of raw transcript kept in front of the handoff (0 = lever off). */
-	tailKeptTokens: number;
-	/** Model context window this cycle's caps were derived from; null = unknown. */
-	contextWindow: number | null;
-	/** Soft trigger actually in force when the cycle started. */
-	softCap: number;
-	/** Hard trigger actually in force when the cycle started. */
-	hardCap: number;
-	/** Where softCap/hardCap came from: explicit env, derived from the window, or the static default. */
-	capSource: TriggerSource;
-}
-
-interface StagedSwap {
-	content: string;
-	details: SwapDetails;
-	swapCaps: ResolvedTriggers;
-	/** Exact assistant object whose message_end prepared this marker. */
-	sourceMessage: unknown;
-}
-
 export default function contextCapExtension(pi: ExtensionAPI) {
-	let phase: Phase = "idle";
-	let expectedPath: string | undefined;
-	let seq = 0;
-	let retries = 0;
-	let tokensAtTrigger = 0;
-	/** Set by the tool once the handoff file is on disk. Replaces existsSync polling. */
-	let handoffWritten = false;
-	/** One-shot grace so the hard cap doesn't swap away the message carrying the tool call. */
-	let hardGraceUsed = false;
+	/**
+	 * The current handoff cycle (lib/context-cap-decide.ts CycleState documents the
+	 * lifecycle). Always accessed as `cycle.<field>`, never aliased: resetCycle()
+	 * replaces the object, and code resuming after an await must see the new one.
+	 */
+	let cycle: CycleState = idleCycle();
 	/**
 	 * Model-aware triggers. Resolved FRESH on every check (the model can change
 	 * mid-session and pi has no model-switch event), never at import time.
 	 */
 	const resolveCaps = createCapResolver();
 	/**
-	 * The pair in force when the current cycle started — what the steer message
-	 * quoted, and therefore what the marker/frontmatter must record. Deliberately
-	 * NOT re-resolved at swap time: the forensic question is "what fired this".
-	 */
-	let cycleCaps: ResolvedTriggers | null = null;
-	/** Marker prepared during message_end and committed at the imminent turn_end boundary. */
-	let stagedSwap: StagedSwap | null = null;
-	/**
 	 * Last LLM-visible message array (post-slice, i.e. exactly what the model saw).
-	 * Cached HERE, not in lib/: jiti gives each extension file its own module copy,
-	 * so module-level state in lib/ would silently split (AGENTS.md).
+	 * Session-lifetime, NOT part of the cycle (a reset keeps it). Cached HERE, not
+	 * in lib/: jiti gives each extension file its own module copy, so module-level
+	 * state in lib/ would silently split (AGENTS.md).
 	 */
 	let lastContextMessages: readonly HandoffMessage[] = [];
 
 	function resetCycle() {
-		phase = "idle";
-		expectedPath = undefined;
-		seq = 0;
-		retries = 0;
-		tokensAtTrigger = 0;
-		handoffWritten = false;
-		hardGraceUsed = false;
-		cycleCaps = null;
-		stagedSwap = null;
+		cycle = idleCycle();
 	}
 
 	function sessionId(ctx: ExtensionContext): string {
@@ -571,8 +520,8 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 
 	function updateStatus(ctx: ExtensionContext, tokens: number | null | undefined, resolved?: ResolvedTriggers) {
 		let suffix = "";
-		if (phase === "steered" || phase === "prompted") suffix = " ⚠ handoff";
-		else if (phase === "exhausted") suffix = " ⚠ awaiting hard cap";
+		if (cycle.phase === "steered" || cycle.phase === "prompted") suffix = " ⚠ handoff";
+		else if (cycle.phase === "exhausted") suffix = " ⚠ awaiting hard cap";
 		ctx.ui.setStatus(CONTEXT_CAP_STATUS_KEY, formatCapStatus(tokens, (resolved ?? caps(ctx)).soft, suffix));
 	}
 
@@ -585,17 +534,17 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 	function startCycle(ctx: ExtensionContext, tokens: number, triggerCaps: ResolvedTriggers) {
 		fs.mkdirSync(contextCapDir(), { recursive: true });
 		const next = nextPath(sessionId(ctx));
-		seq = next.seq;
-		expectedPath = next.filePath;
-		retries = 0;
-		tokensAtTrigger = tokens;
-		handoffWritten = false;
-		cycleCaps = triggerCaps;
+		cycle.seq = next.seq;
+		cycle.expectedPath = next.filePath;
+		cycle.retries = 0;
+		cycle.tokensAtTrigger = tokens;
+		cycle.handoffWritten = false;
+		cycle.cycleCaps = triggerCaps;
 	}
 
 	/** Caps to stamp on this cycle's artefacts — the cycle's own, or a fresh read if none. */
 	function stampCaps(ctx: ExtensionContext): ResolvedTriggers {
-		return cycleCaps ?? caps(ctx);
+		return cycle.cycleCaps ?? caps(ctx);
 	}
 
 	/**
@@ -644,14 +593,14 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			content = NO_FILE_SUMMARY;
 		}
 		const swapCaps = stampCaps(ctx);
-		stagedSwap = {
+		cycle.stagedSwap = {
 			content,
 			swapCaps,
 			sourceMessage,
 			details: {
 				seq: filePath ? fileSeq(sessionId(ctx), path.basename(filePath)) ?? null : null,
 				trigger,
-				tokensAtSwap: tokensAtTrigger,
+				tokensAtSwap: cycle.tokensAtTrigger,
 				handoffPath: filePath ?? null,
 				stale,
 				author: filePath ? author : null,
@@ -667,9 +616,9 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 	}
 
 	function commitStagedSwap(ctx: ExtensionContext, event: TurnEndEvent): TurnEndEventResult | undefined {
-		if (!stagedSwap) return undefined;
-		const swap = stagedSwap;
-		stagedSwap = null;
+		if (!cycle.stagedSwap) return undefined;
+		const swap = cycle.stagedSwap;
+		cycle.stagedSwap = null;
 		resetCycle();
 
 		const boundaryResult: TurnEndEventResult = {
@@ -716,7 +665,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		// message_end fires before the message is in the next context event, so the
 		// message that crossed the cap must be appended by hand.
 		if (lastMessage) messages.push(lastMessage as HandoffMessage);
-		if (messages.length === 0 || !expectedPath) return undefined;
+		if (messages.length === 0 || !cycle.expectedPath) return undefined;
 		ctx.ui.setStatus(CONTEXT_CAP_STATUS_KEY, `writing handoff/${formatTokenCount(stampCaps(ctx).soft)}`);
 		ctx.ui.notify("context-cap: no fresh handoff — writing one from the context (one LLM call)", "warning");
 		// Never throws (lib/handoff-writer.ts contract); honors the run's abort signal.
@@ -732,10 +681,10 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			return undefined;
 		}
 		try {
-			writeHandoff(expectedPath, draft.text, {
+			writeHandoff(cycle.expectedPath, draft.text, {
 				sessionId: sessionId(ctx),
-				seq,
-				tokens: tokensAtTrigger,
+				seq: cycle.seq,
+				tokens: cycle.tokensAtTrigger,
 				author: "machine",
 				schema: SCHEMA,
 				tailTokens: TAIL_TOKENS,
@@ -749,20 +698,20 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			);
 			return undefined;
 		}
-		return expectedPath;
+		return cycle.expectedPath;
 	}
 
 	async function hardCap(ctx: ExtensionContext, tokens: number, capsNow: ResolvedTriggers, lastMessage: unknown) {
-		if (!expectedPath) {
+		if (!cycle.expectedPath) {
 			// Hard crossed without a cycle and without a rescuable next turn (the
 			// one-jump toolUse case is steered in message_end): derive path context anyway.
 			startCycle(ctx, tokens, capsNow);
 		} else {
 			// Cycle already in flight from the soft trigger — record the hard-cap
 			// reading so the marker's forensic tokensAtSwap reflects swap time.
-			tokensAtTrigger = tokens;
+			cycle.tokensAtTrigger = tokens;
 		}
-		const fresh = expectedPath && handoffWritten ? expectedPath : undefined;
+		const fresh = cycle.expectedPath && cycle.handoffWritten ? cycle.expectedPath : undefined;
 		ctx.ui.notify(`context-cap: hard cap (${formatTokenCount(tokens)}) — forcing handoff`, "warning");
 		if (!fresh) {
 			// No handoff from this cycle: rather than re-injecting a possibly minutes-old
@@ -809,7 +758,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		}),
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			if (!expectedPath || phase === "idle") {
+			if (!cycle.expectedPath || cycle.phase === "idle") {
 				return {
 					content: [
 						{
@@ -830,10 +779,10 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 				};
 			}
 			try {
-				writeHandoff(expectedPath, body, {
+				writeHandoff(cycle.expectedPath, body, {
 					sessionId: sessionId(ctx),
-					seq,
-					tokens: tokensAtTrigger,
+					seq: cycle.seq,
+					tokens: cycle.tokensAtTrigger,
 					author: "agent",
 					schema: SCHEMA,
 					tailTokens: TAIL_TOKENS,
@@ -851,7 +800,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 					isError: true,
 				};
 			}
-			handoffWritten = true;
+			cycle.handoffWritten = true;
 			return {
 				content: [
 					{
@@ -898,7 +847,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			}
 		}
 		const msgs = original.filter(
-			(m, i) => !isCapWarning(m) || (phase !== "idle" && i > markerIndex),
+			(m, i) => !isCapWarning(m) || (cycle.phase !== "idle" && i > markerIndex),
 		);
 		const scrubbed = msgs.length !== original.length;
 		if (markerIndex >= 0) {
@@ -970,7 +919,7 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		// fresh. The demand this cycle rides on no longer applies; without the
 		// reset, turn-end verification keeps demanding a handoff from a window
 		// that is nowhere near the cap.
-		if (phase !== "idle" && tokens < capsNow.soft / 2) {
+		if (cycle.phase !== "idle" && tokens < capsNow.soft / 2) {
 			resetCycle();
 			updateStatus(ctx, tokens, capsNow);
 			ctx.ui.notify("context-cap: context shrank mid-cycle — stale handoff cycle reset", "info");
@@ -984,9 +933,9 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			// .js.map jumped 36k → 377k). Steer an immediate handoff instead; the
 			// grace below protects the message carrying the tool call, and an agent
 			// that ignores this steer still meets the backstop one grace turn later.
-			if (phase === "idle" && msg.stopReason === "toolUse") {
+			if (cycle.phase === "idle" && msg.stopReason === "toolUse") {
 				startCycle(ctx, tokens, capsNow);
-				phase = "steered";
+				cycle.phase = "steered";
 				updateStatus(ctx, tokens, capsNow);
 				pi.sendUserMessage(hardSteerMessage(tokens, capsNow), { deliverAs: "steer" });
 				ctx.ui.notify(
@@ -1001,13 +950,13 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			// once; turn_end or the next message_end re-checks. One-shot per cycle so
 			// an agent that ignores the handoff can't defer the hard cap forever.
 			if (
-				(phase === "steered" || phase === "prompted") &&
+				(cycle.phase === "steered" || cycle.phase === "prompted") &&
 				msg.stopReason === "toolUse" &&
-				expectedPath &&
-				!handoffWritten &&
-				!hardGraceUsed
+				cycle.expectedPath &&
+				!cycle.handoffWritten &&
+				!cycle.hardGraceUsed
 			) {
-				hardGraceUsed = true;
+				cycle.hardGraceUsed = true;
 				return;
 			}
 			await hardCap(ctx, tokens, capsNow, event.message);
@@ -1016,9 +965,9 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 
 		// Soft steer: only when another turn is guaranteed (mid-tool-use),
 		// so the warning is seen while there is still budget to act on it.
-		if (tokens >= capsNow.soft && phase === "idle" && msg.stopReason === "toolUse") {
+		if (tokens >= capsNow.soft && cycle.phase === "idle" && msg.stopReason === "toolUse") {
 			startCycle(ctx, tokens, capsNow);
-			phase = "steered";
+			cycle.phase = "steered";
 			updateStatus(ctx, tokens, capsNow);
 			// stopReason "toolUse" ⇒ run is streaming, so steer is the live path;
 			// deliverAs is ignored when idle (plain prompt), making one call safe for both.
@@ -1045,16 +994,16 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		) {
 			// A hard swap may already be staged from this turn's message_end. Drop
 			// only that draft: the armed cycle and any written handoff remain usable.
-			stagedSwap = null;
+			cycle.stagedSwap = null;
 			return;
 		}
 
 		// Hard-cap paths run in message_end, before tools execute. Commit only for
 		// their own turn: a delayed boundary must never apply another assistant's
 		// destructive marker. The active cycle stays armed after a stale discard.
-		if (stagedSwap) {
-			if (stagedSwap.sourceMessage !== event.message) {
-				stagedSwap = null;
+		if (cycle.stagedSwap) {
+			if (cycle.stagedSwap.sourceMessage !== event.message) {
+				cycle.stagedSwap = null;
 				return;
 			}
 			return commitStagedSwap(ctx, event);
@@ -1068,18 +1017,18 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		const capsNow = capsFrom(ctx, usage);
 
 		// Verification (both steer and silent-stop paths): swap as soon as the file exists.
-		if ((phase === "steered" || phase === "prompted" || phase === "exhausted") && expectedPath) {
-			if (handoffWritten) {
-				stageSwap(ctx, expectedPath, false, "soft", event.message);
+		if ((cycle.phase === "steered" || cycle.phase === "prompted" || cycle.phase === "exhausted") && cycle.expectedPath) {
+			if (cycle.handoffWritten) {
+				stageSwap(ctx, cycle.expectedPath, false, "soft", event.message);
 				return commitStagedSwap(ctx, event);
 			}
-			if (phase === "exhausted" || hasToolCalls) return; // still working / already gave up
-			if (retries < MAX_RETRIES) {
-				retries++;
-				send(reminderMessage(retries));
+			if (cycle.phase === "exhausted" || hasToolCalls) return; // still working / already gave up
+			if (cycle.retries < MAX_RETRIES) {
+				cycle.retries++;
+				send(reminderMessage(cycle.retries));
 				return continueBoundary(event);
 			} else {
-				phase = "exhausted";
+				cycle.phase = "exhausted";
 				updateStatus(ctx, tokens, capsNow);
 				ctx.ui.notify("context-cap: handoff never recorded — waiting for hard cap backstop", "warning");
 			}
@@ -1088,9 +1037,9 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 
 		// Silent-stop fallback: crossed soft cap but the crossing turn ended without
 		// tool calls, so the steer gate never fired — the agent saw no warning.
-		if (phase === "idle" && !hasToolCalls && !capsNow.disabled && tokens != null && tokens >= capsNow.soft) {
+		if (cycle.phase === "idle" && !hasToolCalls && !capsNow.disabled && tokens != null && tokens >= capsNow.soft) {
 			startCycle(ctx, tokens, capsNow);
-			phase = "prompted";
+			cycle.phase = "prompted";
 			updateStatus(ctx, tokens, capsNow);
 			send(silentStopMessage(tokens, capsNow));
 			ctx.ui.notify(`context-cap: soft cap (${formatTokenCount(tokens)}) — last-turn handoff requested`, "info");
