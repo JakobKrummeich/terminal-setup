@@ -480,6 +480,50 @@ export function selectContextTail(
 }
 
 // ---------------------------------------------------------------------------
+// LLM view (the `context` handler's pure half)
+// ---------------------------------------------------------------------------
+
+/** Index of the latest swap marker in `messages`, -1 when there is none. */
+function lastSwapMarkerIndex(messages: readonly unknown[]): number {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i] as { role: string; customType?: string };
+		if (m.role === "custom" && m.customType === SWAP_MARKER_TYPE) return i;
+	}
+	return -1;
+}
+
+/**
+ * What the model sees of the session's messages: stale cap warnings scrubbed
+ * (the rules are on the `context` handler below), then everything before the
+ * latest swap marker cut except the recency tail. `changed` = the result differs
+ * from `original` (the handler then returns a replacement array). Pure; exported
+ * for tests.
+ */
+export function llmView<T>(
+	original: readonly T[],
+	cycleArmed: boolean,
+	tailTokens: number,
+): { messages: readonly T[]; changed: boolean } {
+	const markerIndex = lastSwapMarkerIndex(original);
+	// One pass: scrub, and note where the marker lands in the scrubbed array. The
+	// marker survives the scrub by construction (custom role, never a cap warning).
+	const kept: T[] = [];
+	let marker = -1;
+	original.forEach((m, i) => {
+		if (i === markerIndex) marker = kept.length;
+		if (!isCapWarning(m) || (cycleArmed && i > markerIndex)) kept.push(m);
+	});
+	// Recency tail: keep whole turns in front of the marker when the lever is
+	// on. tailTokens = 0 ⇒ start === marker ⇒ the pre-lever slice.
+	// The marker (and any post-swap turns) stay last: the handoff is the last
+	// thing the model reads. Deterministic in the prefix, so later calls in the
+	// same window cut at the same place and the prompt prefix stays cacheable.
+	const start = marker >= 0 ? selectContextTail(kept, marker, tailTokens).start : 0;
+	const messages = start > 0 ? kept.slice(start) : kept;
+	return { messages, changed: start > 0 || kept.length !== original.length };
+}
+
+// ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
 
@@ -846,44 +890,11 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 	// mid-cycle reset in the model-switch test). Shrink detection stays in
 	// message_end, where real usage is authoritative.
 	pi.on("context", (event) => {
-		const original = event.messages;
-		let markerIndex = -1;
-		for (let i = original.length - 1; i >= 0; i--) {
-			const m = original[i] as { role: string; customType?: string };
-			if (m.role === "custom" && m.customType === SWAP_MARKER_TYPE) {
-				markerIndex = i;
-				break;
-			}
-		}
-		const msgs = original.filter(
-			(m, i) => !isCapWarning(m) || (cycle.phase !== "idle" && i > markerIndex),
-		);
-		const scrubbed = msgs.length !== original.length;
-		if (markerIndex >= 0) {
-			// The marker survives the scrub by construction (custom role, never a cap
-			// warning), so it is still present in msgs; re-locate it there.
-			let marker = -1;
-			for (let i = msgs.length - 1; i >= 0; i--) {
-				const m = msgs[i] as { role: string; customType?: string };
-				if (m.role === "custom" && m.customType === SWAP_MARKER_TYPE) {
-					marker = i;
-					break;
-				}
-			}
-			// Recency tail: keep whole turns in front of the marker when the lever is
-			// on. TAIL_TOKENS = 0 ⇒ start === marker ⇒ the pre-lever slice.
-			// The marker (and any post-swap turns) stay last: the handoff is the last
-			// thing the model reads. Deterministic in the prefix, so later calls in the
-			// same window cut at the same place and the prompt prefix stays cacheable.
-			const { start } = selectContextTail(msgs, marker, TAIL_TOKENS);
-			const sliced = start > 0 ? msgs.slice(start) : msgs;
-			// Cache what the model actually sees — the machine writer hands off the
-			// live context, not the full session history behind the last marker.
-			lastContextMessages = sliced;
-			return start > 0 || scrubbed ? { messages: [...sliced] } : undefined;
-		}
-		lastContextMessages = msgs;
-		return scrubbed ? { messages: [...msgs] } : undefined;
+		const { messages, changed } = llmView(event.messages, cycle.phase !== "idle", TAIL_TOKENS);
+		// Cache what the model actually sees — the machine writer hands off the
+		// live context, not the full session history behind the last marker.
+		lastContextMessages = messages;
+		return changed ? { messages: [...messages] } : undefined;
 	});
 
 	// -- events ---------------------------------------------------------------

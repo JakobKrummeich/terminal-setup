@@ -1,6 +1,7 @@
 /**
  * context-cap state machine, decision tables: one row per branch of the
- * message_end / turn_end decisions (lib/context-cap-decide.ts). The expected
+ * message_end / turn_end decisions (lib/context-cap-decide.ts) and of the
+ * `context` handler's view (context-cap.ts llmView). The expected
  * actions characterize the behaviour the handlers had before the decisions were
  * extracted; the end-to-end context-cap-*.test.ts files pin the side effects
  * each action runs.
@@ -8,6 +9,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { llmView } from "../context-cap.ts";
 import {
 	type CapsView,
 	type CycleState,
@@ -25,6 +27,7 @@ import {
 	type TurnGateAction,
 	type TurnGateInput,
 } from "../lib/context-cap-decide.ts";
+import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 
 const CAPS: CapsView = { soft: 100, hard: 200, disabled: false };
 const OFF: CapsView = { soft: Number.POSITIVE_INFINITY, hard: Number.POSITIVE_INFINITY, disabled: true };
@@ -157,5 +160,35 @@ const turnEndRows: Array<[string, CycleState, TurnEndInput, TurnEndAction]> = [
 for (const [name, state, input, expected] of turnEndRows) {
 	test(`decideTurnEnd: ${name}`, () => {
 		assert.deepEqual(decideTurnEnd(state, input), expected);
+	});
+}
+
+// ---------------------------------------------------------------------------
+// context: the LLM view (context-cap.ts llmView)
+// ---------------------------------------------------------------------------
+
+const U = { role: "user", content: "task" };
+const A = { role: "assistant", content: [{ type: "text", text: "done" }] };
+const W1 = { role: "user", content: "[context-cap] ⚠️ old warning" };
+const W2 = { role: "user", content: [{ type: "text", text: "[context-cap] No handoff was recorded" }] };
+const M = { role: "custom", customType: SWAP_MARKER_TYPE, content: "handoff" };
+const POST = { role: "user", content: "after the swap" };
+
+const viewRows: Array<[string, unknown[], boolean, number, unknown[], boolean]> = [
+	["no marker, no warning: untouched", [U, A], false, 0, [U, A], false],
+	["no cycle armed: every warning is stranded → scrubbed", [U, W1, A, W2], false, 0, [U, A], true],
+	["cycle armed, no marker: warnings stand", [U, W1, A], true, 0, [U, W1, A], false],
+	["marker: everything before it is cut (tail off)", [U, A, M, POST], true, 0, [M, POST], true],
+	["marker first: nothing to cut", [M, POST], false, 0, [M, POST], false],
+	["armed: warning behind the marker scrubbed, after it kept", [U, W1, M, W2], true, 0, [M, W2], true],
+	["idle: warning after the marker scrubbed too", [M, W2, POST], false, 0, [M, POST], true],
+	["tail lever keeps whole turns before the marker", [U, A, M], true, 1000, [U, A, M], false],
+	["tail lever never keeps a behind-marker warning", [U, W1, A, M], true, 1000, [U, A, M], true],
+];
+
+for (const [name, messages, armedCycle, tail, expected, changed] of viewRows) {
+	test(`llmView: ${name}`, () => {
+		const view = llmView(messages, armedCycle, tail);
+		assert.deepEqual({ messages: [...view.messages], changed: view.changed }, { messages: expected, changed });
 	});
 }
