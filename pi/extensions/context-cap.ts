@@ -143,9 +143,14 @@ import { formatCapStatus, formatTokenCount } from "./lib/format.ts";
 import { draftHandoff, handoffLineBudget, handoffSections, type HandoffMessage } from "./lib/handoff-writer.ts";
 import {
 	type CycleState,
+	decideMessageEnd,
+	decideTurnEnd,
+	decideTurnGate,
 	type HandoffAuthor,
+	hardFallbackSwap,
 	idleCycle,
 	MAX_RETRIES,
+	type MessageEndAction,
 } from "./lib/context-cap-decide.ts";
 import { HANDOFF_PREAMBLE, SWAP_MARKER_TYPE, type SwapTrigger } from "./lib/message-types.ts";
 
@@ -701,16 +706,20 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		return cycle.expectedPath;
 	}
 
+	/**
+	 * Hard crossed without a rescuable next turn: arm the cycle's path context (a
+	 * fresh one when no cycle is in flight — the one-jump toolUse case is steered in
+	 * message_end instead), or, with a cycle already in flight from the soft
+	 * trigger, record the hard-cap reading so the marker's forensic tokensAtSwap
+	 * reflects swap time. Leaves `phase` as it is.
+	 */
+	function armHardCycle(ctx: ExtensionContext, tokens: number, capsNow: ResolvedTriggers) {
+		if (!cycle.expectedPath) startCycle(ctx, tokens, capsNow);
+		else cycle.tokensAtTrigger = tokens;
+	}
+
 	async function hardCap(ctx: ExtensionContext, tokens: number, capsNow: ResolvedTriggers, lastMessage: unknown) {
-		if (!cycle.expectedPath) {
-			// Hard crossed without a cycle and without a rescuable next turn (the
-			// one-jump toolUse case is steered in message_end): derive path context anyway.
-			startCycle(ctx, tokens, capsNow);
-		} else {
-			// Cycle already in flight from the soft trigger — record the hard-cap
-			// reading so the marker's forensic tokensAtSwap reflects swap time.
-			cycle.tokensAtTrigger = tokens;
-		}
+		armHardCycle(ctx, tokens, capsNow);
 		const fresh = cycle.expectedPath && cycle.handoffWritten ? cycle.expectedPath : undefined;
 		ctx.ui.notify(`context-cap: hard cap (${formatTokenCount(tokens)}) — forcing handoff`, "warning");
 		if (!fresh) {
@@ -733,8 +742,8 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 			}
 		}
 		const fallback = fresh ?? latestPath(sessionId(ctx));
-		const stale = !fresh && fallback !== undefined; // older seq file substituted
-		stageSwap(ctx, fallback, stale, fallback ? "hard" : "hard-no-file", lastMessage, "agent");
+		const { stale, trigger } = hardFallbackSwap(fresh, fallback);
+		stageSwap(ctx, fallback, stale, trigger, lastMessage, "agent");
 	}
 
 	// -- handoff tool -----------------------------------------------------------
@@ -884,12 +893,19 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		updateStatus(ctx, ctx.getContextUsage()?.tokens);
 	});
 
+	/** Arm a cycle whose handoff was just demanded (steer or silent-stop prompt) and show it. */
+	function openCycle(ctx: ExtensionContext, tokens: number, capsNow: ResolvedTriggers, phase: "steered" | "prompted") {
+		startCycle(ctx, tokens, capsNow);
+		cycle.phase = phase;
+		updateStatus(ctx, tokens, capsNow);
+	}
+
 	// Async on purpose: the hard-cap path may await one LLM call. Verified safe —
 	// pi-agent-core awaits every listener and awaits the message_end emit BEFORE
 	// executing that message's tool calls, so this stalls the loop rather than
 	// racing it (see the header). Every other path stays synchronous.
 	pi.on("message_end", async (event, ctx) => {
-		const msg = event.message as { role: string; stopReason?: string };
+		const msg = event.message as { role: string; stopReason?: string; usage?: { totalTokens?: unknown } };
 		if (msg.role !== "assistant") return;
 		// Re-read per check: the model (and with it the window) can change mid-session
 		// and pi has no model-switch event.
@@ -897,155 +913,104 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 		// Pi persists the assistant after message_end listeners, so context usage
 		// can still describe the pre-response marker. Prefer this event's provider
 		// usage; getContextUsage() is the fallback when the message carries none.
-		const messageTokens = (msg as { usage?: { totalTokens?: unknown } }).usage?.totalTokens;
+		const messageTokens = msg.usage?.totalTokens;
 		const tokens = typeof messageTokens === "number" && Number.isFinite(messageTokens) ? messageTokens : usage?.tokens;
 		const capsNow = capsFrom(ctx, usage);
+		// Before the decision, so even a skipped (errored) message refreshes the footer.
 		updateStatus(ctx, tokens, capsNow);
-		// Network-errored / user-aborted messages are synthesized by pi's failure
-		// path, not agent decisions, and carry no fresh usage (getContextUsage
-		// backward-scans past them to the previous real reading). Acting on that
-		// stale reading double-fires decisions already taken for it — observed
-		// live: an errored message during an emergency cycle bypassed the grace
-		// gate (stopReason ≠ "toolUse") and wiped via the no-file backstop while
-		// the handoff was still perfectly reachable. Skip; pi retries or settles,
-		// and the next real message re-evaluates.
-		if (msg.stopReason === "error" || msg.stopReason === "aborted") return;
-		if (tokens == null) return; // unknown usage — never trigger blind
-		if (capsNow.disabled) return; // window too small to hold a cap — warned once by the resolver
+		const action = decideMessageEnd(cycle, { stopReason: msg.stopReason, tokens, caps: capsNow });
+		return applyMessageEnd(ctx, action, capsNow, event.message);
+	});
 
-		// Fresh-window guard: mid-cycle but the context shrank far below the soft
-		// trigger — a swap/compaction raced a network error, or the steer was
-		// dropped (ESC clears extension-queued messages silently) and work resumed
-		// fresh. The demand this cycle rides on no longer applies; without the
-		// reset, turn-end verification keeps demanding a handoff from a window
-		// that is nowhere near the cap.
-		if (cycle.phase !== "idle" && tokens < capsNow.soft / 2) {
-			resetCycle();
-			updateStatus(ctx, tokens, capsNow);
-			ctx.ui.notify("context-cap: context shrank mid-cycle — stale handoff cycle reset", "info");
-		}
-
-		if (tokens >= capsNow.hard) {
-			// One-jump crossing: no cycle in flight (the soft steer never fired — the
-			// PREVIOUS message was below the soft cap) and this message ends in tool
-			// calls, so another turn is guaranteed. Wiping now would discard a context
-			// that never saw a warning (observed live 2026-08-11: explorer grep of a
-			// .js.map jumped 36k → 377k). Steer an immediate handoff instead; the
-			// grace below protects the message carrying the tool call, and an agent
-			// that ignores this steer still meets the backstop one grace turn later.
-			if (cycle.phase === "idle" && msg.stopReason === "toolUse") {
-				startCycle(ctx, tokens, capsNow);
-				cycle.phase = "steered";
-				updateStatus(ctx, tokens, capsNow);
-				pi.sendUserMessage(hardSteerMessage(tokens, capsNow), { deliverAs: "steer" });
+	/** Side effects of a decideMessageEnd action (lib/context-cap-decide.ts has the WHY of each). */
+	function applyMessageEnd(
+		ctx: ExtensionContext,
+		action: MessageEndAction,
+		capsNow: ResolvedTriggers,
+		message: unknown,
+	): Promise<void> | undefined {
+		switch (action.kind) {
+			case "skip":
+			case "none":
+				return undefined;
+			case "reset-shrunk":
+				resetCycle();
+				updateStatus(ctx, action.tokens, capsNow);
+				ctx.ui.notify("context-cap: context shrank mid-cycle — stale handoff cycle reset", "info");
+				return undefined;
+			case "steer-hard-jump":
+				openCycle(ctx, action.tokens, capsNow, "steered");
+				pi.sendUserMessage(hardSteerMessage(action.tokens, capsNow), { deliverAs: "steer" });
 				ctx.ui.notify(
-					`context-cap: hard cap (${formatTokenCount(tokens)}) crossed in one jump — emergency handoff requested`,
+					`context-cap: hard cap (${formatTokenCount(action.tokens)}) crossed in one jump — emergency handoff requested`,
 					"warning",
 				);
-				return;
-			}
-			// Grace turn: a handoff cycle is in flight and this message ends in tool
-			// calls — message_end fires BEFORE tools execute, so swapping now would
-			// scrub away the handoff write itself (observed live). Let the tools run
-			// once; turn_end or the next message_end re-checks. One-shot per cycle so
-			// an agent that ignores the handoff can't defer the hard cap forever.
-			if (
-				(cycle.phase === "steered" || cycle.phase === "prompted") &&
-				msg.stopReason === "toolUse" &&
-				cycle.expectedPath &&
-				!cycle.handoffWritten &&
-				!cycle.hardGraceUsed
-			) {
+				return undefined;
+			case "hard-grace":
 				cycle.hardGraceUsed = true;
-				return;
-			}
-			await hardCap(ctx, tokens, capsNow, event.message);
-			return;
+				return undefined;
+			case "hard-cap":
+				return hardCap(ctx, action.tokens, capsNow, message);
+			case "steer-soft":
+				openCycle(ctx, action.tokens, capsNow, "steered");
+				// stopReason "toolUse" ⇒ run is streaming, so steer is the live path;
+				// deliverAs is ignored when idle (plain prompt), making one call safe for both.
+				pi.sendUserMessage(steerMessage(action.tokens, capsNow), { deliverAs: "steer" });
+				ctx.ui.notify(`context-cap: soft cap (${formatTokenCount(action.tokens)}) — handoff requested`, "info");
+				return undefined;
 		}
+	}
 
-		// Soft steer: only when another turn is guaranteed (mid-tool-use),
-		// so the warning is seen while there is still budget to act on it.
-		if (tokens >= capsNow.soft && cycle.phase === "idle" && msg.stopReason === "toolUse") {
-			startCycle(ctx, tokens, capsNow);
-			cycle.phase = "steered";
-			updateStatus(ctx, tokens, capsNow);
-			// stopReason "toolUse" ⇒ run is streaming, so steer is the live path;
-			// deliverAs is ignored when idle (plain prompt), making one call safe for both.
-			pi.sendUserMessage(steerMessage(tokens, capsNow), { deliverAs: "steer" });
-			ctx.ui.notify(`context-cap: soft cap (${formatTokenCount(tokens)}) — handoff requested`, "info");
+	pi.on("turn_end", (event, ctx) => {
+		const gate = decideTurnGate(cycle, {
+			stopReason: (event.message as { stopReason?: string }).stopReason,
+			outcome: event.outcome,
+			aborted: ctx.signal?.aborted === true,
+			message: event.message,
+		});
+		switch (gate.kind) {
+			case "skip-failed":
+			case "discard-stale-staged":
+				// Drop only the staged draft: the armed cycle and any written handoff remain usable.
+				cycle.stagedSwap = null;
+				return undefined;
+			case "commit-staged":
+				return commitStagedSwap(ctx, event);
+			case "evaluate":
+				return evaluateTurnEnd(ctx, event);
 		}
 	});
 
-	pi.on("turn_end", (event, ctx) => {
-		// Errored/aborted turns never reached the agent (the message is synthetic,
-		// toolResults always []). Treating them as refusals burned reminder retries
-		// during network flakes — two blips flipped the cycle to "exhausted" with
-		// the agent never having seen one reminder — and queuing a reminder into an
-		// aborted run un-aborted it via pi's queued-message rescue (continue()).
-		// Skip; the cycle stays armed and the next real turn re-evaluates.
-		const stopReason = (event.message as { stopReason?: string }).stopReason;
-		const outcome = event.outcome;
-		if (
-			stopReason === "error" ||
-			stopReason === "aborted" ||
-			outcome === "error" ||
-			outcome === "aborted" ||
-			ctx.signal?.aborted
-		) {
-			// A hard swap may already be staged from this turn's message_end. Drop
-			// only that draft: the armed cycle and any written handoff remain usable.
-			cycle.stagedSwap = null;
-			return;
-		}
-
-		// Hard-cap paths run in message_end, before tools execute. Commit only for
-		// their own turn: a delayed boundary must never apply another assistant's
-		// destructive marker. The active cycle stays armed after a stale discard.
-		if (cycle.stagedSwap) {
-			if (cycle.stagedSwap.sourceMessage !== event.message) {
-				cycle.stagedSwap = null;
-				return;
-			}
-			return commitStagedSwap(ctx, event);
-		}
-
+	/** turn_end past the gate: verification of an in-flight cycle, else the silent-stop fallback. */
+	function evaluateTurnEnd(ctx: ExtensionContext, event: TurnEndEvent): TurnEndEventResult | undefined {
 		const usage = ctx.getContextUsage();
 		const tokens = usage?.tokens;
-		const hasToolCalls = event.toolResults.length > 0;
-		// Re-read per check (see message_end). Verification of an in-flight cycle still
-		// runs when the cap is disabled — a handoff already demanded must be collected.
+		// Re-read per check (see message_end).
 		const capsNow = capsFrom(ctx, usage);
-
-		// Verification (both steer and silent-stop paths): swap as soon as the file exists.
-		if ((cycle.phase === "steered" || cycle.phase === "prompted" || cycle.phase === "exhausted") && cycle.expectedPath) {
-			if (cycle.handoffWritten) {
-				stageSwap(ctx, cycle.expectedPath, false, "soft", event.message);
+		const action = decideTurnEnd(cycle, { tokens, hasToolCalls: event.toolResults.length > 0, caps: capsNow });
+		switch (action.kind) {
+			case "keep-waiting":
+			case "none":
+				return undefined;
+			case "swap-soft":
+				stageSwap(ctx, action.path, false, "soft", event.message);
 				return commitStagedSwap(ctx, event);
-			}
-			if (cycle.phase === "exhausted" || hasToolCalls) return; // still working / already gave up
-			if (cycle.retries < MAX_RETRIES) {
-				cycle.retries++;
-				send(reminderMessage(cycle.retries));
+			case "remind":
+				cycle.retries = action.attempt;
+				send(reminderMessage(action.attempt));
 				return continueBoundary(event);
-			} else {
+			case "exhaust":
 				cycle.phase = "exhausted";
 				updateStatus(ctx, tokens, capsNow);
 				ctx.ui.notify("context-cap: handoff never recorded — waiting for hard cap backstop", "warning");
-			}
-			return;
+				return undefined;
+			case "silent-stop":
+				openCycle(ctx, action.tokens, capsNow, "prompted");
+				send(silentStopMessage(action.tokens, capsNow));
+				ctx.ui.notify(`context-cap: soft cap (${formatTokenCount(action.tokens)}) — last-turn handoff requested`, "info");
+				return continueBoundary(event);
 		}
-
-		// Silent-stop fallback: crossed soft cap but the crossing turn ended without
-		// tool calls, so the steer gate never fired — the agent saw no warning.
-		if (cycle.phase === "idle" && !hasToolCalls && !capsNow.disabled && tokens != null && tokens >= capsNow.soft) {
-			startCycle(ctx, tokens, capsNow);
-			cycle.phase = "prompted";
-			updateStatus(ctx, tokens, capsNow);
-			send(silentStopMessage(tokens, capsNow));
-			ctx.ui.notify(`context-cap: soft cap (${formatTokenCount(tokens)}) — last-turn handoff requested`, "info");
-			return continueBoundary(event);
-		}
-	});
+	}
 
 	// -- pi's own compaction: last ditch ---------------------------------------
 
