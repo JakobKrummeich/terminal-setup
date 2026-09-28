@@ -85,7 +85,10 @@ Then install apps themselves if flagged:
 - `~/.pi/agent/auth.json` (API keys) is per-machine and NEVER in this repo.
 
 Shell busy/idle status is installed into `~/.bashrc` by both installers. For
-the current shell, either restart it or source `shell/wsstate.sh` once.
+the current shell, either restart it or source `shell/wsstate.sh` once. If
+`~/.bashrc` has the `# >>> terminal-setup wsstate >>>` begin marker but no
+`# <<< terminal-setup wsstate <<<` end marker, the installer leaves the file
+untouched and prints a `WARN:` — fix the block by hand and rerun.
 
 ### Bumping rtk
 

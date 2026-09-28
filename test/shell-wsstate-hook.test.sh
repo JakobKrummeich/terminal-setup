@@ -91,4 +91,32 @@ out="$(run_install "$home" "$fake_repo")" || fail "missing hook script must not 
 [[ "$out" == "WARN: missing $fake_repo/shell/wsstate.sh; shell wsstate hook not installed" ]] || fail "expected missing-src warning, got: $out"
 [ "$(cat "$home/.bashrc")" = untouched ] || fail ".bashrc modified without a hook script: $(cat "$home/.bashrc")"
 
+# ── begin marker without end marker: refuse, leave .bashrc byte-identical ──
+# The rewrite drops everything from begin to end; with no end marker that
+# would silently delete every user line after the stray begin marker.
+home="$FIXTURE/unterminated"
+mkdir -p "$home"
+printf 'before\n%s\nexport KEEP_ME=1\nalias gs="git status"\n' "$BEGIN" > "$home/.bashrc"
+cp "$home/.bashrc" "$FIXTURE/unterminated.orig"
+out="$(run_install "$home")" || fail "unterminated block must not fail the installer"
+[[ "$out" == "WARN: $home/.bashrc has '$BEGIN' without '$END'; fix it by hand — wsstate hook not installed" ]] \
+    || fail "expected unterminated-block warning, got: $out"
+cmp -s "$home/.bashrc" "$FIXTURE/unterminated.orig" || fail ".bashrc rewritten despite unterminated block: $(cat "$home/.bashrc")"
+assert_no_temp_files "$home"
+
+# ── unreadable .bashrc: generic warning, not the marker one; file untouched ──
+# (root reads mode-000 files, so the case only holds for a regular user.)
+if [ "$(id -u)" -ne 0 ]; then
+    home="$FIXTURE/unreadable"
+    mkdir -p "$home"
+    printf 'secret\n' > "$home/.bashrc"
+    chmod 000 "$home/.bashrc"
+    out="$(run_install "$home" 2>/dev/null)" || fail "unreadable .bashrc must not fail the installer"
+    chmod 600 "$home/.bashrc"
+    [[ "$out" == "WARN: could not rewrite $home/.bashrc (awk exit "*"); wsstate hook not installed" ]] \
+        || fail "expected generic rewrite warning, got: $out"
+    [ "$(cat "$home/.bashrc")" = secret ] || fail "unreadable .bashrc modified: $(cat "$home/.bashrc")"
+    assert_no_temp_files "$home"
+fi
+
 printf 'PASS: shell wsstate hook is idempotent and preserves the user .bashrc\n'
