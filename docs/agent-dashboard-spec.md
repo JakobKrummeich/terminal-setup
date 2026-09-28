@@ -124,13 +124,21 @@ EADDRINUSE the daemon exits 1 and systemd retries (RestartSec=30).
 probes `GET /api/meta` once per process (~1s timeout): daemon up → notify the
 URL + hostname; down → notify “re-run install-pi.sh”. `PI_OFFLINE` or
 `PI_AGENT_DASH_DISABLE` skips the probe (the test suite sets `PI_OFFLINE`).
+Stale code: the daemon loads its server JS once, so after a `git pull` it keeps
+running old code. It serves `codeHash` (sha256 over `pi/dashboard-daemon.mjs` +
+every `.ts/.js/.mjs` under `pi/extensions/lib/`, `lib/dashboard-version.ts`)
+and `codeRoot`; when `codeRoot` is this pi's own checkout (or absent) and the
+hash differs (or is absent), agent-dash runs
+`systemctl --user try-restart pi-dash.service` and notifies the outcome
+(`PI_AGENT_DASH_SYSTEMCTL` swaps the binary — tests). A daemon from another
+checkout is never restarted, only noted in the URL notify.
 
 Response types live in `pi/extensions/lib/dashboard-api.ts`; all pi-session-JSONL
 parsing in `pi/extensions/lib/session-transcript.ts` (re-verify after `pi update`).
 
 | Endpoint | Response type | Notes |
 |---|---|---|
-| `GET /api/meta` | `MetaResponse` | Daemon identity: `hostname`, `sessionsRoot`, `pid`, `startedAt`. Feeds the UI host badge/title and agent-dash's probe. |
+| `GET /api/meta` | `MetaResponse` | Daemon identity: `hostname`, `sessionsRoot`, `pid`, `startedAt`, `codeHash`, `codeRoot`. Feeds the UI host badge/title and agent-dash's probe. |
 | `GET /api/sessions` | `SessionsResponse` | One `SessionRow` per tree root across ALL projects, newest first; rows carry `projectId` (raw dir name, stable) + `project` (best-effort decoded display path). Pinning/grouping is the client's job. |
 | `GET /api/tree?root=<sid>` | `TreeResponse` | `TreeNode[]` for Gantt + tree; sid found by scanning project indexes; 400 without `root`, 404 for unknown sid. |
 | `GET /api/transcript?sid=<sid>` | `TranscriptResponse` | Entries + `TranscriptAnchor[]` (handoff / agent-spawn / explorer-spawn, spawn anchors carry `targetSid`). Cross-project by the same sid scan. |

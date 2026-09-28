@@ -47,6 +47,15 @@ export interface MetaResponse {
 	pid: number;
 	/** Epoch ms when the daemon bound its port. */
 	startedAt: number;
+	/**
+	 * sha256 of the daemon's server code at startup (lib/dashboard-version.ts)
+	 * and the realpath'd repo root it was computed from. agent-dash compares
+	 * them with its own checkout to detect a daemon running stale code. Absent
+	 * from embedded servers started without `codeVersion` (tests) and from
+	 * daemons predating the field — agent-dash treats absent as stale.
+	 */
+	codeHash?: string;
+	codeRoot?: string;
 }
 
 // --- projects ----------------------------------------------------------------

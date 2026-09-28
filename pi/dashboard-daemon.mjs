@@ -20,6 +20,7 @@
  */
 import path from "node:path";
 import { defaultSessionsRoot, startDashboardServer } from "./extensions/lib/dashboard-server.ts";
+import { computeCodeVersion } from "./extensions/lib/dashboard-version.ts";
 
 function envPort(raw) {
 	// Unset/empty means default (repo convention: empty env var == unset) —
@@ -36,7 +37,11 @@ const sessionsRoot = process.env.PI_AGENT_DASH_SESSIONS_ROOT || defaultSessionsR
 // which needs no ~/.pi/agent/extensions symlink to serve its own static files.
 const uiDir = path.join(import.meta.dirname, "extensions", "lib", "dashboard-ui");
 
-const result = await startDashboardServer({ sessionsRoot, port, host, uiDir, keepProcessAlive: true });
+// Hashed once at startup, served on /api/meta: agent-dash compares it with its
+// checkout on disk and restarts this unit when we run stale server code.
+const codeVersion = computeCodeVersion(path.join(import.meta.dirname, ".."));
+
+const result = await startDashboardServer({ sessionsRoot, port, host, uiDir, keepProcessAlive: true, codeVersion });
 if (!result.started) {
 	console.error(`pi-dash: port ${port} on ${host} already in use — exiting (systemd retries in 30s)`);
 	process.exit(1);
