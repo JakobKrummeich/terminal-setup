@@ -8,13 +8,8 @@ import {
 	resetChildState,
 	runChildTool,
 } from "./lib/child-session.ts";
-import {
-	openChildPicker,
-	openChildView,
-	resetWatchCursor,
-	WATCH_KEY,
-	watchTarget,
-} from "./lib/child-watch.ts";
+import { openChildPicker, openChildView, resetWatchCursor, watchTarget } from "./lib/child-watch.ts";
+import { WATCH_KEY } from "./lib/watch-viewport.ts";
 
 const TOOL_DESCRIPTION = `Delegate a task to a fresh agent session that works autonomously and reports back.
 

@@ -18,7 +18,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { enterAltScreenWatch } from "../lib/child-watch.ts";
+import { enterAltScreenWatch } from "../lib/alt-screen.ts";
 
 const ALT_ON = "\u001b[?1049h";
 const ALT_OFF = "\u001b[?1049l";

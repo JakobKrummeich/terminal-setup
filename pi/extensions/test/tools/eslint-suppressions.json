@@ -17,13 +17,5 @@
     "max-lines": {
       "count": 1
     }
-  },
-  "pi/extensions/lib/child-watch.ts": {
-    "max-lines": {
-      "count": 1
-    },
-    "max-lines-per-function": {
-      "count": 2
-    }
   }
 }

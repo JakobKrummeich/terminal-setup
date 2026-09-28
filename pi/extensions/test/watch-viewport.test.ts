@@ -23,7 +23,7 @@ import {
 	watchHeaderLines,
 	watchHintLine,
 	watchPositionLabel,
-} from "../lib/child-watch.ts";
+} from "../lib/watch-viewport.ts";
 
 /** Body 40 lines, viewport 12 → maxOffset 28. */
 const BODY = 40;

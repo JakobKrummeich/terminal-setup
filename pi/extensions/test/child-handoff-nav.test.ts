@@ -41,7 +41,7 @@ import {
 	handoffJumpTarget,
 	handoffViewContext,
 	liveElapsedMs,
-} from "../lib/child-watch.ts";
+} from "../lib/watch-viewport.ts";
 import { CONTEXT_CAP_TOOL_NAME } from "../lib/env.ts";
 import { type ResponseStep, type ScriptedStep, sleep, textStep, toolStep } from "./harness.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";
