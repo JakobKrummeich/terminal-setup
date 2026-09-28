@@ -91,8 +91,10 @@ the current shell, either restart it or source `shell/wsstate.sh` once.
 `install_rtk` (`lib/install-common.sh`) downloads one pinned release —
 `RTK_VERSION` — and checks the asset against the SHA-256 in `rtk_asset_sha256`
 before extracting; a mismatch (or a missing hash) fails closed and installs
-nothing. An `rtk` already on `PATH` is only linked, never replaced (a version
-other than the pin is reported as a `NOTE:`). To bump:
+nothing. An `rtk` already on `PATH` is only linked, never replaced — also when
+`PATH` finds it through the installer's own `~/.pi/agent/bin/rtk` link (the link
+target counts; a dangling link is reinstalled). A version other than the pin is
+reported as a `NOTE:`. To bump:
 
 1. Set `RTK_VERSION` to the new release (without the `v`).
 2. Take the four asset hashes from that release's `checksums.txt`

@@ -326,12 +326,22 @@ install_rtk_from_url() { # <download-url> <expected-sha256>
 
 install_rtk() {
     # ── rtk (pinned release binary; used by pi extensions) ──────────
-    local rtk_bin="" asset os arch found_version
-    # Resolve rtk, but never to our own dest symlink (self-link = ELOOP).
-    if command -v rtk >/dev/null && [ "$(command -v rtk)" != "$HOME/.pi/agent/bin/rtk" ]; then
+    local rtk_bin="" asset os arch found_version found="" link_dest="$HOME/.pi/agent/bin/rtk"
+    found="$(command -v rtk)" || found=""
+    # Never use our own dest symlink as the binary (self-link = ELOOP): follow it
+    # to its target instead; a dangling/looping link or a non-link file there
+    # counts as not installed.
+    if [ "$found" = "$link_dest" ]; then
+        found=""
+        if [ -L "$link_dest" ]; then
+            found="$(readlink -f "$link_dest")" || found=""
+            { [ "$found" != "$link_dest" ] && [ -f "$found" ] && [ -x "$found" ]; } || found=""
+        fi
+    fi
+    if [ -n "$found" ]; then
         # Already installed: never downloads, only (re)links. A different version
         # is kept but reported, so a stale binary is visible after a pin bump.
-        rtk_bin="$(command -v rtk)"
+        rtk_bin="$found"
         found_version="$("$rtk_bin" --version 2>/dev/null || echo '?')"
         if [ "$found_version" != "rtk $RTK_VERSION" ]; then
             echo "NOTE: using existing $rtk_bin ($found_version); pinned is rtk $RTK_VERSION — remove it and re-run to install the pin"

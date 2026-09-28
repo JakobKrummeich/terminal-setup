@@ -145,6 +145,38 @@ output="$(
     || fail "expected version-drift note, got: $output"
 [ ! -s "$CURL_LOG" ] || fail "version drift must not trigger a download: $(cat "$CURL_LOG")"
 
+# ── our own ~/.pi/agent/bin/rtk first on PATH: follow the link, don't re-download ──
+self="$FIXTURE/self-link"
+mkdir -p "$self/.local/bin" "$self/.pi/agent/bin"
+printf '#!/usr/bin/env bash\necho rtk 0.0.1\n' > "$self/.local/bin/rtk"
+chmod +x "$self/.local/bin/rtk"
+ln -s "$self/.local/bin/rtk" "$self/.pi/agent/bin/rtk"
+self_target="$(readlink -f "$self/.local/bin/rtk")"
+run_self_link() {
+    (
+        HOME="$self"
+        PATH="$self/.pi/agent/bin:/usr/local/bin:/usr/bin:/bin"
+        install_rtk
+    )
+}
+: > "$CURL_LOG"
+output="$(run_self_link)"
+[ ! -s "$CURL_LOG" ] || fail "rtk behind our own link must not trigger a download: $(cat "$CURL_LOG")"
+[[ "$output" == *"NOTE: using existing $self_target (rtk 0.0.1); pinned is rtk $RTK_VERSION"* ]] \
+    || fail "expected version-drift note via own link, got: $output"
+[ "$(cat "$self/.local/bin/rtk")" = "$(printf '#!/usr/bin/env bash\necho rtk 0.0.1')" ] || fail "existing rtk behind own link was replaced"
+[ "$(readlink "$self/.pi/agent/bin/rtk")" = "$self_target" ] || fail "own link not pointing at the existing rtk"
+output="$(run_self_link)"
+[ ! -s "$CURL_LOG" ] || fail "re-run via own link must not download: $(cat "$CURL_LOG")"
+[ "$(readlink "$self/.pi/agent/bin/rtk")" = "$self_target" ] || fail "re-run via own link is not idempotent"
+
+# Dangling own link → treated as not installed: pinned release downloaded.
+rm "$self/.local/bin/rtk"
+output="$(run_self_link)"
+[[ "$output" == *"Installing rtk $RTK_VERSION"* ]] || fail "dangling own link must install, got: $output"
+[ -x "$self/.local/bin/rtk" ] || fail "dangling own link: rtk not installed"
+[ "$(readlink "$self/.pi/agent/bin/rtk")" = "$self/.local/bin/rtk" ] || fail "dangling own link not re-pointed"
+
 # ── placement failures ─────────────────────────────────────────────
 mkdir -p "$FIXTURE/destination-collision/.local/bin/rtk"
 output="$(run_install "$FIXTURE/destination-collision")"
