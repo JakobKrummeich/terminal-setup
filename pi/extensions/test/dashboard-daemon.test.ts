@@ -88,6 +88,9 @@ test("dashboard-daemon.mjs: plain node serves /api/meta and /api/sessions (pi-fr
 			PI_AGENT_DASH_PORT: "0", // ephemeral — never squat 7357 from the suite
 			PI_AGENT_DASH_HOST: "127.0.0.1",
 			PI_AGENT_DASH_SESSIONS_ROOT: root,
+			// If run.sh's timeout SIGKILLs this test process, `finally` never runs:
+			// the lever makes the daemon exit on its own instead of lingering.
+			PI_AGENT_DASH_EXIT_WITH_PARENT: "1",
 		},
 		stdio: ["ignore", "pipe", "pipe"],
 	});
@@ -123,6 +126,68 @@ test("dashboard-daemon.mjs: plain node serves /api/meta and /api/sessions (pi-fr
 			if (child.exitCode !== null) return resolve();
 			child.once("exit", () => resolve());
 		});
+	}
+});
+
+// --- no orphans: PI_AGENT_DASH_EXIT_WITH_PARENT ------------------------------
+
+/** Live and not a zombie (an unreaped zombie still answers kill(pid, 0)). */
+function processAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+	} catch {
+		return false;
+	}
+	try {
+		// /proc/<pid>/stat: "pid (comm) S ..." — state follows the last ')'.
+		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+		return stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) !== "Z";
+	} catch {
+		return false; // vanished between the two checks
+	}
+}
+
+/** Stand-in for a test process: spawns the daemon, prints its pid once it serves, then idles. */
+const INTERMEDIATE = `
+const { spawn } = require("node:child_process");
+const daemon = spawn(process.execPath, [process.argv[1]], { stdio: ["ignore", "pipe", "inherit"] });
+let out = "";
+daemon.stdout.setEncoding("utf8").on("data", (chunk) => {
+	out += chunk;
+	if (out.includes("pi-dash: serving")) console.log("daemon-pid " + daemon.pid);
+});
+`;
+
+test("dashboard-daemon.mjs: PI_AGENT_DASH_EXIT_WITH_PARENT → daemon exits when its parent is SIGKILLed", async () => {
+	const intermediate = spawn(process.execPath, ["-e", INTERMEDIATE, DAEMON], {
+		env: {
+			...process.env,
+			PI_AGENT_DASH_PORT: "0",
+			PI_AGENT_DASH_HOST: "127.0.0.1",
+			PI_AGENT_DASH_SESSIONS_ROOT: mkdtempSync(path.join(tmpdir(), "pi-daemon-orphan-root-")),
+			PI_AGENT_DASH_EXIT_WITH_PARENT: "1",
+		},
+		stdio: ["ignore", "pipe", "inherit"],
+	});
+	let stdout = "";
+	intermediate.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
+	let daemonPid: number | null = null;
+	try {
+		const deadline = Date.now() + 10_000;
+		while (daemonPid === null && Date.now() < deadline) {
+			const match = /daemon-pid (\d+)/.exec(stdout);
+			if (match) daemonPid = Number(match[1]);
+			else await sleep(50);
+		}
+		assert.ok(daemonPid, `daemon never came up; intermediate stdout=${JSON.stringify(stdout)}`);
+		assert.ok(processAlive(daemonPid), "daemon runs while its parent lives");
+		intermediate.kill("SIGKILL"); // what run.sh's `timeout` does to a hung test file
+		const gone = Date.now() + 5000;
+		while (processAlive(daemonPid) && Date.now() < gone) await sleep(100);
+		assert.equal(processAlive(daemonPid), false, "daemon must exit within 5s of its parent's SIGKILL");
+	} finally {
+		if (intermediate.exitCode === null && intermediate.signalCode === null) intermediate.kill("SIGKILL");
+		if (daemonPid !== null && processAlive(daemonPid)) process.kill(daemonPid, "SIGKILL");
 	}
 });
 

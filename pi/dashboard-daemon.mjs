@@ -13,6 +13,8 @@
  *   PI_AGENT_DASH_PORT           port, default 7357 (0 = ephemeral, smoke tests)
  *   PI_AGENT_DASH_HOST           bind address, default 0.0.0.0
  *   PI_AGENT_DASH_SESSIONS_ROOT  default ~/.pi/agent/sessions
+ *   PI_AGENT_DASH_EXIT_WITH_PARENT  "1" = exit once the spawning parent dies
+ *                                (test suite only; the systemd unit never sets it)
  *
  * A squatter on the port (e.g. an ssh -L tunnel bound to 7357) makes this exit
  * 1; the unit's Restart=on-failure + RestartSec=30 retries calmly — never
@@ -29,6 +31,23 @@ function envPort(raw) {
 	const port = Number(raw);
 	return Number.isInteger(port) && port >= 0 ? port : 7357;
 }
+
+/**
+ * Tests spawn this daemon and kill it in `finally` — which never runs when
+ * run.sh's `timeout` SIGKILLs the test process, leaving an orphan (PPID 1)
+ * serving from a possibly deleted worktree. With the lever set, poll for the
+ * reparenting that follows the parent's death and exit. Polling, not a pipe
+ * EOF or prctl(PR_SET_PDEATHSIG): node exposes neither portably, and 1s of
+ * latency is irrelevant here. unref(): the poll alone never keeps us alive.
+ */
+function exitWithParent() {
+	const parent = process.ppid;
+	setInterval(() => {
+		if (process.ppid !== parent) process.exit(0);
+	}, 1000).unref();
+}
+
+if (process.env.PI_AGENT_DASH_EXIT_WITH_PARENT === "1") exitWithParent();
 
 const port = envPort(process.env.PI_AGENT_DASH_PORT);
 const host = process.env.PI_AGENT_DASH_HOST || "0.0.0.0";
