@@ -27,17 +27,10 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { inChildSession } from "./lib/child-context.ts";
+import { setUserVar } from "./lib/wezterm-uservar.ts";
 
 function emit(state: "waiting" | "free") {
-	try {
-		const b64 = Buffer.from(state).toString("base64");
-		const osc = `\x1b]1337;SetUserVar=wswait=${b64}\x07`;
-		// Inside tmux, wrap in DCS passthrough (ESC doubled) or tmux eats the
-		// OSC before wezterm sees it. Same pattern as shell/wsstate.sh.
-		process.stdout.write(process.env.TMUX ? `\x1bPtmux;${osc.replace(/\x1b/g, "\x1b\x1b")}\x1b\\` : osc);
-	} catch {
-		// never break the agent over a status ping
-	}
+	setUserVar("wswait", state);
 }
 
 export default function (pi: ExtensionAPI) {
