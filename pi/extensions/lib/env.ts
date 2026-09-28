@@ -245,7 +245,7 @@ export const CONTEXT_CAP_SCHEMA: HandoffSchema = envEnum("CONTEXT_CAP_SCHEMA", H
  */
 export const CONTEXT_CAP_TAIL_TOKENS = envInt("CONTEXT_CAP_TAIL_TOKENS", 0);
 
-/** Tool name registered by context-cap.ts; child-session.ts and explore.ts reference it. */
+/** Tool name registered by context-cap.ts; child-runs.ts and explore.ts reference it. */
 export const CONTEXT_CAP_TOOL_NAME = "context_handoff";
 
 /** ctx.ui.setStatus key used by context-cap.ts; lib/child-watch.ts fakes it in the child footer. */

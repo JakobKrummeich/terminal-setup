@@ -52,8 +52,8 @@ Event records (one JSON object per line, `ts` = epoch ms):
 { "ts": 0, "event": "finish", "sid": "…", "status": "done|error|cancelled", "turns": 9, "costUsd": 0.42, "contextTokens": 91000, "contextPercent": 45, "resets": 1, "durationMs": 245000 }
 ```
 
-Writers: `lib/child-session.ts` (spawn/progress/finish — it already has all the
-numbers via `collectMeta`), `context-cap.ts` (reset), session-start hook in the
+Writers: `lib/child-runs.ts` (spawn/progress/finish, called from `lib/child-session.ts`
+— it already has all the numbers via `collectMeta`), `context-cap.ts` (reset), session-start hook in the
 dashboard extension. `parentId` is known at spawn time because the spawning code
 runs inside the parent's session context.
 

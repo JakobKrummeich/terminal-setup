@@ -2,13 +2,8 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import {
-	type ChildModel,
-	type ChildThinkingLevel,
-	EXPLORE_TOOL,
-	renderChildResult,
-	runChildTool,
-} from "./lib/child-session.ts";
+import { EXPLORE_TOOL, renderChildResult, runChildTool } from "./lib/child-session.ts";
+import type { ChildModel, ChildThinkingLevel } from "./lib/child-types.ts";
 import { agentDir } from "./lib/agent-dir.ts";
 import { CONTEXT_CAP_TOOL_NAME } from "./lib/env.ts";
 

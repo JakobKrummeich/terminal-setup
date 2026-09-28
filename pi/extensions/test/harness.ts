@@ -82,7 +82,7 @@ export interface TestSessionOptions {
 	/**
 	 * Extension run mode reported as `ctx.mode` (timer.ts branches on it).
 	 * Left unset, pi's ExtensionRunner default ("print") applies — the same value a
-	 * child session gets, since child-session.ts binds with no mode. Setting it
+	 * child session gets, since child-create.ts binds with no mode. Setting it
 	 * re-emits session_start, so opt in only where the mode matters.
 	 */
 	mode?: ExtensionMode;

@@ -14,7 +14,7 @@ import test from "node:test";
 process.env.PI_CODING_AGENT_DIR = mkdtempSync(path.join(tmpdir(), "pi-watchviewport-agentdir-"));
 process.env.PI_OFFLINE = "1";
 
-import type { ChildRecord } from "../lib/child-session.ts";
+import type { ChildRecord } from "../lib/child-types.ts";
 import {
 	EXPAND_KEY,
 	WATCH_KEY,

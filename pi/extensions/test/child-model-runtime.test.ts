@@ -1,5 +1,5 @@
 /**
- * lib/child-session.ts parentModelRuntime reads ModelRegistry's PRIVATE
+ * lib/child-create.ts parentModelRuntime reads ModelRegistry's PRIVATE
  * `runtime` field so children share the parent's ModelRuntime (runtime-only
  * credentials such as `pi --api-key`). Nothing in pi's types guards that field:
  * this test takes the registry pi really hands extensions (ctx.modelRegistry)
@@ -11,7 +11,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { parentModelRuntime } from "../lib/child-session.ts";
+import { parentModelRuntime } from "../lib/child-create.ts";
 import { createTestSession, textStep } from "./harness.ts";
 
 const CAPTURE_KEY = "terminal-setup.test.captured-model-registry";

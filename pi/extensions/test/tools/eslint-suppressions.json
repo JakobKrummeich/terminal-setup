@@ -9,13 +9,5 @@
     "max-lines-per-function": {
       "count": 1
     }
-  },
-  "pi/extensions/lib/child-session.ts": {
-    "complexity": {
-      "count": 8
-    },
-    "max-lines": {
-      "count": 1
-    }
   }
 }

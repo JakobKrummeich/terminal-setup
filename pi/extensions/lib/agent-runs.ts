@@ -11,7 +11,7 @@
  *  - nothing ever rewrites the file. "Pruning" is reader-side filtering only;
  *    rewriting a shared append-only file would need cross-process locking.
  *
- * Writers: lib/child-session.ts (spawn/progress/finish), context-cap.ts (reset),
+ * Writers: lib/child-runs.ts (spawn/progress/finish), context-cap.ts (reset),
  * agent-dash.ts (session-start).
  *
  * Deliberately stateless — no module-level mutable state. pi loads every
@@ -277,7 +277,7 @@ function lastFinishBySid(lines: string[], sids: string[]): Map<string, RunFinish
  * All spawn rows carrying `label` (e.g. "agent#3ce02a1b"), in file order, each
  * paired with its sid's LAST finish row. Unlike readRuns this does NOT prune rows
  * whose session file vanished: the caller (child resume after a pi restart —
- * lib/child-session.ts) needs to tell "file missing" apart from "unknown id".
+ * lib/child-reopen.ts) needs to tell "file missing" apart from "unknown id".
  * Labels carry a random 8-char id, so several rows are a (rare) collision across
  * spawn trees; the caller picks by root.
  */

@@ -3,7 +3,8 @@
 // navigation math, and the SGR mouse-wheel decoding. The overlay that wires them
 // to the TUI lives in lib/child-watch.ts.
 import type { KeyId } from "@earendil-works/pi-tui";
-import { type ChildRecord, formatDuration, statusLine } from "./child-session.ts";
+import { formatDuration, statusLine } from "./child-runs.ts";
+import type { ChildRecord } from "./child-types.ts";
 
 const WATCH_KEY = (process.env.PI_SUBAGENT_WATCH_KEY ?? "f2") as KeyId;
 const EXPAND_KEY = (process.env.PI_SUBAGENT_EXPAND_KEY ?? "ctrl+o") as KeyId;

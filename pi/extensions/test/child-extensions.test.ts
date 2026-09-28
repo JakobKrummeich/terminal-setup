@@ -1,5 +1,5 @@
 /**
- * Which extensions a spawned child session loads (lib/child-session.ts,
+ * Which extensions a spawned child session loads (lib/child-create.ts,
  * childResourceLoader).
  *
  * createAgentSession does not inherit the parent process's CLI flags: called bare

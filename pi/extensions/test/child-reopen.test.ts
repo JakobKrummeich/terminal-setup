@@ -25,7 +25,8 @@ import { createAssistantMessageEventStream, withoutInitialSystemMessage } from "
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { initTheme, ModelRuntime, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readRuns } from "../lib/agent-runs.ts";
-import { type ChildRecord, liveChildren, resetChildState, runChildTool } from "../lib/child-session.ts";
+import { liveChildren, resetChildState, runChildTool } from "../lib/child-session.ts";
+import type { ChildRecord } from "../lib/child-types.ts";
 import { sleep } from "./harness.ts";
 
 // Replayed/live tool calls render through ToolExecutionComponent: needs a theme.

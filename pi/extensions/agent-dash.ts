@@ -5,7 +5,7 @@
  * Two jobs, main session only:
  *  1. Write the main session's `session-start` rows into the per-project
  *     agent-runs.jsonl index (spawn/progress/finish come from
- *     lib/child-session.ts, reset from context-cap.ts).
+ *     lib/child-runs.ts, reset from context-cap.ts).
  *  2. Probe the machine-global dashboard daemon (pi/dashboard-daemon.mjs,
  *     systemd user unit pi-dash.service) once per process and print its URL.
  *     pi itself NEVER serves the dashboard (spec decisions 6/7): the daemon
