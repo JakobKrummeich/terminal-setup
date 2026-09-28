@@ -1,0 +1,15 @@
+{
+	"name": "pi-extensions-check-tools",
+	"private": true,
+	"description": "Pinned quality-gate tools for ../check.sh. Exact versions only; bump with `npm install --prefix . <pkg>@<exact>` from this dir and commit package-lock.json.",
+	"devDependencies": {
+		"@eslint/js": "10.0.1",
+		"dependency-cruiser": "18.4.0",
+		"eslint": "10.11.0",
+		"globals": "17.12.0",
+		"jscpd": "4.3.0",
+		"shellcheck": "4.1.0",
+		"typescript": "5.9.3",
+		"typescript-eslint": "8.70.1"
+	}
+}

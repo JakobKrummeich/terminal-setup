@@ -1,8 +1,8 @@
 {
 	// Typecheck config for the extensions under test. The bare imports used by
 	// the extensions only resolve through the node_modules symlink farm that
-	// run.sh builds next to this file, so run ./run.sh once first, then:
-	//   command npx -y -p typescript tsc -p .
+	// farm.sh builds next to this file. Run it via ./check.sh (pinned tsc from
+	// tools/, builds the farm itself) — never a bare `tsc` (stub on PATH).
 	"compilerOptions": {
 		"noEmit": true,
 		"strict": true,

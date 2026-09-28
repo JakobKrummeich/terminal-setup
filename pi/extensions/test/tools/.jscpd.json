@@ -1,0 +1,18 @@
+{
+	"//": "jscpd config for ../check.sh, which passes the scanned paths on the command line (config paths would resolve relative to this file). WHY: copy-paste in production code drifts apart silently; 1% is a ceiling, not a target. Tests are excluded: scripted scenarios repeat setup by design.",
+	"threshold": 1,
+	"minTokens": 50,
+	"format": [
+		"typescript",
+		"javascript",
+		"bash"
+	],
+	"ignore": [
+		"**/node_modules/**",
+		"**/pi/extensions/test/**"
+	],
+	"reporters": [
+		"console"
+	],
+	"gitignore": true
+}

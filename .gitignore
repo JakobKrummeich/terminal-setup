@@ -2,3 +2,4 @@ pi/extensions/test/node_modules/
 pi/extensions/node_modules
 /pi/extensions/explorer-models.json
 .lavish/
+pi/extensions/test/tools/node_modules/

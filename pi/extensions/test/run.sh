@@ -5,7 +5,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-# shellcheck source=farm.sh
+# shellcheck source=pi/extensions/test/farm.sh
 source ./farm.sh
 build_pi_farm
 
