@@ -38,11 +38,18 @@ install_shell_wsstate() {
     rc_dir="$(dirname "$rc_target")"
     tmp="$(mktemp "$rc_dir/.bashrc.terminal-setup.XXXXXX")"
     chmod --reference="$rc_target" "$tmp"
-    awk -v begin="$begin" -v end="$end" '
+    # Drop the old managed block. A begin marker with no end marker would drop
+    # every user line after it, so awk fails and .bashrc is left untouched.
+    if ! awk -v begin="$begin" -v end="$end" '
         $0 == begin { skip = 1; next }
         $0 == end { skip = 0; next }
         !skip { print }
-    ' "$rc_target" > "$tmp"
+        END { if (skip) exit 3 }
+    ' "$rc_target" > "$tmp"; then
+        rm -f "$tmp"
+        echo "WARN: $rc has '$begin' without '$end'; fix it by hand — wsstate hook not installed"
+        return 0
+    fi
     cat >> "$tmp" <<EOF
 $begin
 [ -f "$src" ] && . "$src"

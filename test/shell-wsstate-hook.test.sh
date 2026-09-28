@@ -91,4 +91,17 @@ out="$(run_install "$home" "$fake_repo")" || fail "missing hook script must not 
 [[ "$out" == "WARN: missing $fake_repo/shell/wsstate.sh; shell wsstate hook not installed" ]] || fail "expected missing-src warning, got: $out"
 [ "$(cat "$home/.bashrc")" = untouched ] || fail ".bashrc modified without a hook script: $(cat "$home/.bashrc")"
 
+# ── begin marker without end marker: refuse, leave .bashrc byte-identical ──
+# The rewrite drops everything from begin to end; with no end marker that
+# would silently delete every user line after the stray begin marker.
+home="$FIXTURE/unterminated"
+mkdir -p "$home"
+printf 'before\n%s\nexport KEEP_ME=1\nalias gs="git status"\n' "$BEGIN" > "$home/.bashrc"
+cp "$home/.bashrc" "$FIXTURE/unterminated.orig"
+out="$(run_install "$home")" || fail "unterminated block must not fail the installer"
+[[ "$out" == "WARN: $home/.bashrc has '$BEGIN' without '$END'; fix it by hand — wsstate hook not installed" ]] \
+    || fail "expected unterminated-block warning, got: $out"
+cmp -s "$home/.bashrc" "$FIXTURE/unterminated.orig" || fail ".bashrc rewritten despite unterminated block: $(cat "$home/.bashrc")"
+assert_no_temp_files "$home"
+
 printf 'PASS: shell wsstate hook is idempotent and preserves the user .bashrc\n'
