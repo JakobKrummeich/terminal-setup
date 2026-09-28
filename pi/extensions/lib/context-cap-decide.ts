@@ -302,10 +302,14 @@ export function decideTurnEnd(
 	// Silent-stop fallback: crossed soft cap but the crossing turn ended without
 	// tool calls, so the steer gate never fired — the agent saw no warning.
 	const { tokens, caps } = input;
-	if (state.phase === "idle" && !input.hasToolCalls && !caps.disabled && tokens != null && tokens >= caps.soft) {
+	if (state.phase === "idle" && !input.hasToolCalls && crossedSoftCap(tokens, caps)) {
 		return { kind: "silent-stop", tokens };
 	}
 	return { kind: "none" };
+}
+
+function crossedSoftCap(tokens: number | null | undefined, caps: CapsView): tokens is number {
+	return !caps.disabled && tokens != null && tokens >= caps.soft;
 }
 
 function decideVerification(

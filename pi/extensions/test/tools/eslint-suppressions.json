@@ -31,11 +31,6 @@
       "count": 2
     }
   },
-  "pi/extensions/lib/context-cap-decide.ts": {
-    "complexity": {
-      "count": 1
-    }
-  },
   "pi/extensions/lib/dashboard-ui/app.js": {
     "complexity": {
       "count": 3
