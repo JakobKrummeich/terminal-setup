@@ -29,7 +29,7 @@
  */
 
 import { contentText, uuidv7 } from "@earendil-works/pi-ai";
-import type { Model, Usage } from "@earendil-works/pi-ai";
+import type { Api, Model, Usage } from "@earendil-works/pi-ai";
 import { convertToLlm, serializeConversation } from "@earendil-works/pi-coding-agent";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { CONTEXT_CAP_SCHEMA, type HandoffSchema } from "./env.ts";
@@ -116,7 +116,7 @@ export interface DraftHandoffOptions {
 	/** Usually `ctx.modelRegistry`. Undefined ⇒ null. */
 	modelRegistry: HandoffCompleter | undefined;
 	/** Usually `ctx.model`. Undefined (no model selected) ⇒ null. */
-	model: Model<any> | undefined;
+	model: Model<Api> | undefined;
 	/** History to hand off, oldest first. Unpaired tool calls are fine — this is serialized to text, never replayed. */
 	messages: readonly HandoffMessage[];
 	/** Caller's abort signal (run abort / compaction abort). Aborting ⇒ null. */

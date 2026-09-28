@@ -8,10 +8,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { childSessionInfo, inChildSession, runInChildSession } from "../lib/child-context.ts";
+import type * as ChildContextModule from "../lib/child-context.ts";
 
 test("child-context: a scope entered via one module copy is visible to another", async () => {
 	// A distinct import URL reproduces pi's per-extension copy: same file, separate module instance.
-	const copy2 = (await import("../lib/child-context.ts?copy2" as string)) as typeof import("../lib/child-context.ts");
+	const copy2 = (await import("../lib/child-context.ts?copy2" as string)) as typeof ChildContextModule;
 	assert.notEqual(copy2.inChildSession, inChildSession, "the trick must yield a distinct module instance");
 	assert.equal(copy2.inChildSession(), false, "outside any child");
 	const info = { kind: "agent", contract: "C" };

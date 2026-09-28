@@ -54,7 +54,9 @@ function writeMarkerExtension(dir: string, toolName: string): string {
 	// exactly such a symlink farm next to the extensions.
 	try {
 		symlinkSync(path.join(EXT_DIR, "node_modules"), path.join(dir, "node_modules"));
-	} catch {} // already linked (second extension in the same dir)
+	} catch {
+		// already linked (second extension in the same dir)
+	}
 	const file = path.join(dir, `${toolName}.ts`);
 	writeFileSync(
 		file,

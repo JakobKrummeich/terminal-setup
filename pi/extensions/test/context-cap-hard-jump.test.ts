@@ -161,7 +161,9 @@ function cleanup(childId: string | undefined) {
 				for (const n of readdirSync(contextCapDir())) {
 					if (n.startsWith(`${sessionId}-`)) rmSync(path.join(contextCapDir(), n), { force: true });
 				}
-			} catch {}
+			} catch {
+				// best-effort cleanup: the handoff dir may not exist
+			}
 		}
 	}
 	for (const record of liveChildren.values()) record.session.dispose();

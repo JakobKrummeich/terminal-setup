@@ -136,7 +136,9 @@ function cleanup(d: Driver) {
 		for (const name of fs.readdirSync(contextCapDir())) {
 			if (name.startsWith(`${d.sessionId}-`)) fs.rmSync(path.join(contextCapDir(), name), { force: true });
 		}
-	} catch {}
+	} catch {
+		// best-effort cleanup: the handoff dir may not exist
+	}
 }
 
 async function scenario(run: (d: Driver) => Promise<void>): Promise<string[]> {

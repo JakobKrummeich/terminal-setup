@@ -33,6 +33,8 @@ import {
 } from "../explore.ts";
 import { type ChildRecord, liveChildren, resetChildState, runChildTool } from "../lib/child-session.ts";
 import { movePickerSelection, nextChild, prevChild, resetWatchCursor, watchTarget } from "../lib/child-watch.ts";
+import type * as ChildSessionModule from "../lib/child-session.ts";
+import type * as ChildWatchModule from "../lib/child-watch.ts";
 import { sleep } from "./harness.ts";
 
 // --- resolveExplorerConfig (pure) ---
@@ -466,7 +468,7 @@ test("child-session state is shared across module copies (jiti moduleCache: fals
 	// pi's loader gives every extension file its own jiti instance, so subagent.ts and
 	// explore.ts import independent copies of lib/child-session.ts. A distinct import URL
 	// reproduces that: same file, separate ESM module instance.
-	const copy2 = (await import("../lib/child-session.ts?copy2" as string)) as typeof import("../lib/child-session.ts");
+	const copy2 = (await import("../lib/child-session.ts?copy2" as string)) as typeof ChildSessionModule;
 	assert.notEqual(copy2.runChildTool, runChildTool, "the trick must yield a distinct module instance");
 	assert.equal(copy2.liveChildren, liveChildren, "liveChildren must be one shared Map (F2 watch, shutdown clear)");
 	// The busy latch must be shared too: a child started through one copy must latch
@@ -489,7 +491,7 @@ test("child-session state is shared across module copies (jiti moduleCache: fals
 	assert.equal(isBusyError(viaCopy2), true, "copy2 must see copy1's explorer latch");
 	// The record lands in liveChildren only after the child session is created — the
 	// latch is synchronous, the record is not — so poll briefly instead of racing it.
-	const watchCopy2 = (await import("../lib/child-watch.ts?copy2" as string)) as typeof import("../lib/child-watch.ts");
+	const watchCopy2 = (await import("../lib/child-watch.ts?copy2" as string)) as typeof ChildWatchModule;
 	let target: ReturnType<typeof watchCopy2.watchTarget>;
 	for (let i = 0; i < 100 && !(target = watchCopy2.watchTarget())?.running; i++) await sleep(20);
 	assert.ok(target?.running, "copy2's watch must find copy1's running child");

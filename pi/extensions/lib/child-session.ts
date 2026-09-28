@@ -558,7 +558,9 @@ function evictFinishedChildren(): void {
 		});
 		try {
 			record.session.dispose();
-		} catch {}
+		} catch {
+			// Best-effort teardown of an evicted finished child; a throwing dispose must not stop the eviction loop.
+		}
 	}
 }
 
@@ -613,7 +615,9 @@ function findChildSource(id: string, kind: string, ctx: ExtensionContext): Child
 	let present = false;
 	try {
 		present = !!file && statSync(file).size > 0;
-	} catch {}
+	} catch {
+		// Unreadable/absent file = not present; the error below reports it.
+	}
 	if (!present) {
 		return {
 			error: `${kind} "${id}" cannot be resumed: its session file is missing (${

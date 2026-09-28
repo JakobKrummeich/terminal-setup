@@ -98,7 +98,9 @@ function cleanup(t: TestSession, sessionId: string) {
 		for (const n of fs.readdirSync(contextCapDir())) {
 			if (n.startsWith(`${sessionId}-`)) fs.rmSync(path.join(contextCapDir(), n), { force: true });
 		}
-	} catch {}
+	} catch {
+		// best-effort cleanup: the handoff dir may not exist
+	}
 	t.dispose();
 }
 

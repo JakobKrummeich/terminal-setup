@@ -341,7 +341,9 @@ test("real child: a context-cap swap shows up as exactly one handoff anchor", as
 				for (const n of readdirSync(contextCapDir())) {
 					if (sessionId && n.startsWith(`${sessionId}-`)) rmSync(path.join(contextCapDir(), n), { force: true });
 				}
-			} catch {}
+			} catch {
+				// best-effort cleanup: the handoff dir may not exist
+			}
 		}
 		for (const record of liveChildren.values()) record.session.dispose();
 		liveChildren.clear();

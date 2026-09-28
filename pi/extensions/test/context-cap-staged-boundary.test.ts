@@ -121,7 +121,9 @@ function cleanup(bound: BoundExtension) {
 		for (const name of fs.readdirSync(dir)) {
 			if (name.startsWith(`${bound.sessionId}-`)) fs.rmSync(path.join(dir, name), { force: true });
 		}
-	} catch {}
+	} catch {
+		// best-effort cleanup: the handoff dir may not exist
+	}
 }
 
 for (const failure of ["aborted outcome", "error outcome", "aborted signal"] as const) {

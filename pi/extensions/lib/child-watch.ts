@@ -245,7 +245,9 @@ function gitBranch(cwd: string): string | null {
 		try {
 			const pointer = readFileSync(gitDir, "utf8").match(/^gitdir: (.+)$/m);
 			if (pointer?.[1]) gitDir = pointer[1].trim();
-		} catch {}
+		} catch {
+			// .git is a directory (or missing), not a worktree pointer file: keep gitDir; the HEAD read decides.
+		}
 		const head = readFileSync(join(gitDir, "HEAD"), "utf8").trim();
 		const match = /^ref: refs\/heads\/(.+)$/.exec(head);
 		return match?.[1] ?? head.slice(0, 7);
