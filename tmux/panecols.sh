@@ -18,4 +18,5 @@ fi
 [ "$N" -ge 1 ] 2>/dev/null || N=1
 
 B64=$(printf %s "$N" | base64)
+# shellcheck disable=SC1003 # '\033\\' is ESC + backslash (ST), not an escaped quote
 printf '\033Ptmux;\033\033]1337;SetUserVar=panecols=%s\007\033\\' "$B64" > "$TTY"

@@ -186,6 +186,7 @@ output="$(run_install "$FIXTURE/destination-collision")"
 [[ "$output" != *"INSTALLED:"* ]] || fail "RTK reported an installation after destination failure"
 [ ! -e "$FIXTURE/destination-collision/.pi/agent/bin/rtk" ] || fail "RTK link was created after destination failure"
 
+# shellcheck disable=SC2329 # stub shadows the command inside run_install (invoked indirectly)
 mv() { return 1; }
 output="$(run_install "$FIXTURE/move-failure")"
 unset -f mv
@@ -193,6 +194,7 @@ unset -f mv
 [[ "$output" != *"INSTALLED:"* ]] || fail "RTK reported an installation after move failure"
 assert_not_installed "$FIXTURE/move-failure" "move failure"
 
+# shellcheck disable=SC2329 # stub shadows the command inside run_install (invoked indirectly)
 chmod() { return 1; }
 output="$(run_install "$FIXTURE/chmod-failure")"
 unset -f chmod

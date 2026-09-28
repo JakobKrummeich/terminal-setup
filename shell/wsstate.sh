@@ -1,3 +1,5 @@
+# shellcheck shell=bash
+# (Sourced by bash AND zsh, so no shebang; zsh-only paths are guarded by $ZSH_VERSION.)
 # wsstate.sh — report shell busy/idle to wezterm via OSC 1337 SetUserVar.
 #
 # Source from .bashrc / .zshrc (host AND inside containers):
@@ -16,6 +18,7 @@ __ws_emit() {
   local b64
   b64="$(printf '%s' "$1" | base64 | tr -d '\n')"
   if [ -n "${TMUX:-}" ]; then
+    # shellcheck disable=SC1003 # '\033\\' is ESC + backslash (ST), not an escaped quote
     printf '\033Ptmux;\033\033]1337;SetUserVar=wsstate=%s\007\033\\' "$b64" > /dev/tty 2>/dev/null || true
   else
     printf '\033]1337;SetUserVar=wsstate=%s\007' "$b64" > /dev/tty 2>/dev/null || true
@@ -64,6 +67,7 @@ elif [ -n "${BASH_VERSION:-}" ]; then
         pc+=(__ws_prompt)
         PROMPT_COMMAND=("${pc[@]}")
       else
+        # shellcheck disable=SC2178,SC2128 # string form only: the array form was handled above
         case ";${PROMPT_COMMAND:-};" in
           *";__ws_prompt;"*) ;;
           *) PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND;}__ws_prompt" ;;
