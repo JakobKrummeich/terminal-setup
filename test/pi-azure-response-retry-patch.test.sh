@@ -18,15 +18,20 @@ run_patch() {
   printf '%s\n' "$root/dist/utils/retry.js"
 }
 
-RETRY_083="$(run_patch 0.83.0 pi-ai-0.83.0-retry.js)"
-RETRY_0841="$(run_patch 0.84.1 pi-ai-0.83.0-retry.js)"
-RETRY_0842="$(run_patch 0.84.2 pi-ai-0.84.2-retry.js)"
-RETRY_0843="$(run_patch 0.84.3 pi-ai-0.84.2-retry.js)"
-RETRY_0844="$(run_patch 0.84.4 pi-ai-0.84.2-retry.js)"
-RETRY_0851="$(run_patch 0.85.1 pi-ai-0.85.1-retry.js)"
-RETRY_0861="$(run_patch 0.86.1 pi-ai-0.86.1-retry.js)"
-RETRY_0871="$(run_patch 0.87.1 pi-ai-0.86.1-retry.js)"
-node --input-type=module - "$RETRY_083" "$RETRY_0841" "$RETRY_0842" "$RETRY_0843" "$RETRY_0844" "$RETRY_0851" "$RETRY_0861" "$RETRY_0871" <<'NODE'
+RETRY_0871="$(run_patch 0.87.1 pi-ai-0.87.1-retry.js)"
+
+# Versions without a hash entry (e.g. pre-0.87 Pi) must fail closed and leave retry.js untouched.
+unsupported="$FIXTURE/unsupported"
+mkdir -p "$unsupported/dist/utils"
+printf '{"version":"0.86.1","type":"module"}\n' > "$unsupported/package.json"
+cp "$REPO/test/fixtures/pi-ai-0.87.1-retry.js" "$unsupported/dist/utils/retry.js"
+if PI_AI_ROOT="$unsupported" node "$PATCH" 2>/dev/null; then
+  echo "FAIL: patch accepted unsupported pi-ai 0.86.1" >&2
+  exit 1
+fi
+cmp -s "$REPO/test/fixtures/pi-ai-0.87.1-retry.js" "$unsupported/dist/utils/retry.js"
+
+node --input-type=module - "$RETRY_0871" <<'NODE'
 import assert from "node:assert/strict";
 for (const retryPath of process.argv.slice(2)) {
   const { isRetryableAssistantError } = await import(`file://${retryPath}`);
@@ -41,5 +46,5 @@ for (const retryPath of process.argv.slice(2)) {
   assert.equal(isRetryableAssistantError({ ...unknownAzureFailure, rawStopReason: "completed" }), false);
   assert.equal(isRetryableAssistantError({ ...unknownAzureFailure, errorMessage: "insufficient_quota" }), false);
 }
-console.log("PASS: scoped Azure hidden-response retry patch through 0.87.1");
+console.log("PASS: scoped Azure hidden-response retry patch for 0.87.1");
 NODE
