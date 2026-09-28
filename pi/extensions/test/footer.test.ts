@@ -88,3 +88,31 @@ test("renderFooterLines: non-cap statuses alone stay dim", () => {
 		`[dim]2 timers[/]${" ".repeat(21)}[dim]m[/]`,
 	);
 });
+
+test("renderFooterLines: USERPROFILE stands in for an unset HOME; non-reasoning model ignores thinkingLevel", () => {
+	const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+	delete process.env.HOME;
+	process.env.USERPROFILE = "/users/w";
+	try {
+		const data: FooterData = {
+			cost: 0,
+			usingSubscription: false,
+			cwd: "/users/w/src",
+			branch: null,
+			modelId: "m",
+			reasoning: false,
+			thinkingLevel: "high",
+			statuses: new Map(),
+		};
+		assert.deepEqual(renderFooterLines(20, theme, data), [`[dim]~/src${" ".repeat(9)}$0.000[/]`, "[dim]m[/]"]);
+	} finally {
+		process.env.HOME = saved.HOME;
+		if (saved.USERPROFILE === undefined) delete process.env.USERPROFILE;
+		else process.env.USERPROFILE = saved.USERPROFILE;
+	}
+});
+
+test("renderFooterLines: without statuses the model truncates alone, and vanishes below 4 columns", () => {
+	assert.equal(footer(8, { modelId: "claude-opus-4" })[1], "[dim]claud\u001b[0m...\u001b[0m[/]");
+	assert.equal(footer(3, { modelId: "claude-opus-4" })[1], "[dim][/]");
+});

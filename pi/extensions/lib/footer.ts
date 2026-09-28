@@ -17,73 +17,83 @@ export interface FooterData {
 }
 
 export function renderFooterLines(width: number, theme: Theme, data: FooterData): string[] {
-	// Cost, right-aligned on line 1 (context usage lives in the context-cap status line)
-	const costStr = `$${data.cost.toFixed(3)}${data.usingSubscription ? " (sub)" : ""}`;
+	return [theme.fg("dim", footerLine1(width, data)), footerLine2(width, theme, data)];
+}
 
-	// Line 1: pwd with git branch, cost right-aligned
+// --- line 1: pwd (git branch, session name) left, cost right-aligned ----------
+
+function footerLine1(width: number, data: FooterData): string {
+	// Context usage lives in the context-cap status on line 2, not here.
+	const costStr = `$${data.cost.toFixed(3)}${data.usingSubscription ? " (sub)" : ""}`;
+	// Leave room for cost + one separating space when truncating pwd
+	const pwdMax = Math.max(1, width - costStr.length - 1);
+	const pwd = truncateMiddle(pwdLabel(data), pwdMax);
+	const gap = Math.max(1, width - pwd.length - costStr.length);
+	return pwd + " ".repeat(gap) + costStr;
+}
+
+function pwdLabel(data: FooterData): string {
 	let pwd = data.cwd;
 	const home = process.env.HOME || process.env.USERPROFILE;
 	if (home && pwd.startsWith(home)) {
 		pwd = `~${pwd.slice(home.length)}`;
 	}
-	const branch = data.branch;
-	if (branch) pwd = `${pwd} (${branch})`;
+	if (data.branch) pwd = `${pwd} (${data.branch})`;
+	if (data.sessionName) pwd = `${pwd} • ${data.sessionName}`;
+	return pwd;
+}
 
-	const sessionName = data.sessionName;
-	if (sessionName) pwd = `${pwd} • ${sessionName}`;
+function truncateMiddle(text: string, max: number): string {
+	if (text.length <= max) return text;
+	const half = Math.floor(max / 2) - 2;
+	if (half > 1) return `${text.slice(0, half)}...${text.slice(-(half - 1))}`;
+	return text.slice(0, max);
+}
 
-	// Leave room for cost + one separating space when truncating pwd
-	const pwdMax = Math.max(1, width - costStr.length - 1);
-	if (pwd.length > pwdMax) {
-		const half = Math.floor(pwdMax / 2) - 2;
-		if (half > 1) {
-			pwd = `${pwd.slice(0, half)}...${pwd.slice(-(half - 1))}`;
-		} else {
-			pwd = pwd.slice(0, pwdMax);
-		}
-	}
-	const gap = Math.max(1, width - pwd.length - costStr.length);
-	const line1 = pwd + " ".repeat(gap) + costStr;
+// --- line 2: extension statuses left, model + thinking level right -----------
+// Status has priority — never truncated; model truncates instead.
+// context-cap (context size) gets prominent color; other statuses stay dim.
 
-	// Line 2: model + thinking level
-	const modelName = data.modelId || "no-model";
-	let modelDisplay = modelName;
-	if (data.reasoning) {
-		const thinkingLevel = data.thinkingLevel;
-		modelDisplay =
-			thinkingLevel === "off" ? `${modelName} • thinking off` : `${modelName} • ${thinkingLevel}`;
-	}
-
-	// Line 2: extension statuses (context size) left, model right.
-	// Status has priority — never truncated; model truncates instead.
-	// context-cap (context size) gets prominent color; other statuses stay dim.
-	const clean = (text: string) => text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
-	const extensionStatuses = data.statuses;
-	const capStatus = clean(extensionStatuses.get(CONTEXT_CAP_STATUS_KEY) ?? "");
-	const otherStatuses = Array.from(extensionStatuses.entries())
-		.filter(([name]) => name !== CONTEXT_CAP_STATUS_KEY)
-		.sort(([a], [b]) => a.localeCompare(b))
-		.map(([, text]) => clean(text))
-		.join(" ");
+function footerLine2(width: number, theme: Theme, data: FooterData): string {
+	const { capStatus, otherStatuses } = statusTexts(data.statuses);
 	// Plain-text layout math first; colors applied at assembly.
 	const statusPlain = [capStatus, otherStatuses].filter(Boolean).join(" ");
 	const modelMax = width - statusPlain.length - (statusPlain ? 1 : 0);
-	if (modelDisplay.length > modelMax) {
-		modelDisplay = modelMax >= 4 ? truncateToWidth(modelDisplay, modelMax, "...") : "";
-	}
-	let line2 = theme.fg("dim", modelDisplay);
-	if (statusPlain) {
-		const statusColored = [
-			capStatus ? theme.fg("accent", capStatus) : "",
-			otherStatuses ? theme.fg("dim", otherStatuses) : "",
-		]
-			.filter(Boolean)
-			.join(" ");
-		const gap2 = Math.max(1, width - statusPlain.length - modelDisplay.length);
-		line2 = modelDisplay
-			? statusColored + " ".repeat(gap2) + theme.fg("dim", modelDisplay)
-			: statusColored;
-	}
+	const modelDisplay = fitModel(modelLabel(data), modelMax);
+	if (!statusPlain) return theme.fg("dim", modelDisplay);
+	const statusColored = [
+		capStatus ? theme.fg("accent", capStatus) : "",
+		otherStatuses ? theme.fg("dim", otherStatuses) : "",
+	]
+		.filter(Boolean)
+		.join(" ");
+	if (!modelDisplay) return statusColored;
+	const gap = Math.max(1, width - statusPlain.length - modelDisplay.length);
+	return statusColored + " ".repeat(gap) + theme.fg("dim", modelDisplay);
+}
 
-	return [theme.fg("dim", line1), line2];
+function cleanStatus(text: string): string {
+	return text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
+}
+
+/** The context-cap status, and every other status sorted by extension name. */
+function statusTexts(statuses: ReadonlyMap<string, string>): { capStatus: string; otherStatuses: string } {
+	const capStatus = cleanStatus(statuses.get(CONTEXT_CAP_STATUS_KEY) ?? "");
+	const otherStatuses = Array.from(statuses.entries())
+		.filter(([name]) => name !== CONTEXT_CAP_STATUS_KEY)
+		.sort(([a], [b]) => a.localeCompare(b))
+		.map(([, text]) => cleanStatus(text))
+		.join(" ");
+	return { capStatus, otherStatuses };
+}
+
+function modelLabel(data: FooterData): string {
+	const modelName = data.modelId || "no-model";
+	if (!data.reasoning) return modelName;
+	return data.thinkingLevel === "off" ? `${modelName} • thinking off` : `${modelName} • ${data.thinkingLevel}`;
+}
+
+function fitModel(model: string, max: number): string {
+	if (model.length <= max) return model;
+	return max >= 4 ? truncateToWidth(model, max, "...") : "";
 }

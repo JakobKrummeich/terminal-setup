@@ -1,6 +1,18 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { renderFooterLines } from "./lib/footer.ts";
+
+/** Cumulative cost from all session entries' assistant messages. */
+function cumulativeCost(entries: readonly SessionEntry[]): number {
+	let cost = 0;
+	for (const entry of entries) {
+		if (entry.type === "message" && entry.message.role === "assistant") {
+			const message = entry.message as AssistantMessage;
+			cost += message.usage.cost.total;
+		}
+	}
+	return cost;
+}
 
 export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
@@ -11,16 +23,8 @@ export default function (pi: ExtensionAPI) {
 				dispose: unsub,
 				invalidate() {},
 				render(width: number): string[] {
-					// Cumulative cost from all session entries
-					let cost = 0;
-					for (const entry of ctx.sessionManager.getEntries()) {
-						if (entry.type === "message" && entry.message.role === "assistant") {
-							const message = entry.message as AssistantMessage;
-							cost += message.usage.cost.total;
-						}
-					}
 					return renderFooterLines(width, theme, {
-						cost,
+						cost: cumulativeCost(ctx.sessionManager.getEntries()),
 						usingSubscription: ctx.model ? ctx.modelRegistry.isUsingOAuth(ctx.model) : false,
 						cwd: process.cwd(),
 						branch: footerData.getGitBranch(),

@@ -10,11 +10,6 @@
       "count": 1
     }
   },
-  "pi/extensions/custom-footer.ts": {
-    "complexity": {
-      "count": 1
-    }
-  },
   "pi/extensions/dump-system-prompt.ts": {
     "complexity": {
       "count": 1
@@ -72,11 +67,6 @@
   "pi/extensions/lib/env.ts": {
     "complexity": {
       "count": 2
-    }
-  },
-  "pi/extensions/lib/footer.ts": {
-    "complexity": {
-      "count": 1
     }
   },
   "pi/extensions/lib/handoff-writer.ts": {
