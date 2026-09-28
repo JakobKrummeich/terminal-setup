@@ -189,7 +189,16 @@ export async function draftHandoff(options: DraftHandoffOptions): Promise<Handof
 
 	const conversation = serializeForHandoff(messages);
 	if (!conversation.trim()) return null;
+	return completeHandoff(modelRegistry, model, conversation, options);
+}
 
+/** The bounded call itself: own AbortController (caller abort + timeout), never throws. */
+async function completeHandoff(
+	modelRegistry: HandoffCompleter,
+	model: Model<Api>,
+	conversation: string,
+	options: DraftHandoffOptions,
+): Promise<HandoffDraft | null> {
 	const controller = new AbortController();
 	const abortFromCaller = () => controller.abort();
 	options.signal?.addEventListener("abort", abortFromCaller, { once: true });
@@ -226,12 +235,7 @@ export async function draftHandoff(options: DraftHandoffOptions): Promise<Handof
 				sessionId: uuidv7(),
 			},
 		);
-		// pi's provider layer resolves with a synthesized message on failure instead
-		// of rejecting, so stopReason is the real error channel here.
-		if (!response || response.stopReason === "error" || response.stopReason === "aborted") return null;
-		const text = contentText(response.content ?? []).trim();
-		if (!text) return null;
-		return { text, usage: response.usage };
+		return draftFromResponse(response);
 	} catch {
 		// Rejected promise: network, auth, malformed request, abort. Never rethrow.
 		return null;
@@ -239,4 +243,13 @@ export async function draftHandoff(options: DraftHandoffOptions): Promise<Handof
 		clearTimeout(timeout);
 		options.signal?.removeEventListener("abort", abortFromCaller);
 	}
+}
+
+function draftFromResponse(response: Awaited<ReturnType<HandoffCompleter["complete"]>> | undefined): HandoffDraft | null {
+	// pi's provider layer resolves with a synthesized message on failure instead
+	// of rejecting, so stopReason is the real error channel here.
+	if (!response || response.stopReason === "error" || response.stopReason === "aborted") return null;
+	const text = contentText(response.content ?? []).trim();
+	if (!text) return null;
+	return { text, usage: response.usage };
 }

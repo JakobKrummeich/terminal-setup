@@ -49,11 +49,6 @@
       "count": 1
     }
   },
-  "pi/extensions/lib/handoff-writer.ts": {
-    "complexity": {
-      "count": 1
-    }
-  },
   "pi/extensions/subagent.ts": {
     "max-lines-per-function": {
       "count": 1

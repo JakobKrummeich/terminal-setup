@@ -193,6 +193,37 @@ test("draftHandoff: an already-aborted caller signal makes no call at all", asyn
 	assert.equal(calls.length, 0);
 });
 
+test("draftHandoff: a caller abort mid-call aborts the request; maxTokens is forwarded", async () => {
+	const calls: RecordedCall[] = [];
+	const controller = new AbortController();
+	const pending = draftHandoff({
+		modelRegistry: completer(
+			(call) =>
+				new Promise((resolve) => {
+					call.options.signal?.addEventListener("abort", () =>
+						resolve(assistantResponse("partial", { stopReason: "aborted" })),
+					);
+				}),
+			calls,
+		),
+		model: MODEL,
+		messages: MESSAGES,
+		signal: controller.signal,
+		maxTokens: 123,
+	});
+	controller.abort();
+	assert.equal(await pending, null, "an aborted response is a failure");
+	assert.equal(at(calls, 0).options.maxTokens, 123);
+	assert.equal(at(calls, 0).options.signal?.aborted, true, "the caller's abort reaches the writer's own signal");
+});
+
+test("draftHandoff: a resolved but missing response or content is a failure, not a throw", async () => {
+	for (const response of [undefined, null, assistantResponse("x", { content: undefined })]) {
+		const draft = await draftHandoff({ modelRegistry: completer(async () => response), model: MODEL, messages: MESSAGES });
+		assert.equal(draft, null);
+	}
+});
+
 test("draftHandoff: no model, no registry, no messages, empty text — all null, no call", async () => {
 	const calls: RecordedCall[] = [];
 	const registry = completer(async () => assistantResponse(MACHINE_DRAFT), calls);
