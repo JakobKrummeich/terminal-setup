@@ -136,9 +136,9 @@ test("the installed pi's real system prompt is still recognized", async () => {
 
 	assert.ok(prompt.includes("Pi documentation"), "fixture assumption: pi still ships a docs block");
 	const result = cavemanize(prompt);
-	assert.ok(result, "installed pi's prompt shape must be recognized — update TOOLS_MARKERS");
+	assert.ok(result, "installed pi's prompt shape must be recognized — update TOOLS_MARKER");
 	assert.ok(result.startsWith(PREAMBLE_START));
-	assert.ok(!result.includes("Pi documentation"), "docs block must be stripped — update PI_DOCS_RES");
+	assert.ok(!result.includes("Pi documentation"), "docs block must be stripped — update PI_DOCS_RE");
 	assert.ok(!result.includes("You are an expert coding assistant"), "pi intro must be gone");
 	assert.ok(result.includes("- bash: Execute a bash command."), "tool list must survive");
 });

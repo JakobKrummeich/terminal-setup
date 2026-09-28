@@ -188,6 +188,8 @@ ${handoffSections(SCHEMA)}
 After the tool returns, end your turn. Your context will then be replaced by this handoff.`;
 
 // pi's steering/followUp queues can deliver a cap message arbitrarily late — a
+// network-errored run strands it until the next prompt, which may be a fresh
+// post-swap window where the demand is nonsense.
 // Every cap warning/reminder carries this prefix. It is the scrub key: the
 // `context` handler removes messages carrying it from the LLM view once their
 // demand no longer applies (see isCapWarning below), so no message here needs a
