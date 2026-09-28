@@ -73,6 +73,18 @@ function entryTsMs(message: Record<string, unknown>, line: Record<string, unknow
 	return null;
 }
 
+/** A toolCall content part → its summary, registered by id so the matching toolResult can fill its output. */
+function toolCallPart(rec: Record<string, unknown>, callsById: Map<string, TranscriptToolCall>): TranscriptToolCall | null {
+	if (rec.type !== "toolCall" || typeof rec.name !== "string") return null;
+	const call: TranscriptToolCall = {
+		name: rec.name,
+		argsSummary: truncate(JSON.stringify(rec.arguments ?? {}), ARGS_LIMIT),
+		output: "",
+	};
+	if (typeof rec.id === "string") callsById.set(rec.id, call);
+	return call;
+}
+
 function assistantEntry(
 	message: Record<string, unknown>,
 	line: Record<string, unknown>,
@@ -85,15 +97,8 @@ function assistantEntry(
 		const rec = asRecord(part);
 		if (!rec) continue;
 		if (rec.type === "text" && typeof rec.text === "string") texts.push(rec.text);
-		if (rec.type === "toolCall" && typeof rec.name === "string") {
-			const call: TranscriptToolCall = {
-				name: rec.name,
-				argsSummary: truncate(JSON.stringify(rec.arguments ?? {}), ARGS_LIMIT),
-				output: "",
-			};
-			toolCalls.push(call);
-			if (typeof rec.id === "string") callsById.set(rec.id, call);
-		}
+		const call = toolCallPart(rec, callsById);
+		if (call) toolCalls.push(call);
 	}
 	return { role: "assistant", text: texts.join("\n"), toolCalls, tsMs: entryTsMs(message, line) };
 }
@@ -105,6 +110,23 @@ function attachToolResult(message: Record<string, unknown>, callsById: Map<strin
 	if (!call) return;
 	const text = contentText(message.content);
 	call.output = truncate(message.isError === true ? `[tool error] ${text}` : text, OUTPUT_LIMIT);
+}
+
+/** Fold one `type: "message"` line's message into the transcript being built. */
+function appendMessage(
+	message: Record<string, unknown>,
+	line: Record<string, unknown>,
+	entries: TranscriptEntry[],
+	callsById: Map<string, TranscriptToolCall>,
+): void {
+	if (message.role === "user") {
+		entries.push({ role: "user", text: contentText(message.content), toolCalls: [], tsMs: entryTsMs(message, line) });
+	} else if (message.role === "assistant") {
+		entries.push(assistantEntry(message, line, callsById));
+	} else if (message.role === "toolResult") {
+		attachToolResult(message, callsById);
+	}
+	// other roles (bashExecution, custom, branchSummary, ...) skipped in v1
 }
 
 /** Fold one parsed JSONL line into the transcript being built. */
@@ -122,15 +144,22 @@ function appendLine(
 	}
 	if (line.type !== "message") return; // header, model_change, compaction, ... — not transcript entries
 	const message = asRecord(line.message);
-	if (!message) return;
-	if (message.role === "user") {
-		entries.push({ role: "user", text: contentText(message.content), toolCalls: [], tsMs: entryTsMs(message, line) });
-	} else if (message.role === "assistant") {
-		entries.push(assistantEntry(message, line, callsById));
-	} else if (message.role === "toolResult") {
-		attachToolResult(message, callsById);
+	if (message) appendMessage(message, line, entries, callsById);
+}
+
+/** Object lines of a session JSONL, in file order. Torn/damaged lines (live file mid-append) and non-objects are skipped. */
+function* jsonRecords(content: string): Generator<Record<string, unknown>> {
+	for (const rawLine of content.split("\n")) {
+		if (!rawLine.trim()) continue;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(rawLine);
+		} catch {
+			continue;
+		}
+		const line = asRecord(parsed);
+		if (line) yield line;
 	}
-	// other roles (bashExecution, custom, branchSummary, ...) skipped in v1
 }
 
 /** Parse a session JSONL into transcript entries; null when the file is unreadable. */
@@ -144,17 +173,7 @@ export function parseTranscript(file: string): ParsedTranscript | null {
 	const entries: TranscriptEntry[] = [];
 	const handoffEntryIndexes: number[] = [];
 	const callsById = new Map<string, TranscriptToolCall>();
-	for (const rawLine of content.split("\n")) {
-		if (!rawLine.trim()) continue;
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(rawLine);
-		} catch {
-			continue; // torn/damaged line (live file mid-append): skip
-		}
-		const line = asRecord(parsed);
-		if (line) appendLine(line, entries, handoffEntryIndexes, callsById);
-	}
+	for (const line of jsonRecords(content)) appendLine(line, entries, handoffEntryIndexes, callsById);
 	const lastIndex = Math.max(0, entries.length - 1);
 	return { entries, handoffEntryIndexes: handoffEntryIndexes.map((i) => Math.min(i, lastIndex)) };
 }
@@ -190,16 +209,7 @@ export function readSessionStats(file: string): SessionFileStats | null {
 	}
 	let costUsd = 0;
 	let turns = 0;
-	for (const rawLine of content.split("\n")) {
-		if (!rawLine.trim()) continue;
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(rawLine);
-		} catch {
-			continue;
-		}
-		const line = asRecord(parsed);
-		if (!line) continue;
+	for (const line of jsonRecords(content)) {
 		costUsd += entryCostUsd(line);
 		if (line.type === "message" && asRecord(line.message)?.role === "assistant") turns += 1;
 	}

@@ -92,11 +92,6 @@
       "count": 1
     }
   },
-  "pi/extensions/lib/session-transcript.ts": {
-    "complexity": {
-      "count": 3
-    }
-  },
   "pi/extensions/rtk.ts": {
     "complexity": {
       "count": 1
