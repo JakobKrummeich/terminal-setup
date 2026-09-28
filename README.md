@@ -69,7 +69,8 @@ dashboard” below), installs/links `rtk` (pinned release, SHA-256-verified — 
 “Bumping rtk”), and installs the shell `wsstate.sh`
 hook. For Pi `0.87.1` it also applies a version-and-hash-guarded
 Azure Responses hidden-error retry workaround. Installer fails after a Pi upgrade until patch is
-reviewed or removed. It does not install/link WezTerm or tmux.
+reviewed or removed; an older Pi (pre-0.87.1) skips the patch with a `SKIPPED:` line and the
+install continues. It does not install/link WezTerm or tmux.
 
 **Minimum supported pi: 0.87** (`PI_MIN_VERSION` in `lib/install-common.sh`). The
 extensions rely on 0.87 extension APIs (e.g. actionable `turn_end` boundary results,

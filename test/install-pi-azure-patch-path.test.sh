@@ -86,4 +86,28 @@ if run_installer "$managed/bin" "$managed/invalid-captured" > "$managed/error" 2
 fi
 grep -F "Managed Pi current version is missing or invalid" "$managed/error" >/dev/null
 
+# Pre-0.87 Pi (install-pi.sh order): version warning, patch skipped, installer continues.
+old="$FIXTURE/old-pi"
+mkdir -p "$old/pi-root/dist" "$old/pi-root/node_modules/@earendil-works/pi-ai/dist/utils" "$old/bin"
+printf '#!/usr/bin/env bash\necho 0.86.1\n' > "$old/pi-root/dist/cli.js"
+chmod +x "$old/pi-root/dist/cli.js"
+printf '{"version":"0.86.1"}\n' > "$old/pi-root/node_modules/@earendil-works/pi-ai/package.json"
+cp "$REPO/test/fixtures/pi-ai-0.87.1-retry.js" "$old/pi-root/node_modules/@earendil-works/pi-ai/dist/utils/retry.js"
+ln -s "$old/pi-root/dist/cli.js" "$old/bin/pi"
+if ! out="$(PATH="$old/bin:$PATH" REPO="$REPO" bash -euo pipefail -c '
+      . "$REPO/lib/install-common.sh"
+      warn_if_pi_too_old
+      install_pi_azure_response_retry_patch
+      echo "CONTINUED"
+    ' 2>&1)"; then
+    echo "old pi: installer aborted: $out" >&2
+    exit 1
+fi
+for expected in "WARNING: pi 0.86.1 is older than the supported minimum" \
+    "SKIPPED: Pi Azure retry patch (pi-ai 0.86.1 predates" "CONTINUED"; do
+    [[ "$out" == *"$expected"* ]] || { echo "old pi: missing '$expected' in: $out" >&2; exit 1; }
+done
+[[ "$out" != *"Error"* ]] || { echo "old pi: unexpected error output: $out" >&2; exit 1; }
+cmp -s "$REPO/test/fixtures/pi-ai-0.87.1-retry.js" "$old/pi-root/node_modules/@earendil-works/pi-ai/dist/utils/retry.js"
+
 printf 'PASS: installer resolves legacy and managed Pi AI paths\n'

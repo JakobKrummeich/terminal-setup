@@ -31,6 +31,19 @@ if (!fs.existsSync(packageJsonPath) || !fs.existsSync(retryPath)) {
 }
 const version = JSON.parse(fs.readFileSync(packageJsonPath, "utf8")).version;
 const expectedHashes = expectedHashesByVersion.get(version);
+// Older than every hashed version (pre-0.87 Pi): nothing to patch, skip without
+// touching retry.js so the rest of install-pi.sh still runs. Newer unknown
+// versions still fail below — the patch must be reviewed after a Pi upgrade.
+const numericParts = (v) => /^\d+\.\d+\.\d+(?:$|[-+])/.test(v) ? v.split(/[-+]/)[0].split(".").map(Number) : undefined;
+const isOlder = (a, b) => {
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] < b[i];
+  return false;
+};
+const found = typeof version === "string" ? numericParts(version) : undefined;
+if (!expectedHashes && found && [...expectedHashesByVersion.keys()].every((known) => isOlder(found, numericParts(known)))) {
+  console.log(`SKIPPED: Pi Azure retry patch (pi-ai ${version} predates the patched ${[...expectedHashesByVersion.keys()].join(", ")}; retry.js untouched).`);
+  process.exit(0);
+}
 if (!expectedHashes) throw new Error(`Expected pi-ai one of ${[...expectedHashesByVersion.keys()].join(", ")}, found ${version}; patch not applied.`);
 const source = fs.readFileSync(retryPath, "utf8");
 if (sha256(source) === expectedHashes.patched) {

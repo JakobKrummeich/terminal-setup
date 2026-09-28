@@ -20,16 +20,38 @@ run_patch() {
 
 RETRY_0871="$(run_patch 0.87.1 pi-ai-0.87.1-retry.js)"
 
-# Versions without a hash entry (e.g. pre-0.87 Pi) must fail closed and leave retry.js untouched.
-unsupported="$FIXTURE/unsupported"
-mkdir -p "$unsupported/dist/utils"
-printf '{"version":"0.86.1","type":"module"}\n' > "$unsupported/package.json"
-cp "$REPO/test/fixtures/pi-ai-0.87.1-retry.js" "$unsupported/dist/utils/retry.js"
-if PI_AI_ROOT="$unsupported" node "$PATCH" 2>/dev/null; then
-  echo "FAIL: patch accepted unsupported pi-ai 0.86.1" >&2
-  exit 1
-fi
-cmp -s "$REPO/test/fixtures/pi-ai-0.87.1-retry.js" "$unsupported/dist/utils/retry.js"
+make_unhashed() { # <version> → pi-ai root with an unhashed version
+  local root="$FIXTURE/unhashed-$1"
+  mkdir -p "$root/dist/utils"
+  printf '{"version":"%s","type":"module"}\n' "$1" > "$root/package.json"
+  cp "$REPO/test/fixtures/pi-ai-0.87.1-retry.js" "$root/dist/utils/retry.js"
+  printf '%s\n' "$root"
+}
+
+# Older than every hashed version (pre-0.87 Pi): skip cleanly (exit 0, one line,
+# no stack trace) and leave retry.js untouched.
+for version in 0.86.1 0.87.0; do
+  old="$(make_unhashed "$version")"
+  if ! out="$(PI_AI_ROOT="$old" node "$PATCH" 2>&1)"; then
+    echo "FAIL: pi-ai $version must skip, not fail: $out" >&2
+    exit 1
+  fi
+  [ "$out" = "SKIPPED: Pi Azure retry patch (pi-ai $version predates the patched 0.87.1; retry.js untouched)." ] || {
+    echo "FAIL: pi-ai $version skip message: $out" >&2
+    exit 1
+  }
+  cmp -s "$REPO/test/fixtures/pi-ai-0.87.1-retry.js" "$old/dist/utils/retry.js"
+done
+
+# Newer unhashed versions still fail closed (patch must be reviewed after a Pi upgrade).
+for version in 0.87.2 0.88.0 not-a-version; do
+  new="$(make_unhashed "$version")"
+  if PI_AI_ROOT="$new" node "$PATCH" 2>/dev/null; then
+    echo "FAIL: patch accepted unhashed pi-ai $version" >&2
+    exit 1
+  fi
+  cmp -s "$REPO/test/fixtures/pi-ai-0.87.1-retry.js" "$new/dist/utils/retry.js"
+done
 
 node --input-type=module - "$RETRY_0871" <<'NODE'
 import assert from "node:assert/strict";
