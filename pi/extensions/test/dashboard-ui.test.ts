@@ -140,6 +140,19 @@ test("gantt-layout: orderTreeRows walks depth-first with depths; collapse hides 
 	);
 });
 
+test("gantt-layout: orderTreeRows reattaches null and self-referential parents under the root; default collapse set", () => {
+	const nodes = [barNode("root", 0, 100), barNode("self", 10, 20, "self"), barNode("none", 30, 40, null), barNode("kid", 35, 38, "self")];
+	assert.deepEqual(
+		orderTreeRows(nodes).map((r: { node: { sid: string }; depth: number; childCount: number }) => [r.node.sid, r.depth, r.childCount]),
+		[["root", 0, 2], ["self", 1, 1], ["kid", 2, 0], ["none", 1, 0]],
+	);
+	assert.deepEqual(
+		orderTreeRows(nodes, new Set(["root"])).map((r: { node: { sid: string } }) => r.node.sid),
+		["root"],
+		"a collapsed root hides everything below it — the cycle fallback must not resurrect them",
+	);
+});
+
 // --- gantt-layout: formatting ------------------------------------------------
 
 test("gantt-layout: formatters — cost null → '—', durations, tick labels", () => {

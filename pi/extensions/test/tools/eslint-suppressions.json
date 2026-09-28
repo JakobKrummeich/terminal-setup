@@ -39,11 +39,6 @@
       "count": 1
     }
   },
-  "pi/extensions/lib/dashboard-ui/gantt-layout.js": {
-    "complexity": {
-      "count": 1
-    }
-  },
   "pi/extensions/subagent.ts": {
     "max-lines-per-function": {
       "count": 1

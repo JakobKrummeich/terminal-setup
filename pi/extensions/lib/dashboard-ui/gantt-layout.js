@@ -75,16 +75,7 @@ export function computeTicks(minTs, maxTs) {
  */
 export function orderTreeRows(nodes, collapsed = new Set()) {
 	if (nodes.length === 0) return [];
-	const sids = new Set(nodes.map((node) => node.sid));
-	const rootSid = nodes[0].sid;
-	const children = new Map();
-	for (const node of nodes.slice(1)) {
-		const parent = node.parentSid !== null && node.parentSid !== node.sid && sids.has(node.parentSid)
-			? node.parentSid
-			: rootSid;
-		if (!children.has(parent)) children.set(parent, []);
-		children.get(parent).push(node);
-	}
+	const children = childrenByParent(nodes);
 	const rows = [];
 	const visited = new Set();
 	/** Collapsed subtrees emit no rows but still count as reached — otherwise the
@@ -110,6 +101,21 @@ export function orderTreeRows(nodes, collapsed = new Set()) {
 		if (!visited.has(node.sid)) walk(node, 1); // parentSid cycle: unreachable from root
 	}
 	return rows;
+}
+
+/** parentSid → child nodes in index order; orphans (unknown or self-referential parent) go under the root (nodes[0]). */
+function childrenByParent(nodes) {
+	const sids = new Set(nodes.map((node) => node.sid));
+	const rootSid = nodes[0].sid;
+	const children = new Map();
+	for (const node of nodes.slice(1)) {
+		const parent = node.parentSid !== null && node.parentSid !== node.sid && sids.has(node.parentSid)
+			? node.parentSid
+			: rootSid;
+		if (!children.has(parent)) children.set(parent, []);
+		children.get(parent).push(node);
+	}
+	return children;
 }
 
 /** "$0.42" / "$0.012" (3 decimals under 10¢) / "—" for unknown (null) cost. */
