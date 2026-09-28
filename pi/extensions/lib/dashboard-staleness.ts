@@ -5,10 +5,11 @@
  *
  * Verdicts:
  *  - unknown: this pi's own checkout can't be located or hashed → do nothing.
- *  - foreign: the daemon runs from another checkout → never restart it (the
- *    unit belongs to whoever installed it); agent-dash only mentions it.
- *  - stale:   same checkout (or a daemon too old to report codeRoot) and the
- *    hash differs or is missing → `systemctl --user try-restart`.
+ *  - foreign: the daemon runs on another host (e.g. a stray `ssh -L` tunnel on
+ *    the port) or from another checkout → never restart it (the unit belongs
+ *    to whoever installed it); agent-dash only mentions it.
+ *  - stale:   this host, same checkout (or a daemon too old to report
+ *    codeRoot) and the hash differs or is missing → `systemctl --user try-restart`.
  *  - current: nothing to do.
  *
  * Known gap: try-restart is a no-op when pi-dash.service is inactive (a daemon
@@ -17,19 +18,21 @@
  */
 import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { agentDir } from "./agent-dir.ts";
 import { type CodeVersion, computeCodeVersion } from "./dashboard-version.ts";
 
-/** The code-identity part of /api/meta (MetaResponse). Both absent on old daemons. */
+/** The identity part of /api/meta (MetaResponse). codeHash/codeRoot absent on old daemons. */
 export interface DaemonCode {
+	hostname: string;
 	codeHash?: string;
 	codeRoot?: string;
 }
 
 export type Staleness =
 	| { kind: "unknown" }
-	| { kind: "foreign"; daemonRoot: string }
+	| { kind: "foreign"; where: string }
 	| { kind: "stale" }
 	| { kind: "current" };
 
@@ -61,10 +64,13 @@ function realpathOr(dir: string): string {
 
 export function assessDaemon(daemon: DaemonCode, own: CodeVersion | null): Staleness {
 	if (!own) return { kind: "unknown" };
+	if (daemon.hostname !== os.hostname()) {
+		return { kind: "foreign", where: `host ${daemon.hostname}` };
+	}
 	// Missing codeRoot = daemon predates the field; the unit is the only daemon
 	// install, so assume it's ours (and, lacking codeHash too, stale).
 	if (daemon.codeRoot !== undefined && realpathOr(daemon.codeRoot) !== own.root) {
-		return { kind: "foreign", daemonRoot: daemon.codeRoot };
+		return { kind: "foreign", where: daemon.codeRoot };
 	}
 	return daemon.codeHash === own.hash ? { kind: "current" } : { kind: "stale" };
 }

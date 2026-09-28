@@ -49,14 +49,12 @@ function dashPort(env: NodeJS.ProcessEnv): number {
 	return Number.isInteger(port) && port > 0 ? port : DEFAULT_PORT;
 }
 
-type DaemonMeta = DaemonCode & { hostname: string };
-
 function optionalString(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined;
 }
 
-/** /api/meta body → DaemonMeta; null when it isn't the daemon's shape. Throws on non-JSON. */
-function parseMeta(body: string): DaemonMeta | null {
+/** /api/meta body → DaemonCode; null when it isn't the daemon's shape. Throws on non-JSON. */
+function parseMeta(body: string): DaemonCode | null {
 	const meta = JSON.parse(body) as Record<string, unknown> | null;
 	if (typeof meta?.hostname !== "string") return null;
 	return { hostname: meta.hostname, codeHash: optionalString(meta.codeHash), codeRoot: optionalString(meta.codeRoot) };
@@ -68,7 +66,7 @@ function parseMeta(body: string): DaemonMeta | null {
  * agent:false — no keep-alive client socket may outlive the probe
  * (AGENTS.md: lingering sockets hang the test suite).
  */
-function probeDaemon(port: number): Promise<DaemonMeta | null> {
+function probeDaemon(port: number): Promise<DaemonCode | null> {
 	return new Promise((resolve) => {
 		const req = http.get(
 			{ host: "127.0.0.1", port, path: "/api/meta", agent: false, timeout: PROBE_TIMEOUT_MS },
@@ -92,13 +90,13 @@ function probeDaemon(port: number): Promise<DaemonMeta | null> {
 }
 
 /** URL notify, then — if the daemon runs stale code of this checkout — restart it and report. */
-async function reportDaemon(ctx: ExtensionContext, port: number, meta: DaemonMeta | null): Promise<void> {
+async function reportDaemon(ctx: ExtensionContext, port: number, meta: DaemonCode | null): Promise<void> {
 	if (!meta) {
 		ctx.ui.notify("agent dashboard daemon not running — re-run install-pi.sh to enable it", "warning");
 		return;
 	}
 	const staleness = assessDaemon(meta, ownCheckoutVersion(process.env));
-	const note = staleness.kind === "foreign" ? `; daemon runs code from ${staleness.daemonRoot}, not this checkout` : "";
+	const note = staleness.kind === "foreign" ? `; daemon runs code from ${staleness.where}, not this checkout` : "";
 	ctx.ui.notify(`agent dashboard: http://localhost:${port}/ (host ${meta.hostname}${note})`, "info");
 	if (staleness.kind !== "stale") return;
 	const failure = await restartDaemonUnit(process.env);

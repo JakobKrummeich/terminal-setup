@@ -297,9 +297,6 @@ async function probeWithCode(
 	codeVersion: CodeVersion | undefined,
 	expected: number,
 ): Promise<{ port: number; notifications: string[]; calls: string[] }> {
-	const link = path.join(process.env.PI_CODING_AGENT_DIR!, "extensions");
-	symlinkSync(path.join(REPO_ROOT, "pi", "extensions"), link);
-	rmSync(SYSTEMCTL_LOG, { force: true });
 	const result = await startDashboardServer({
 		sessionsRoot: mkdtempSync(path.join(tmpdir(), "pi-daemon-stale-root-")),
 		port: 0,
@@ -307,15 +304,42 @@ async function probeWithCode(
 		codeVersion,
 	});
 	assert.ok(result.started, "in-process daemon stand-in must bind");
-	const notifications: string[] = [];
 	try {
-		await runProbe(result.server.port, notifications, false, expected);
-		await sleep(200); // a wrongly-fired restart would land in the log by now
+		return { port: result.server.port, ...(await probeLinked(result.server.port, expected)) };
 	} finally {
 		await result.server.close();
+	}
+}
+
+/** Probe `port` with the agent dir's extensions/ linked to this checkout. */
+async function probeLinked(port: number, expected: number): Promise<{ notifications: string[]; calls: string[] }> {
+	const link = path.join(process.env.PI_CODING_AGENT_DIR!, "extensions");
+	symlinkSync(path.join(REPO_ROOT, "pi", "extensions"), link);
+	rmSync(SYSTEMCTL_LOG, { force: true });
+	const notifications: string[] = [];
+	try {
+		await runProbe(port, notifications, false, expected);
+		await sleep(200); // a wrongly-fired restart would land in the log by now
+	} finally {
 		rmSync(link);
 	}
-	return { port: result.server.port, notifications, calls: systemctlCalls() };
+	return { notifications, calls: systemctlCalls() };
+}
+
+/** Probe a bare /api/meta stand-in (e.g. another host's daemon behind an `ssh -L` tunnel). */
+async function probeWithMeta(meta: Record<string, unknown>, expected: number) {
+	const server = http.createServer((_req, res) => {
+		res.setHeader("content-type", "application/json");
+		res.end(JSON.stringify(meta));
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const port = (server.address() as net.AddressInfo).port;
+	try {
+		return { port, ...(await probeLinked(port, expected)) };
+	} finally {
+		server.closeAllConnections();
+		await new Promise((resolve) => server.close(resolve));
+	}
 }
 
 const RESTART_CALL = "--user try-restart pi-dash.service";
@@ -362,4 +386,15 @@ test("agent-dash stale check: daemon from another checkout → no restart, noted
 	assert.deepEqual(notifications, [
 		`agent dashboard: http://localhost:${port}/ (host ${hostname()}; daemon runs code from ${foreign}, not this checkout)`,
 	]);
+});
+
+test("agent-dash stale check: daemon on another host (same checkout path) → no restart", async () => {
+	const remote = `${hostname()}-remote`;
+	for (const code of [{ codeRoot: REPO_ROOT, codeHash: "0".repeat(64) }, {}]) {
+		const { port, notifications, calls } = await probeWithMeta({ hostname: remote, ...code }, 1);
+		assert.deepEqual(calls, []);
+		assert.deepEqual(notifications, [
+			`agent dashboard: http://localhost:${port}/ (host ${remote}; daemon runs code from host ${remote}, not this checkout)`,
+		]);
+	}
 });

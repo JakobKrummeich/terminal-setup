@@ -127,11 +127,11 @@ URL + hostname; down → notify “re-run install-pi.sh”. `PI_OFFLINE` or
 Stale code: the daemon loads its server JS once, so after a `git pull` it keeps
 running old code. It serves `codeHash` (sha256 over `pi/dashboard-daemon.mjs` +
 every `.ts/.js/.mjs` under `pi/extensions/lib/`; computed by `lib/dashboard-version.ts`)
-and `codeRoot`; when `codeRoot` is this pi's own checkout (or absent) and the
-hash differs (or is absent), agent-dash runs
+and `codeRoot`; when its `hostname` is this machine's, `codeRoot` is this pi's
+own checkout (or absent) and the hash differs (or is absent), agent-dash runs
 `systemctl --user try-restart pi-dash.service` and notifies the outcome
 (`PI_AGENT_DASH_SYSTEMCTL` swaps the binary — tests). A daemon from another
-checkout is never restarted, only noted in the URL notify.
+checkout or another host (e.g. a stray `ssh -L` tunnel) is never restarted, only noted in the URL notify.
 
 Response types live in `pi/extensions/lib/dashboard-api.ts`; all pi-session-JSONL
 parsing in `pi/extensions/lib/session-transcript.ts` (re-verify after `pi update`).
