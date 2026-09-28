@@ -33,7 +33,7 @@ process.env.PI_CODING_AGENT_SESSION_DIR = mkdtempSync(path.join(tmpdir(), "pi-ha
 // No remote model-catalog refresh: its keep-alive TLS sockets hang the test process.
 process.env.PI_OFFLINE = "1";
 
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, withoutInitialSystemMessage } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import {
 	type AgentSessionEvent,
@@ -44,7 +44,6 @@ import {
 import { liveChildren, runChildTool } from "../lib/child-session.ts";
 import { ChildView } from "../lib/child-view.ts";
 import { CONTEXT_CAP_TOOL_NAME } from "../lib/env.ts";
-import { conversationMessages } from "./context-compat.ts";
 import { type ResponseStep, type ScriptedStep, sleep, textStep, toolStep } from "./harness.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";
@@ -105,7 +104,7 @@ async function makeCtx(script: ScriptedStep[], calls: CapturedCall[]): Promise<E
 	runtime.setRuntimeApiKey("anthropic", "test-key-not-used");
 	let step = 0;
 	(runtime as unknown as { streamSimple: unknown }).streamSimple = (m: any, context: any) => {
-		calls.push({ messages: JSON.stringify(conversationMessages(context)) });
+		calls.push({ messages: JSON.stringify(withoutInitialSystemMessage(context.messages)) });
 		// This driver renders responses only (no error steps in child scripts).
 		const scripted = (script[step++] ?? textStep("(script exhausted)")) as ResponseStep;
 		const stream = createAssistantMessageEventStream();

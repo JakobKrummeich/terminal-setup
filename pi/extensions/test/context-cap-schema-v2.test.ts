@@ -23,7 +23,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { conversationMessages, currentTools } from "./context-compat.ts";
+import { getCurrentTools, withoutInitialSystemMessage } from "@earendil-works/pi-ai";
 import { createTestSession, textStep, toolStep, type TestSession } from "./harness.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";
@@ -50,7 +50,10 @@ function captureContexts(t: TestSession): CapturedContext[] {
 	const seen: CapturedContext[] = [];
 	const inner = t.session.agent.streamFunction;
 	t.session.agent.streamFunction = ((model: unknown, llmContext: any, options: unknown) => {
-		seen.push({ messages: conversationMessages(llmContext), tools: currentTools(llmContext) });
+		seen.push({
+			messages: withoutInitialSystemMessage(llmContext.messages),
+			tools: getCurrentTools(llmContext.messages),
+		});
 		return inner(model, llmContext, options);
 	}) as any;
 	return seen;
@@ -91,7 +94,9 @@ test("v2 reaches the tool spec, the agent instructions and the machine writer", 
 	const contexts = captureContexts(t);
 	const writerPrompts: string[] = [];
 	t.modelRuntime.complete = async (_model: unknown, context: any) => {
-		writerPrompts.push(String(conversationMessages(context)[0]?.content?.[0]?.text ?? ""));
+		const [first] = withoutInitialSystemMessage(context.messages);
+		const part = Array.isArray(first?.content) ? first.content[0] : undefined;
+		writerPrompts.push(part?.type === "text" ? part.text : "");
 		return {
 			role: "assistant",
 			content: [{ type: "text", text: MACHINE_DRAFT }],

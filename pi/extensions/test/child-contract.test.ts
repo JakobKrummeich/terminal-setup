@@ -35,13 +35,12 @@ process.env.PI_CODING_AGENT_SESSION_DIR = mkdtempSync(path.join(tmpdir(), "pi-co
 // and hang the test process.
 process.env.PI_OFFLINE = "1";
 
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, getCurrentSystemPrompt, withoutInitialSystemMessage } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { initTheme, ModelRuntime, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { AGENT_TOOL, liveChildren, runChildTool } from "../lib/child-session.ts";
 import { CHILD_CONTRACT } from "../subagent.ts";
 import { CONTEXT_CAP_TOOL_NAME } from "../lib/env.ts";
-import { conversationMessages, currentSystemPrompt } from "./context-compat.ts";
 import { type ResponseStep, type ScriptedStep, sleep, textStep, toolStep } from "./harness.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";
 
@@ -114,8 +113,8 @@ async function makeCtx(script: ScriptedStep[], calls: CapturedCall[]): Promise<E
 	let step = 0;
 	(runtime as unknown as { streamSimple: unknown }).streamSimple = (m: any, context: any) => {
 		calls.push({
-			systemPrompt: currentSystemPrompt(context),
-			messages: JSON.stringify(conversationMessages(context)),
+			systemPrompt: getCurrentSystemPrompt(context.messages),
+			messages: JSON.stringify(withoutInitialSystemMessage(context.messages)),
 		});
 		// This driver renders responses only (no error steps in child scripts).
 		const scripted = (script[step++] ?? textStep("(script exhausted)")) as ResponseStep;

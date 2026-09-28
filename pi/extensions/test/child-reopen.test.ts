@@ -21,12 +21,11 @@ const SESSION_DIR = mkdtempSync(path.join(tmpdir(), "pi-reopen-sessions-"));
 process.env.PI_CODING_AGENT_SESSION_DIR = SESSION_DIR;
 process.env.PI_OFFLINE = "1";
 
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, withoutInitialSystemMessage } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { initTheme, ModelRuntime, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readRuns } from "../lib/agent-runs.ts";
 import { type ChildRecord, liveChildren, resetChildState, runChildTool } from "../lib/child-session.ts";
-import { conversationMessages } from "./context-compat.ts";
 import { sleep } from "./harness.ts";
 
 // Replayed/live tool calls render through ToolExecutionComponent: needs a theme.
@@ -69,7 +68,7 @@ async function makeCtx(rootSid: string, calls: string[] = []): Promise<Extension
 	});
 	runtime.setRuntimeApiKey("anthropic", "test-key-not-used");
 	(runtime as unknown as { streamSimple: unknown }).streamSimple = (m: any, context: any) => {
-		const messages = conversationMessages(context);
+		const messages = withoutInitialSystemMessage(context.messages);
 		calls.push(JSON.stringify(messages));
 		const last = messages.at(-1);
 		const lastText = textOf(last?.content);

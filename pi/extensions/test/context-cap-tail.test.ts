@@ -25,7 +25,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { conversationMessages } from "./context-compat.ts";
+import { withoutInitialSystemMessage } from "@earendil-works/pi-ai";
 import { createTestSession, textStep, toolStep, type TestSession } from "./harness.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";
@@ -49,7 +49,7 @@ function captureContexts(t: TestSession): CapturedContext[] {
 	const seen: CapturedContext[] = [];
 	const inner = t.session.agent.streamFunction;
 	t.session.agent.streamFunction = ((model: unknown, llmContext: any, options: unknown) => {
-		seen.push({ messages: conversationMessages(llmContext) });
+		seen.push({ messages: withoutInitialSystemMessage(llmContext.messages) });
 		return inner(model, llmContext, options);
 	}) as any;
 	return seen;
