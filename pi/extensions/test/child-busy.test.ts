@@ -68,3 +68,42 @@ test("releaseSlot: a still-draining session keeps its slot until idle, released 
 	assert.equal(group.active, 0);
 	assert.equal(group.settling.size, 0);
 });
+
+// A hung child (waitForIdle never resolves) must not strand its slot: at limit 1
+// the Agent tool would stay busy for the rest of the pi session. And when the hung
+// child DOES go idle after the expiry, that late release must be a no-op — a
+// second decrement would free the next child's slot and let two agents share one
+// worktree.
+test("releaseSlot: a hung session's slot self-expires after 60s; a late idle releases nothing", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const group = busyGroup(new Map(), "agent");
+	tryAcquireSlot(group, 1);
+	const hung = fakeSession(false);
+	releaseSlot(group, hung.session);
+	t.mock.timers.tick(59_999);
+	assert.equal(group.active, 1, "slot held until the 60s expiry");
+	t.mock.timers.tick(1);
+	assert.equal(group.active, 0, "expired slot is free again");
+	assert.equal(group.settling.size, 0);
+
+	assert.equal(tryAcquireSlot(group, 1), true, "next child takes the freed slot");
+	hung.settle();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(group.active, 1, "late idle must not release the next child's slot");
+	assert.equal(tryAcquireSlot(group, 1), false, "limit 1 still holds");
+});
+
+test("releaseSlot: after an idle release the expiry timer releases nothing", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const group = busyGroup(new Map(), "agent");
+	tryAcquireSlot(group, 1);
+	const draining = fakeSession(false);
+	releaseSlot(group, draining.session);
+	draining.settle();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(group.active, 0);
+
+	assert.equal(tryAcquireSlot(group, 1), true);
+	t.mock.timers.tick(60_000);
+	assert.equal(group.active, 1, "expiry must not release the next child's slot");
+});
