@@ -68,10 +68,10 @@ installs + starts the `pi-dash` dashboard daemon as a systemd user unit
 (skipped with a warning where systemd/user-bus is unavailable — see “Agent
 dashboard” below), installs/links `rtk` (pinned release, SHA-256-verified — see
 “Bumping rtk”), and installs the shell `wsstate.sh`
-hook. For Pi `0.87.1` it also applies a version-and-hash-guarded
-Azure Responses hidden-error retry workaround. Installer fails after a Pi upgrade until patch is
-reviewed or removed; an older Pi (pre-0.87.1) skips the patch with a `SKIPPED:` line and the
-install continues. It does not install/link WezTerm or tmux.
+hook. For Pi `0.87.1`, `0.99.0` and `0.99.1` it also applies a version-and-hash-guarded
+Azure Responses hidden-error retry workaround (“Pi Azure retry patch” below). Installer fails
+after a Pi upgrade until patch is reviewed or removed; an older Pi (pre-0.87.1) skips the patch
+with `SKIPPED:` lines and the install continues. It does not install/link WezTerm or tmux.
 
 **Minimum supported pi: 0.87** (`PI_MIN_VERSION` in `lib/install-common.sh`). The
 extensions rely on 0.87 extension APIs (e.g. actionable `turn_end` boundary results,
@@ -89,6 +89,22 @@ the current shell, either restart it or source `shell/wsstate.sh` once. If
 `~/.bashrc` has the `# >>> terminal-setup wsstate >>>` begin marker but no
 `# <<< terminal-setup wsstate <<<` end marker, the installer leaves the file
 untouched and prints a `WARN:` — fix the block by hand and rerun.
+
+### Pi Azure retry patch
+
+`pi/patches/pi-azure-response-failed-retry.cjs` (run by `install_pi_azure_response_retry_patch`)
+makes Azure's detail-less `response.failed` (“Unknown error (no error details in response)”, a
+transient throttle) retryable. pi-ai's retry classifier exists twice in an installed Pi, and
+both copies are patched: `pi-ai/dist/utils/retry.js` (SDK users, the extension tests) and the
+`pi` CLI's own inlined copy — since Pi 0.84.3 the `pi` bin is `dist/bundle/cli.js`, whose
+classifier sits in one content-hashed `dist/bundle/chunks/chunk-*.js`, found by content, not
+name (before this patched the bundle too, the workaround never reached the CLI). Each file must
+hash to its version's pinned baseline or patched SHA-256; anything else fails before any file
+is written. Re-runs are no-ops; each patched file keeps a `.pre-terminal-setup-backup`.
+To support a new Pi version: `npm pack` its `pi-ai` + `pi-coding-agent` into `/tmp`, check the
+classifier and the Azure error path are unchanged, add both baseline hashes plus the patched
+hashes the script's transforms produce to `EXPECTED_HASHES`, add the version's fixtures
+(`test/fixtures/README.md`), and run `bash test/pi-azure-response-retry-patch.test.sh`.
 
 ### Bumping rtk
 
@@ -238,6 +254,7 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | `lib/context-cap-files.ts` | handoff files `<sessionId>-<seq>.md`: seq/paths, frontmatter write and strip |
 | `lib/context-cap-resolver.ts` | `createCapResolver`: per-session cap resolution (last known window, warn-once) |
 | `lib/format.ts` | `formatTokenCount()` (`950`, `162k`, `1.0M`; a disabled cap shows `off`) and `formatCapStatus()` (`<tokens>/<soft cap>`): the one token format for the main footer (`context-cap.ts`) and the F2 watch |
+| `lib/tool-call-render.ts` | compact `renderCall` rows (bold title + one short muted summary: description label, timer action, handoff line count) for `Explore`, `Agent`, `timer` and `context_handoff` — without one, pi >= 0.99 prints every argument as `key=value`, i.e. the whole prompt / handoff |
 | `lib/session-quiet.ts` | `waitForSessionQuiet()`: the definition of "child is done" — agent idle *and* no queued steer/follow-up messages (bounded ~2s grace for a queued run about to start) |
 | `handoff.ts` | `/handoff` command: the agent writes a handoff document as a normal reply (same schema + line budget as context-cap — both quote `lib/handoff-writer.ts`, so the `CONTEXT_CAP_SCHEMA` lever governs both), then a fresh session is seeded with it under the same preamble as a cap swap — but with `triggerTurn: false`: the successor waits for the user instead of continuing on its own |
 | `markdown-no-padding.ts` | strip paddingX=1 from rendered markdown (copy-safety); patches pi-tui internals — re-verify after `pi update` |
@@ -299,7 +316,7 @@ nesting at one layer (structural, not a counter — nothing to configure).
   Only the 8 most recent finished children stay in memory; an older one (or any child of
   the same main session after `pi -c`, found via `agent-runs.jsonl`) is reopened from its
   session file on resume, and F2 replays its saved history. Only a missing session file
-  (child aborted before its first reply) or a child of another main session fails.
+  (child aborted before pi first wrote it) or a child of another main session fails.
 - One child at a time: a second `Agent` call while one runs is rejected with an error result
   (`childBusy`, set synchronously before the first `await`, so two calls in one assistant
   message can't both pass). The latch is released only once the child is actually quiet

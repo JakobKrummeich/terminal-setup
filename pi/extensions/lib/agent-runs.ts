@@ -213,10 +213,12 @@ function readIndexLines(dir: string): string[] {
  *    retention follows the session JSONLs), as are rows for sids that never had
  *    an intro row (session-start/spawn) carrying a sessionFile.
  *
- * Note: pi creates a session file on the first assistant message. So a
- * just-started session is invisible here for a few seconds — and a child
- * aborted BEFORE its first assistant message never gets a file at all, so its
- * rows are pruned forever, not just temporarily. Accepted in v1.
+ * Note: pi writes a session file only once the conversation starts — at the
+ * first user message since pi 0.99, at the first assistant message before
+ * (0.87). So a just-started session can be invisible here for a moment (on 0.87
+ * for the whole first LLM call) — and a child aborted before that point never
+ * gets a file at all, so its rows are pruned forever, not just temporarily.
+ * Accepted in v1.
  * File order is preserved; the file itself is never modified.
  */
 export function readRuns(dir: string): AgentRunEvent[] {
@@ -291,8 +293,9 @@ export function findSpawnsByLabel(dir: string, label: string): SpawnLookup[] {
 
 /**
  * Drop rows whose session transcript is gone (and orphan rows with no intro).
- * "Gone" includes never-created: a child aborted before its first assistant
- * message has no session file, so its rows stay pruned permanently.
+ * "Gone" includes never-created: a child aborted before pi first wrote its
+ * session file (first user message on pi >= 0.99, first assistant message on
+ * 0.87) has none, so its rows stay pruned permanently.
  */
 function pruneVanished(events: AgentRunEvent[]): AgentRunEvent[] {
 	const fileBySid = new Map<string, string>();

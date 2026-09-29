@@ -48,6 +48,7 @@ import { Type } from "typebox";
 import { inChildSession } from "./lib/child-context.ts";
 import { envInt } from "./lib/env.ts";
 import { messageText } from "./lib/message-text.ts";
+import { renderCompactCall } from "./lib/tool-call-render.ts";
 
 /** Re-send attempts for a stranded wake-up before giving up. */
 const MAX_WAKE_RESENDS = 3;
@@ -307,7 +308,22 @@ function registerTimerTool(pi: ExtensionAPI, timer: WakeTimer): void {
 			if (!interactive) return blockingWait(name, params.seconds, signal, onUpdate);
 			return timer.arm(name, params.seconds);
 		},
+		renderCall(args, theme, context) {
+			return renderCompactCall("timer", timerCallSummary(args), theme, context);
+		},
 	});
+}
+
+/** `set 300s · build` / `cancel`; args may be partial while the call streams. */
+export function timerCallSummary(args: { action?: unknown; seconds?: unknown; name?: unknown } | undefined): string {
+	if (args?.action !== "set") return typeof args?.action === "string" ? args.action : "";
+	const seconds = typeof args.seconds === "number" ? ` ${args.seconds}s` : "";
+	return `set${seconds}${timerNameSuffix(args.name)}`;
+}
+
+function timerNameSuffix(name: unknown): string {
+	const trimmed = typeof name === "string" ? name.trim() : "";
+	return trimmed ? ` · ${trimmed}` : "";
 }
 
 export default function timerExtension(pi: ExtensionAPI) {

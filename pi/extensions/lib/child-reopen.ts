@@ -66,7 +66,8 @@ function tombstoneOf(id: string, record: ChildRecord): ChildSource {
  * The dir children's session files (and thus their agent-runs.jsonl rows) land
  * in — the same computation createChildSession's SessionManager.create does.
  * pi's getDefaultSessionDir is not exported from the package root, so ask a
- * throwaway manager (no file is written before a first assistant message).
+ * throwaway manager (it writes no file before the first conversation message:
+ * user message on pi >= 0.99, assistant message on 0.87).
  */
 function childSessionDir(cwd: string): string {
 	return SessionManager.create(cwd, process.env.PI_CODING_AGENT_SESSION_DIR).getSessionDir();
@@ -106,7 +107,7 @@ function findChildSource(
 		return {
 			error: `${kind} "${id}" cannot be resumed: its session file is missing (${
 				file ?? "never persisted"
-			}) — it likely ended before its first reply, or the file was deleted. ${freshHint(kind)}`,
+			}) — it likely ended before pi first wrote it, or the file was deleted. ${freshHint(kind)}`,
 		};
 	}
 	return source;

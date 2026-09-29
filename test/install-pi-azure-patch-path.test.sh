@@ -11,7 +11,7 @@ make_node_stub() { # <bin-dir>
     cat > "$1/node" <<'NODE'
 #!/usr/bin/env bash
 if [ -n "${PI_AI_ROOT-}" ]; then
-  printf '%s\n' "$PI_AI_ROOT" > "$NODE_ENV_CAPTURE"
+  printf '%s\n%s\n' "$PI_AI_ROOT" "${PI_CODING_AGENT_ROOT-}" > "$NODE_ENV_CAPTURE"
   exit 0
 fi
 exec "$REAL_NODE" "$@"
@@ -31,16 +31,26 @@ legacy="$FIXTURE/legacy"
 mkdir -p "$legacy/pi-root/dist" "$legacy/pi-root/node_modules/@earendil-works/pi-ai" "$legacy/bin"
 printf '#!/usr/bin/env bash\n' > "$legacy/pi-root/dist/cli.js"
 chmod +x "$legacy/pi-root/dist/cli.js"
+printf '{"name":"@earendil-works/pi-coding-agent"}\n' > "$legacy/pi-root/package.json"
 printf '{"version":"fixture"}\n' > "$legacy/pi-root/node_modules/@earendil-works/pi-ai/package.json"
 ln -s "$legacy/pi-root/dist/cli.js" "$legacy/bin/pi"
 make_node_stub "$legacy/bin"
 run_installer "$legacy/bin" "$legacy/captured"
-expected="$(readlink -f "$legacy/pi-root/node_modules/@earendil-works/pi-ai")"
+expected="$(readlink -f "$legacy/pi-root/node_modules/@earendil-works/pi-ai")
+$(readlink -f "$legacy/pi-root")"
 actual="$(cat "$legacy/captured")"
 [ "$actual" = "$expected" ] || {
-    echo "legacy: expected PI_AI_ROOT=$expected, got $actual" >&2
+    echo "legacy: expected PI_AI_ROOT + PI_CODING_AGENT_ROOT=$expected, got $actual" >&2
     exit 1
 }
+
+# The CLI bundle lives in pi-coding-agent: no such package above the executable fails closed.
+rm "$legacy/pi-root/package.json"
+if run_installer "$legacy/bin" "$legacy/no-agent-captured" > "$legacy/no-agent-error" 2>&1; then
+    echo "legacy: missing pi-coding-agent package unexpectedly succeeded" >&2
+    exit 1
+fi
+grep -F "Pi coding-agent package not found from Pi executable" "$legacy/no-agent-error" >/dev/null
 
 # Managed layout: regular launcher selects one release; stale releases must be ignored.
 managed="$FIXTURE/custom-agent"
@@ -57,16 +67,18 @@ chmod +x "$managed/bin/pi"
 printf '{"kind":"pi-managed-install","schemaVersion":1,"layout":"releases-v1"}\n' > "$managed/install/managed-install.json"
 printf '0.87.1\n' > "$managed/install/current-version"
 printf '#!/usr/bin/env node\n' > "$active/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
+printf '{"name":"@earendil-works/pi-coding-agent"}\n' > "$active/node_modules/@earendil-works/pi-coding-agent/package.json"
 chmod +x "$active/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
 ln -s ../@earendil-works/pi-coding-agent/dist/cli.js "$active/node_modules/.bin/pi"
 printf '{"version":"decoy"}\n' > "$managed/node_modules/@earendil-works/pi-ai/package.json"
 printf '{"version":"active"}\n' > "$active/node_modules/@earendil-works/pi-ai/package.json"
 printf '{"version":"stale"}\n' > "$stale/node_modules/@earendil-works/pi-ai/package.json"
 run_installer "$managed/bin" "$managed/captured"
-expected="$(readlink -f "$active/node_modules/@earendil-works/pi-ai")"
+expected="$(readlink -f "$active/node_modules/@earendil-works/pi-ai")
+$(readlink -f "$active/node_modules/@earendil-works/pi-coding-agent")"
 actual="$(cat "$managed/captured")"
 [ "$actual" = "$expected" ] || {
-    echo "managed: expected PI_AI_ROOT=$expected, got $actual" >&2
+    echo "managed: expected PI_AI_ROOT + PI_CODING_AGENT_ROOT=$expected, got $actual" >&2
     exit 1
 }
 
@@ -92,6 +104,7 @@ mkdir -p "$old/pi-root/dist" "$old/pi-root/node_modules/@earendil-works/pi-ai/di
 printf '#!/usr/bin/env bash\necho 0.86.1\n' > "$old/pi-root/dist/cli.js"
 chmod +x "$old/pi-root/dist/cli.js"
 printf '{"version":"0.86.1"}\n' > "$old/pi-root/node_modules/@earendil-works/pi-ai/package.json"
+printf '{"name":"@earendil-works/pi-coding-agent","version":"0.86.1"}\n' > "$old/pi-root/package.json"
 cp "$REPO/test/fixtures/pi-ai-0.87.1-retry.js" "$old/pi-root/node_modules/@earendil-works/pi-ai/dist/utils/retry.js"
 ln -s "$old/pi-root/dist/cli.js" "$old/bin/pi"
 if ! out="$(PATH="$old/bin:$PATH" REPO="$REPO" bash -euo pipefail -c '
@@ -104,10 +117,11 @@ if ! out="$(PATH="$old/bin:$PATH" REPO="$REPO" bash -euo pipefail -c '
     exit 1
 fi
 for expected in "WARNING: pi 0.86.1 is older than the supported minimum" \
-    "SKIPPED: Pi Azure retry patch (pi-ai 0.86.1 predates" "CONTINUED"; do
+    "SKIPPED: Pi Azure retry patch for pi-ai dist/utils/retry.js (SDK) (pi-ai 0.86.1 predates" \
+    "SKIPPED: Pi Azure retry patch for pi CLI bundle (pi-coding-agent 0.86.1 predates" "CONTINUED"; do
     [[ "$out" == *"$expected"* ]] || { echo "old pi: missing '$expected' in: $out" >&2; exit 1; }
 done
-[[ "$out" != *"Error"* ]] || { echo "old pi: unexpected error output: $out" >&2; exit 1; }
+[[ "$out" != *"Error"* && "$out" != *"ERROR"* ]] || { echo "old pi: unexpected error output: $out" >&2; exit 1; }
 cmp -s "$REPO/test/fixtures/pi-ai-0.87.1-retry.js" "$old/pi-root/node_modules/@earendil-works/pi-ai/dist/utils/retry.js"
 
-printf 'PASS: installer resolves legacy and managed Pi AI paths\n'
+printf 'PASS: installer resolves legacy and managed Pi AI + coding-agent paths\n'

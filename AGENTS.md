@@ -49,7 +49,21 @@ Read `README.md` first — layout, install, known issues live there. Don't dupli
   `node --experimental-strip-types --preserve-symlinks --preserve-symlinks-main`
   from a /tmp dir whose `node_modules` points at the farm — `--preserve-symlinks`
   is what makes the repo's bare imports resolve to the NEW libs instead of the
-  installed ones.
+  installed ones. Traps: the scratch tsconfig needs `"preserveSymlinks": true`,
+  or pi-agent-core types silently resolve to nothing; and a farm at
+  `pi/extensions/node_modules` next to run.sh's `test/node_modules` makes tests
+  and extensions load two pi-tui copies (false markdown-no-padding failure) —
+  put the farm at the common parent `pi/node_modules` instead.
+  Faster, for the full suite: a fake global install — the new
+  `pi-coding-agent` with its deps in its own `node_modules`, under a dir whose
+  path contains `node_modules` (e.g. `/tmp/x/node_modules/@earendil-works/`;
+  otherwise dependency-cruiser follows into pi's `.d.ts` and reports false
+  unresolvable imports) — plus a bin dir holding a `pi` symlink to its
+  `dist/bundle/cli.js`. `PATH=<bin>:$PATH ./run.sh` / `./check.sh` then build
+  their farm from it unmodified. Build it with `npm install -g --prefix <tmp>
+  @earendil-works/pi-coding-agent@<version>` from the registry, then move
+  `<tmp>/lib/node_modules` into place — installing the `npm pack` tarball
+  instead ignored pi's `npm-shrinkwrap.json` (got `@types/node` 26, not 22).
 - pi extension code: from `pi/extensions/test`, run `timeout 200 ./run.sh` (tests)
   THEN `./check.sh` (quality gate). Both need exit 0; both build the node_modules
   symlink farm (`farm.sh`). Details of each below.
