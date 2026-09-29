@@ -238,6 +238,7 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | `lib/context-cap-files.ts` | handoff files `<sessionId>-<seq>.md`: seq/paths, frontmatter write and strip |
 | `lib/context-cap-resolver.ts` | `createCapResolver`: per-session cap resolution (last known window, warn-once) |
 | `lib/format.ts` | `formatTokenCount()` (`950`, `162k`, `1.0M`; a disabled cap shows `off`) and `formatCapStatus()` (`<tokens>/<soft cap>`): the one token format for the main footer (`context-cap.ts`) and the F2 watch |
+| `lib/tool-call-render.ts` | compact `renderCall` rows (bold title + one short muted summary: description label, timer action, handoff line count) for `Explore`, `Agent`, `timer` and `context_handoff` — without one, pi >= 0.99 prints every argument as `key=value`, i.e. the whole prompt / handoff |
 | `lib/session-quiet.ts` | `waitForSessionQuiet()`: the definition of "child is done" — agent idle *and* no queued steer/follow-up messages (bounded ~2s grace for a queued run about to start) |
 | `handoff.ts` | `/handoff` command: the agent writes a handoff document as a normal reply (same schema + line budget as context-cap — both quote `lib/handoff-writer.ts`, so the `CONTEXT_CAP_SCHEMA` lever governs both), then a fresh session is seeded with it under the same preamble as a cap swap — but with `triggerTurn: false`: the successor waits for the user instead of continuing on its own |
 | `markdown-no-padding.ts` | strip paddingX=1 from rendered markdown (copy-safety); patches pi-tui internals — re-verify after `pi update` |
@@ -299,7 +300,7 @@ nesting at one layer (structural, not a counter — nothing to configure).
   Only the 8 most recent finished children stay in memory; an older one (or any child of
   the same main session after `pi -c`, found via `agent-runs.jsonl`) is reopened from its
   session file on resume, and F2 replays its saved history. Only a missing session file
-  (child aborted before its first reply) or a child of another main session fails.
+  (child aborted before pi first wrote it) or a child of another main session fails.
 - One child at a time: a second `Agent` call while one runs is rejected with an error result
   (`childBusy`, set synchronously before the first `await`, so two calls in one assistant
   message can't both pass). The latch is released only once the child is actually quiet
