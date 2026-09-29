@@ -9,6 +9,7 @@ import {
 	runChildTool,
 } from "./lib/child-session.ts";
 import { openChildPicker, openChildView, resetWatchCursor, watchTarget } from "./lib/child-watch.ts";
+import { childCallSummary, renderCompactCall } from "./lib/tool-call-render.ts";
 import { WATCH_KEY } from "./lib/watch-viewport.ts";
 
 const TOOL_DESCRIPTION = `Delegate a task to a fresh agent session that works autonomously and reports back.
@@ -98,6 +99,9 @@ function registerAgentTool(pi: ExtensionAPI): void {
 				onUpdate,
 				ctx,
 			);
+		},
+		renderCall(args, theme, context) {
+			return renderCompactCall(AGENT_TOOL, childCallSummary(args), theme, context);
 		},
 		renderResult(result, _options, theme, context) {
 			return renderChildResult(result, theme, context);

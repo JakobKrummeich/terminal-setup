@@ -5,6 +5,7 @@ import { Type } from "typebox";
 import { EXPLORE_TOOL, renderChildResult, runChildTool } from "./lib/child-session.ts";
 import type { ChildModel, ChildThinkingLevel } from "./lib/child-types.ts";
 import { agentDir } from "./lib/agent-dir.ts";
+import { childCallSummary, renderCompactCall } from "./lib/tool-call-render.ts";
 import { CONTEXT_CAP_TOOL_NAME } from "./lib/env.ts";
 
 const TOOL_DESCRIPTION = `Delegate readonly exploration to a fast, cheap agent that reports back.
@@ -201,6 +202,23 @@ function explorerThinkingLevel(levelSpec: string | undefined, warnings: string[]
 	return "low";
 }
 
+const exploreParams = Type.Object({
+	prompt: Type.String({
+		description: "The self-contained question or exploration brief — or, with resume_id, your follow-up question.",
+	}),
+	description: Type.Optional(
+		Type.String({
+			description:
+				"Short 3-5 word label for this exploration, shown in the UI. Always pass it for a new explorer; on resume it is optional.",
+		}),
+	),
+	resume_id: Type.Optional(
+		Type.String({
+			description: "Continue an existing explorer session (id from a previous result) instead of starting a new one.",
+		}),
+	),
+});
+
 export default function (pi: ExtensionAPI) {
 	// Kill-switch for benchmark runs (context-cap impact study, ~/context-cap-study/plan.html):
 	// non-empty PI_EXPLORE_DISABLE registers nothing — main and child sessions alike.
@@ -211,24 +229,7 @@ export default function (pi: ExtensionAPI) {
 		name: EXPLORE_TOOL,
 		label: "Explore",
 		description: TOOL_DESCRIPTION,
-		parameters: Type.Object({
-			prompt: Type.String({
-				description:
-					"The self-contained question or exploration brief — or, with resume_id, your follow-up question.",
-			}),
-			description: Type.Optional(
-				Type.String({
-					description:
-						"Short 3-5 word label for this exploration, shown in the UI. Always pass it for a new explorer; on resume it is optional.",
-				}),
-			),
-			resume_id: Type.Optional(
-				Type.String({
-					description:
-						"Continue an existing explorer session (id from a previous result) instead of starting a new one.",
-				}),
-			),
-		}),
+		parameters: exploreParams,
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			// Re-read the candidates file per call so edits apply without a pi restart.
 			const fileConfig = loadExplorerCandidates(explorerModelsFile(process.env));
@@ -261,6 +262,9 @@ export default function (pi: ExtensionAPI) {
 				result.content[0].text = `${config.warnings.join("\n")}\n\n${result.content[0].text}`;
 			}
 			return result;
+		},
+		renderCall(args, theme, context) {
+			return renderCompactCall(EXPLORE_TOOL, childCallSummary(args), theme, context);
 		},
 		renderResult(result, _options, theme, context) {
 			return renderChildResult(result, theme, context);

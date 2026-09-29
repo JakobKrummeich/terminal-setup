@@ -9,6 +9,7 @@ import { Type } from "typebox";
 import { type CapSession, writeCycleHandoff } from "./context-cap-session.ts";
 import { CONTEXT_CAP_SCHEMA, CONTEXT_CAP_TOOL_NAME } from "./env.ts";
 import { handoffLineBudget } from "./handoff-writer.ts";
+import { renderCompactCall } from "./tool-call-render.ts";
 
 // Always active (never hidden): tool definitions are part of the cached prompt
 // prefix, so toggling them mid-session would invalidate the provider prompt
@@ -32,7 +33,19 @@ export function registerHandoffTool(pi: Pick<ExtensionAPI, "registerTool">, s: C
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			return executeHandoff(s, params.markdown, ctx);
 		},
+		// Line count only: the body itself is rendered once, by the swap marker.
+		renderCall(args, theme, context) {
+			return renderCompactCall(CONTEXT_CAP_TOOL_NAME, handoffCallSummary(args?.markdown), theme, context);
+		},
 	});
+}
+
+/** `(N lines)` of a (possibly still streaming) handoff body; empty before any text arrived. */
+export function handoffCallSummary(markdown: unknown): string {
+	const body = typeof markdown === "string" ? markdown.trim() : "";
+	if (!body) return "";
+	const lines = body.split("\n").length;
+	return `(${lines} ${lines === 1 ? "line" : "lines"})`;
 }
 
 type HandoffToolResult = { content: { type: "text"; text: string }[]; details: Record<string, never>; isError?: true };
