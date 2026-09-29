@@ -205,6 +205,9 @@ find_pi_coding_agent_root_from() { # <pi-executable-or-cli-path> [package-tree-r
     pi_ancestor_probe "$1" "${2-}" probe_pi_coding_agent_root
 }
 
+# Set by run_pi_azure_retry_patch when the patch needs root; read by report_pending_pi_azure_patch.
+PI_AZURE_PATCH_SUDO_CMD=""
+
 run_pi_azure_retry_patch() { # <"Pi"|"managed Pi"> <pi-executable-or-cli-path> [package-tree-root]
     # Patches both copies of the retry classifier: pi-ai's dist (SDK) and the
     # CLI bundle chunk inside pi-coding-agent — see the patch script header.
@@ -218,8 +221,36 @@ run_pi_azure_retry_patch() { # <"Pi"|"managed Pi"> <pi-executable-or-cli-path> [
         echo "ERROR: Pi coding-agent package not found from $kind executable $1; patch not applied." >&2
         return 1
     fi
-    PI_AI_ROOT="$pi_ai_root" PI_CODING_AGENT_ROOT="$pi_coding_agent_root" \
-        node "$REPO/pi/patches/pi-azure-response-failed-retry.cjs"
+    local patch="$REPO/pi/patches/pi-azure-response-failed-retry.cjs" rc=0
+    PI_AI_ROOT="$pi_ai_root" PI_CODING_AGENT_ROOT="$pi_coding_agent_root" node "$patch" || rc=$?
+    # 3 = EXIT_NOT_WRITABLE in the patch: valid and needed, but a root-owned install.
+    # Defer the failure (install-pi.sh exits non-zero at the end) so the per-user
+    # steps still run, and hand out a root command for the patch alone.
+    [ "$rc" -eq 3 ] || return "$rc"
+    PI_AZURE_PATCH_SUDO_CMD="sudo env PI_AI_ROOT=$(printf '%q' "$pi_ai_root")"
+    PI_AZURE_PATCH_SUDO_CMD+=" PI_CODING_AGENT_ROOT=$(printf '%q' "$pi_coding_agent_root")"
+    PI_AZURE_PATCH_SUDO_CMD+=" $(printf '%q' "$(command -v node)") $(printf '%q' "$patch")"
+    print_pi_azure_patch_sudo_hint
+}
+
+print_pi_azure_patch_sudo_hint() {
+    echo "ACTION NEEDED: apply ONLY the Pi Azure retry patch as root:" >&2
+    echo "    $PI_AZURE_PATCH_SUDO_CMD" >&2
+    echo "  then re-run ./install-pi.sh WITHOUT sudo (everything else it installs is per-user: HOME, systemd --user, ~/.bashrc)." >&2
+}
+
+report_pending_pi_azure_patch() {
+    # install-pi.sh's last step: non-zero while a needed patch is still unapplied (fail-closed).
+    [ -n "$PI_AZURE_PATCH_SUDO_CMD" ] || return 0
+    echo "ERROR: Pi Azure retry patch NOT applied (Pi install not writable); the other steps completed." >&2
+    print_pi_azure_patch_sudo_hint
+    return 1
+}
+
+warn_if_run_with_sudo() {
+    # Warning only: under sudo, per-user steps (links, systemd --user, ~/.bashrc) act as root.
+    if [ "$(id -u)" -ne 0 ] || [ -z "${SUDO_USER-}" ]; then return 0; fi
+    echo "WARNING: install-pi.sh is running as root via sudo (SUDO_USER=$SUDO_USER): per-user steps act as root on HOME=$HOME, not as $SUDO_USER. Run it without sudo; if the Pi Azure retry patch needs root, the installer prints a sudo command for that patch alone." >&2
 }
 
 install_pi_azure_response_retry_patch() {

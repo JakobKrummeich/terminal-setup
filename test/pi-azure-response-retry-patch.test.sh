@@ -12,7 +12,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PATCH="$REPO/pi/patches/pi-azure-response-failed-retry.cjs"
 FIXTURES="$REPO/test/fixtures"
 FIXTURE="$(mktemp -d)"
-trap 'rm -rf "$FIXTURE"' EXIT
+trap 'chmod -R u+w "$FIXTURE"; rm -rf "$FIXTURE"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -42,7 +42,7 @@ try {
   main({ PI_AI_ROOT: piAiRoot, PI_CODING_AGENT_ROOT: agentRoot }, table);
 } catch (error) {
   console.error(`ERROR: ${error.message}`);
-  process.exit(1);
+  process.exit(error.exitCode ?? 1);
 }
 NODE
 drive() { node "$FIXTURE/drive.cjs" "$PATCH" "$FIXTURES" "$1/pi-ai" "$1/agent"; }
@@ -165,5 +165,49 @@ for version in 0.87.2 0.99.2 1.0.0 not-a-version; do
 done
 if out="$(PI_AI_ROOT="$FIXTURE/pi-0.99.0/pi-ai" node "$PATCH" 2>&1)"; then fail "ran without PI_CODING_AGENT_ROOT"; fi
 [ "$out" = "ERROR: PI_CODING_AGENT_ROOT is required; run install-pi.sh." ] || fail "missing root: $out"
+
+# Root-owned install run as a normal user (simulated with chmod; root ignores it).
+if [ "$(id -u)" -eq 0 ]; then
+  echo "SKIP: unwritable-install cases (running as root, chmod does not block writes)"
+else
+  expect_not_writable() { # <label> <root> <expected-path>: exit 3, names the path, writes nothing
+    local before out rc=0
+    before="$(snapshot "$2")"
+    out="$(drive "$2" 2>&1)" || rc=$?
+    [ "$rc" = 3 ] || fail "$1: expected exit 3, got $rc: $out"
+    [[ "$out" == *"$3"*"not writable by this user"*"no file was changed"* ]] || fail "$1: message: $out"
+    [ "$before" = "$(snapshot "$2")" ] || fail "$1: files modified"
+  }
+  locked="$FIXTURE/locked"
+  make_pi "$locked" 0.99.1 0.99.1
+  chmod a-w "$locked/agent/dist/bundle/chunks/chunk-RETRY.js" "$locked/agent/dist/bundle/chunks"
+  # retry.js is writable, but all-or-nothing: it must stay pristine too.
+  expect_not_writable "bundle unwritable" "$locked" "$locked/agent/dist/bundle/chunks/chunk-RETRY.js"
+  chmod a-w "$locked/pi-ai/dist/utils/retry.js" "$locked/pi-ai/dist/utils"
+  expect_not_writable "both unwritable" "$locked" "$locked/pi-ai/dist/utils/retry.js"
+  # A stale backup that cannot be overwritten blocks too, even with a writable dir.
+  stale="$FIXTURE/stale-backup"
+  make_pi "$stale" 0.99.1 0.99.1
+  touch "$stale/pi-ai/dist/utils/retry.js.pre-terminal-setup-backup"
+  chmod a-w "$stale/pi-ai/dist/utils/retry.js.pre-terminal-setup-backup"
+  expect_not_writable "read-only backup" "$stale" "$stale/pi-ai/dist/utils/retry.js.pre-terminal-setup-backup"
+  # Already applied needs no write access: read-only still succeeds.
+  applied="$FIXTURE/pi-0.99.1"
+  chmod -R a-w "$applied"
+  before="$(snapshot "$applied")"
+  out="$(drive "$applied" 2>&1)" || fail "read-only already-applied: $out"
+  [ "$(grep -c '^Pi Azure hidden-response retry patch already applied: ' <<<"$out")" = 2 ] \
+    || fail "read-only already-applied: $out"
+  [ "$before" = "$(snapshot "$applied")" ] || fail "read-only already-applied: files modified"
+  # Production CLI maps it to exit 3 too (bundle skipped via a pre-0.87.1 agent version).
+  cli="$FIXTURE/cli-locked"
+  make_pi "$cli" 0.99.1 0.99.1
+  printf '{"name":"@earendil-works/pi-coding-agent","version":"0.86.1"}\n' > "$cli/agent/package.json"
+  chmod a-w "$cli/pi-ai/dist/utils"
+  rc=0
+  out="$(PI_AI_ROOT="$cli/pi-ai" PI_CODING_AGENT_ROOT="$cli/agent" node "$PATCH" 2>&1)" || rc=$?
+  [ "$rc" = 3 ] || fail "production CLI unwritable: expected exit 3, got $rc: $out"
+  cmp -s "$FIXTURES/pi-ai-0.99.1-retry.js" "$cli/pi-ai/dist/utils/retry.js" || fail "production CLI: retry.js modified"
+fi
 
 echo "PASS: Azure hidden-response retry patch (SDK retry.js + CLI bundle) for 0.87.1, 0.99.0 and 0.99.1"

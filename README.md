@@ -73,6 +73,14 @@ Azure Responses hidden-error retry workaround (“Pi Azure retry patch” below)
 after a Pi upgrade until patch is reviewed or removed; an older Pi (pre-0.87.1) skips the patch
 with `SKIPPED:` lines and the install continues. It does not install/link WezTerm or tmux.
 
+Run `install-pi.sh` as your normal user, **never with `sudo`**: everything except the patch is
+per-user (`~/.pi`, `systemd --user`, `~/.bashrc`); under `sudo` it warns that those steps act as
+root. When Pi is a root-owned global install (e.g. `/usr/lib/node_modules`) and the patch is
+still needed, the installer changes no Pi file, prints a `sudo env PI_AI_ROOT=… PI_CODING_AGENT_ROOT=…
+node …/pi-azure-response-failed-retry.cjs` command that applies only the patch, finishes the
+per-user steps, and exits 1; run that command, then re-run `install-pi.sh` without `sudo`. An
+already-patched root-owned install needs no write access and succeeds.
+
 **Minimum supported pi: 0.87** (`PI_MIN_VERSION` in `lib/install-common.sh`). The
 extensions rely on 0.87 extension APIs (e.g. actionable `turn_end` boundary results,
 transcript system messages) and carry no fallbacks for older pi; `install-pi.sh`
@@ -100,7 +108,9 @@ both copies are patched: `pi-ai/dist/utils/retry.js` (SDK users, the extension t
 classifier sits in one content-hashed `dist/bundle/chunks/chunk-*.js`, found by content, not
 name (before this patched the bundle too, the workaround never reached the CLI). Each file must
 hash to its version's pinned baseline or patched SHA-256; anything else fails before any file
-is written. Re-runs are no-ops; each patched file keeps a `.pre-terminal-setup-backup`.
+is written — likewise when a file to patch (or its backup / directory) is not writable: the
+script exits 3 (`EXIT_NOT_WRITABLE`) and `install-pi.sh` turns that into the root-only command
+above and a deferred exit 1. Re-runs are no-ops; each patched file keeps a `.pre-terminal-setup-backup`.
 To support a new Pi version: `npm pack` its `pi-ai` + `pi-coding-agent` into `/tmp`, check the
 classifier and the Azure error path are unchanged, add both baseline hashes plus the patched
 hashes the script's transforms produce to `EXPECTED_HASHES`, add the version's fixtures
