@@ -161,9 +161,11 @@ install_pi_dash_service() {
     fi
 }
 
-find_pi_ai_root_from() { # <pi-executable-or-cli-path> [package-tree-root]
-    # Follow the executable into its package tree, then mirror Node's ancestor lookup.
-    local resolved_path search_root="${2-}" pi_search_dir pi_ai_root
+pi_ancestor_probe() { # <pi-executable-or-cli-path> <package-tree-root|""> <probe-fn>
+    # Follow the executable into its package tree, then mirror Node's ancestor
+    # lookup: print what <probe-fn> prints for the first ancestor dir it accepts.
+    # A non-empty package-tree-root bounds the walk (managed Pi releases).
+    local resolved_path search_root="$2" search_dir
     resolved_path="$(readlink -f "$1")" || return 1
     if [ -n "$search_root" ]; then
         search_root="$(readlink -f "$search_root")" || return 1
@@ -172,26 +174,62 @@ find_pi_ai_root_from() { # <pi-executable-or-cli-path> [package-tree-root]
             *) return 1 ;;
         esac
     fi
-    pi_search_dir="$(dirname "$resolved_path")"
-    while [ "$pi_search_dir" != / ]; do
-        pi_ai_root="$pi_search_dir/node_modules/@earendil-works/pi-ai"
-        if [ -f "$pi_ai_root/package.json" ]; then
-            printf '%s\n' "$pi_ai_root"
-            return 0
-        fi
-        [ -n "$search_root" ] && [ "$pi_search_dir" = "$search_root" ] && break
-        pi_search_dir="$(dirname "$pi_search_dir")"
+    search_dir="$(dirname "$resolved_path")"
+    while [ "$search_dir" != / ]; do
+        "$3" "$search_dir" && return 0
+        [ -n "$search_root" ] && [ "$search_dir" = "$search_root" ] && break
+        search_dir="$(dirname "$search_dir")"
     done
     return 1
 }
 
+probe_pi_ai_root() { # <dir>: pi-ai as Node resolves it from <dir>
+    [ -f "$1/node_modules/@earendil-works/pi-ai/package.json" ] || return 1
+    printf '%s\n' "$1/node_modules/@earendil-works/pi-ai"
+}
+
+probe_pi_coding_agent_root() { # <dir>: <dir> itself, if it is the pi-coding-agent package
+    [ -f "$1/package.json" ] || return 1
+    node -e '
+const pkg = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+process.exit(pkg.name === "@earendil-works/pi-coding-agent" ? 0 : 1);
+' "$1/package.json" 2>/dev/null || return 1
+    printf '%s\n' "$1"
+}
+
+find_pi_ai_root_from() { # <pi-executable-or-cli-path> [package-tree-root]
+    pi_ancestor_probe "$1" "${2-}" probe_pi_ai_root
+}
+
+find_pi_coding_agent_root_from() { # <pi-executable-or-cli-path> [package-tree-root]
+    pi_ancestor_probe "$1" "${2-}" probe_pi_coding_agent_root
+}
+
+run_pi_azure_retry_patch() { # <"Pi"|"managed Pi"> <pi-executable-or-cli-path> [package-tree-root]
+    # Patches both copies of the retry classifier: pi-ai's dist (SDK) and the
+    # CLI bundle chunk inside pi-coding-agent — see the patch script header.
+    local kind="$1" pi_ai_root pi_coding_agent_root
+    shift
+    if ! pi_ai_root="$(find_pi_ai_root_from "$@")"; then
+        echo "ERROR: Pi AI package not found from $kind executable $1; patch not applied." >&2
+        return 1
+    fi
+    if ! pi_coding_agent_root="$(find_pi_coding_agent_root_from "$@")"; then
+        echo "ERROR: Pi coding-agent package not found from $kind executable $1; patch not applied." >&2
+        return 1
+    fi
+    PI_AI_ROOT="$pi_ai_root" PI_CODING_AGENT_ROOT="$pi_coding_agent_root" \
+        node "$REPO/pi/patches/pi-azure-response-failed-retry.cjs"
+}
+
 install_pi_azure_response_retry_patch() {
-    # Temporary fail-closed workaround for Pi 0.87.1 Azure Responses failed SSE events.
+    # Temporary fail-closed workaround for Azure Responses failed SSE events
+    # (Pi 0.87.1 and 0.99.0; pinned hashes live in the patch script).
     if ! command -v pi >/dev/null; then
         echo "SKIPPED: Pi Azure retry patch (pi is not installed)"
         return 0
     fi
-    local pi_bin pi_ai_root managed_root managed_marker current_file current_version managed_pi_bin
+    local pi_bin managed_root managed_marker current_file current_version managed_pi_bin
     pi_bin="$(readlink -f "$(command -v pi)")"
     managed_root="$(dirname "$(dirname "$pi_bin")")/install"
     managed_marker="$managed_root/managed-install.json"
@@ -218,21 +256,12 @@ if (marker.kind !== "pi-managed-install" || marker.schemaVersion !== 1 || marker
             echo "ERROR: Managed Pi executable is missing: $managed_pi_bin; patch not applied." >&2
             return 1
         fi
-        if pi_ai_root="$(find_pi_ai_root_from "$managed_pi_bin" "$managed_root/releases/$current_version")"; then
-            PI_AI_ROOT="$pi_ai_root" node "$REPO/pi/patches/pi-azure-response-failed-retry.cjs"
-            return
-        fi
-        echo "ERROR: Pi AI package not found from managed Pi executable $managed_pi_bin; patch not applied." >&2
-        return 1
+        run_pi_azure_retry_patch "managed Pi" "$managed_pi_bin" "$managed_root/releases/$current_version"
+        return
     fi
 
     # Legacy/npm installs resolve directly into the active package tree.
-    if pi_ai_root="$(find_pi_ai_root_from "$pi_bin")"; then
-        PI_AI_ROOT="$pi_ai_root" node "$REPO/pi/patches/pi-azure-response-failed-retry.cjs"
-        return
-    fi
-    echo "ERROR: Pi AI package not found from Pi executable $pi_bin; patch not applied." >&2
-    return 1
+    run_pi_azure_retry_patch "Pi" "$pi_bin"
 }
 
 install_wezterm() {

@@ -68,10 +68,10 @@ installs + starts the `pi-dash` dashboard daemon as a systemd user unit
 (skipped with a warning where systemd/user-bus is unavailable — see “Agent
 dashboard” below), installs/links `rtk` (pinned release, SHA-256-verified — see
 “Bumping rtk”), and installs the shell `wsstate.sh`
-hook. For Pi `0.87.1` it also applies a version-and-hash-guarded
-Azure Responses hidden-error retry workaround. Installer fails after a Pi upgrade until patch is
-reviewed or removed; an older Pi (pre-0.87.1) skips the patch with a `SKIPPED:` line and the
-install continues. It does not install/link WezTerm or tmux.
+hook. For Pi `0.87.1` and `0.99.0` it also applies a version-and-hash-guarded
+Azure Responses hidden-error retry workaround (“Pi Azure retry patch” below). Installer fails
+after a Pi upgrade until patch is reviewed or removed; an older Pi (pre-0.87.1) skips the patch
+with `SKIPPED:` lines and the install continues. It does not install/link WezTerm or tmux.
 
 **Minimum supported pi: 0.87** (`PI_MIN_VERSION` in `lib/install-common.sh`). The
 extensions rely on 0.87 extension APIs (e.g. actionable `turn_end` boundary results,
@@ -89,6 +89,22 @@ the current shell, either restart it or source `shell/wsstate.sh` once. If
 `~/.bashrc` has the `# >>> terminal-setup wsstate >>>` begin marker but no
 `# <<< terminal-setup wsstate <<<` end marker, the installer leaves the file
 untouched and prints a `WARN:` — fix the block by hand and rerun.
+
+### Pi Azure retry patch
+
+`pi/patches/pi-azure-response-failed-retry.cjs` (run by `install_pi_azure_response_retry_patch`)
+makes Azure's detail-less `response.failed` (“Unknown error (no error details in response)”, a
+transient throttle) retryable. pi-ai's retry classifier exists twice in an installed Pi, and
+both copies are patched: `pi-ai/dist/utils/retry.js` (SDK users, the extension tests) and the
+`pi` CLI's own inlined copy — since Pi 0.84.3 the `pi` bin is `dist/bundle/cli.js`, whose
+classifier sits in one content-hashed `dist/bundle/chunks/chunk-*.js`, found by content, not
+name (before this patched the bundle too, the workaround never reached the CLI). Each file must
+hash to its version's pinned baseline or patched SHA-256; anything else fails before any file
+is written. Re-runs are no-ops; each patched file keeps a `.pre-terminal-setup-backup`.
+To support a new Pi version: `npm pack` its `pi-ai` + `pi-coding-agent` into `/tmp`, check the
+classifier and the Azure error path are unchanged, add both baseline hashes plus the patched
+hashes the script's transforms produce to `EXPECTED_HASHES`, add the version's fixtures
+(`test/fixtures/README.md`), and run `bash test/pi-azure-response-retry-patch.test.sh`.
 
 ### Bumping rtk
 
