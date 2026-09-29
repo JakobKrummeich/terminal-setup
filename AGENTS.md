@@ -60,7 +60,10 @@ Read `README.md` first — layout, install, known issues live there. Don't dupli
   otherwise dependency-cruiser follows into pi's `.d.ts` and reports false
   unresolvable imports) — plus a bin dir holding a `pi` symlink to its
   `dist/bundle/cli.js`. `PATH=<bin>:$PATH ./run.sh` / `./check.sh` then build
-  their farm from it unmodified.
+  their farm from it unmodified. Build it with `npm install -g --prefix <tmp>
+  @earendil-works/pi-coding-agent@<version>` from the registry, then move
+  `<tmp>/lib/node_modules` into place — installing the `npm pack` tarball
+  instead ignored pi's `npm-shrinkwrap.json` (got `@types/node` 26, not 22).
 - pi extension code: from `pi/extensions/test`, run `timeout 200 ./run.sh` (tests)
   THEN `./check.sh` (quality gate). Both need exit 0; both build the node_modules
   symlink farm (`farm.sh`). Details of each below.

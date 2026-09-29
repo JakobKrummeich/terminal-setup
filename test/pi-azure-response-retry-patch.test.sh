@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # pi/patches/pi-azure-response-failed-retry.cjs against fixture Pi trees:
-# pi-ai's real dist/utils/retry.js (0.87.1, 0.99.0) plus a CLI bundle whose one
+# pi-ai's real dist/utils/retry.js (0.87.1, 0.99.0, 0.99.1) plus a CLI bundle whose one
 # retry chunk is a verbatim excerpt of the real chunk (test/fixtures/README.md).
 # The real chunks are MBs, so the bundle's pinned sha256s are swapped for the
 # excerpt's via main()'s hash-table argument; the retry.js hashes stay the
@@ -56,7 +56,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const [patchPath, fixtures] = process.argv.slice(2);
 const { EXPECTED_HASHES, TARGETS, sha256 } = require(patchPath);
-assert.deepEqual([...EXPECTED_HASHES.keys()], ["0.87.1", "0.99.0"]);
+assert.deepEqual([...EXPECTED_HASHES.keys()], ["0.87.1", "0.99.0", "0.99.1"]);
 const retry = TARGETS.find((target) => target.key === "retry");
 for (const [version, hashes] of EXPECTED_HASHES) {
   const source = fs.readFileSync(`${fixtures}/pi-ai-${version}-retry.js`, "utf8");
@@ -67,7 +67,7 @@ for (const [version, hashes] of EXPECTED_HASHES) {
 }
 NODE
 
-for version in 0.87.1 0.99.0; do
+for version in 0.87.1 0.99.0 0.99.1; do
   root="$FIXTURE/pi-$version"
   make_pi "$root" "$version" "$version"
   out="$(drive "$root")" || fail "$version first run: $out"
@@ -147,23 +147,23 @@ for version in 0.86.1 0.87.0; do
   before="$(snapshot "$old")"
   out="$(PI_AI_ROOT="$old/pi-ai" PI_CODING_AGENT_ROOT="$old/agent" node "$PATCH" 2>&1)" \
     || fail "pi $version must skip, not fail: $out"
-  [ "$out" = "SKIPPED: Pi Azure retry patch for pi-ai dist/utils/retry.js (SDK) (pi-ai $version predates the patched 0.87.1, 0.99.0; untouched).
-SKIPPED: Pi Azure retry patch for pi CLI bundle (pi-coding-agent $version predates the patched 0.87.1, 0.99.0; untouched)." ] \
+  [ "$out" = "SKIPPED: Pi Azure retry patch for pi-ai dist/utils/retry.js (SDK) (pi-ai $version predates the patched 0.87.1, 0.99.0, 0.99.1; untouched).
+SKIPPED: Pi Azure retry patch for pi CLI bundle (pi-coding-agent $version predates the patched 0.87.1, 0.99.0, 0.99.1; untouched)." ] \
     || fail "pi $version skip message: $out"
   [ "$before" = "$(snapshot "$old")" ] || fail "pi $version: files modified"
 done
-for version in 0.87.2 0.99.1 1.0.0 not-a-version; do
+for version in 0.87.2 0.99.2 1.0.0 not-a-version; do
   new="$FIXTURE/new-$version"
   make_pi "$new" "$version" 0.99.0
   before="$(snapshot "$new")"
   if out="$(PI_AI_ROOT="$new/pi-ai" PI_CODING_AGENT_ROOT="$new/agent" node "$PATCH" 2>&1)"; then
     fail "patch accepted unpinned pi $version: $out"
   fi
-  [ "$out" = "ERROR: Expected pi-ai one of 0.87.1, 0.99.0, found $version; patch not applied." ] \
+  [ "$out" = "ERROR: Expected pi-ai one of 0.87.1, 0.99.0, 0.99.1, found $version; patch not applied." ] \
     || fail "pi $version error: $out"
   [ "$before" = "$(snapshot "$new")" ] || fail "pi $version: files modified"
 done
 if out="$(PI_AI_ROOT="$FIXTURE/pi-0.99.0/pi-ai" node "$PATCH" 2>&1)"; then fail "ran without PI_CODING_AGENT_ROOT"; fi
 [ "$out" = "ERROR: PI_CODING_AGENT_ROOT is required; run install-pi.sh." ] || fail "missing root: $out"
 
-echo "PASS: Azure hidden-response retry patch (SDK retry.js + CLI bundle) for 0.87.1 and 0.99.0"
+echo "PASS: Azure hidden-response retry patch (SDK retry.js + CLI bundle) for 0.87.1, 0.99.0 and 0.99.1"

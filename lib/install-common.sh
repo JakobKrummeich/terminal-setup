@@ -224,7 +224,7 @@ run_pi_azure_retry_patch() { # <"Pi"|"managed Pi"> <pi-executable-or-cli-path> [
 
 install_pi_azure_response_retry_patch() {
     # Temporary fail-closed workaround for Azure Responses failed SSE events
-    # (Pi 0.87.1 and 0.99.0; pinned hashes live in the patch script).
+    # (Pi 0.87.1, 0.99.0 and 0.99.1; pinned hashes live in the patch script).
     if ! command -v pi >/dev/null; then
         echo "SKIPPED: Pi Azure retry patch (pi is not installed)"
         return 0
