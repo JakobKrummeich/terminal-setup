@@ -18,7 +18,7 @@ mkdir -p "$tricky_repo/pi"
 cp "$REPO/pi/pi-dash.service" "$tricky_repo/pi/pi-dash.service"
 
 # node on PATH is a symlink: the unit must name the resolved binary.
-node_real="$FIXTURE/node store/node-real"
+node_real="$FIXTURE/node store & x|y\\z/node-real"
 bin="$FIXTURE/bin"
 mkdir -p "$(dirname "$node_real")" "$bin"
 printf '#!/bin/sh\nexit 0\n' > "$node_real"
