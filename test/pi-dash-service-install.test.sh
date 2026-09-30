@@ -23,6 +23,7 @@ bin="$FIXTURE/bin"
 mkdir -p "$(dirname "$node_real")" "$bin"
 printf '#!/bin/sh\nexit 0\n' > "$node_real"
 chmod +x "$node_real"
+node_real="$(readlink -f "$node_real")" # a symlinked $TMPDIR must not break the expected path
 ln -s "$node_real" "$bin/node"
 
 # systemctl stub: logs its args; exits 1 for the subcommand named in SYSTEMCTL_FAIL.
