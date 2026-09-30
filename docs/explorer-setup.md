@@ -29,11 +29,10 @@ Create `~/.pi/agent/extensions/explorer-models.json`:
 }
 ```
 
-Use `anthropic/claude-opus-5-5` instead on Anthropic-only machines. These new
-model IDs require Pi 0.87.1+. On older supported Pi, use
-`azure-openai-responses/gpt-5.6-luna`, or `anthropic/claude-sonnet-5-5` after
-refreshing the model catalog with `pi update --models` (Pi's bundled catalog
-lacks it).
+Use `anthropic/claude-opus-5-5` instead on Anthropic-only machines. Both model
+IDs require Pi 0.87.1+; on Pi 0.87.0 use `azure-openai-responses/gpt-5.6-luna`.
+`anthropic/claude-sonnet-5-5` ships in Pi's bundled catalog from 0.99.0 on; on
+0.87.x refresh the catalog first (`pi update --models`).
 If `PI_CODING_AGENT_DIR` is set, place file under
 `$PI_CODING_AGENT_DIR/extensions/explorer-models.json` instead.
 

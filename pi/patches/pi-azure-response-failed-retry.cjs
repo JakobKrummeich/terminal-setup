@@ -14,6 +14,10 @@
  * Fail-closed: every file must hash to the pinned baseline (-> patch) or
  * patched (-> already done) value of its package version; unknown versions,
  * unexpected content, or an ambiguous bundle abort before ANY file is written.
+ * A patch that is needed but cannot be written (root-owned global install run
+ * as a normal user) also aborts before any write, with EXIT_NOT_WRITABLE so
+ * install-pi.sh can print the root-only command; already-patched files need no
+ * write access.
  */
 "use strict";
 const crypto = require("node:crypto");
@@ -153,6 +157,32 @@ function plan(target, root, table) {
   return { target, action: "apply", file, patched };
 }
 
+/** Exit code for "patch needed, valid, but the files are not writable by this user". */
+const EXIT_NOT_WRITABLE = 3;
+
+function writable(file) {
+  try {
+    fs.accessSync(file, fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Paths an apply needs write access to: the file, and its backup (or the dir it is created in). */
+function unwritablePaths(file) {
+  const backup = `${file}.pre-terminal-setup-backup`;
+  return [file, fs.existsSync(backup) ? backup : path.dirname(file)].filter((p) => !writable(p));
+}
+
+function assertWritable(plans) {
+  const blocked = plans.filter((p) => p.action === "apply").flatMap((p) => unwritablePaths(p.file));
+  if (blocked.length === 0) return;
+  const error = new Error(`Pi Azure retry patch is needed but ${blocked.join(", ")} ${blocked.length === 1 ? "is" : "are"} not writable by this user (root-owned Pi install?); no file was changed. Re-run only this patch as root.`);
+  error.exitCode = EXIT_NOT_WRITABLE;
+  throw error;
+}
+
 function main(env = process.env, table = EXPECTED_HASHES, log = console.log) {
   const roots = TARGETS.map((target) => {
     if (!env[target.envVar]) throw new Error(`${target.envVar} is required; run install-pi.sh.`);
@@ -160,6 +190,7 @@ function main(env = process.env, table = EXPECTED_HASHES, log = console.log) {
   });
   // Plan every target first: a failure anywhere leaves every file untouched.
   const plans = TARGETS.map((target, i) => plan(target, roots[i], table));
+  assertWritable(plans);
   for (const { target, action, file, patched, note } of plans) {
     if (action === "skip") {
       log(`SKIPPED: Pi Azure retry patch for ${target.label} (${note}; untouched).`);
@@ -173,13 +204,13 @@ function main(env = process.env, table = EXPECTED_HASHES, log = console.log) {
   }
 }
 
-module.exports = { EXPECTED_HASHES, TARGETS, main, sha256 };
+module.exports = { EXIT_NOT_WRITABLE, EXPECTED_HASHES, TARGETS, main, sha256 };
 
 if (require.main === module) {
   try {
     main();
   } catch (error) {
     console.error(`ERROR: ${error.message}`);
-    process.exit(1);
+    process.exit(error.exitCode ?? 1);
   }
 }

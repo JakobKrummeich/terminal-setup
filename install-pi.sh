@@ -6,11 +6,13 @@ REPO="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/install-common.sh
 . "$REPO/lib/install-common.sh"
 
+warn_if_run_with_sudo
 warn_if_pi_too_old
 install_pi
 install_pi_azure_response_retry_patch
 install_pi_dash_service
 install_rtk
 install_shell_wsstate
+report_pending_pi_azure_patch || exit 1
 
 echo "Done. pi config installed. Restart pi to reload extensions; restart shell or source shell/wsstate.sh for current shell status."
