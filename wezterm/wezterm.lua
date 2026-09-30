@@ -36,7 +36,7 @@ local function top_row_pane_count(window)
   return 1
 end
 
-local function apply_padding(window)
+local function apply_padding_unguarded(window)
   local panecols = wezterm.GLOBAL.panecols or {}
   local tmux_n = tonumber(panecols[tostring(window:window_id())]) or 1
   -- Native splits win when present; otherwise honor the tmux hook value.
@@ -58,6 +58,16 @@ local function apply_padding(window)
   if not cur or cur.left ~= margin then
     overrides.window_padding = { left = margin, right = margin, top = 8, bottom = 8 }
     window:set_config_overrides(overrides)
+  end
+end
+
+-- Guarded: panes can vanish mid-call ('pane id N not found in mux'). An
+-- uncaught error in update-status also skips later update-status
+-- handlers (the workspace strip), which once froze the right status.
+local function apply_padding(window)
+  local ok, err = pcall(apply_padding_unguarded, window)
+  if not ok then
+    wezterm.log_warn('apply_padding: ' .. tostring(err))
   end
 end
 
