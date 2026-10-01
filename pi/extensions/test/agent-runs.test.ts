@@ -425,3 +425,119 @@ test("runChildTool writes spawn/progress/finish rows; a child-spawned child thre
 		disposeChildren();
 	}
 });
+
+// runChildRecord's `finally` is the only place a run is wound down. A miss there
+// leaves running=true (every later resume rejected as child_running, record
+// exempt from eviction) or a finish row claiming "done" for a failed run.
+
+/** The last finish row for `sid` — one is appended per settled run (last wins). */
+function lastFinish(sid: string): RunFinish | undefined {
+	return readRuns(SESSION_DIR)
+		.filter((e): e is RunFinish => e.event === "finish" && e.sid === sid)
+		.at(-1);
+}
+
+test("runChildTool: prompt() throwing → 'error' finish row, error propagates, child stays resumable", async () => {
+	try {
+		const ctx = await makeCtx("main-error");
+		const first = await runChildTool({ prompt: "warm up" }, AGENT_OPTIONS, undefined, undefined, ctx);
+		const id = (first.details as { id: string }).id;
+		const record = liveChildren.get(id)!;
+		const realPrompt = record.session.prompt.bind(record.session);
+		record.session.prompt = async () => {
+			throw new Error("provider exploded");
+		};
+		await assert.rejects(
+			runChildTool({ prompt: "fail", resume_id: id }, AGENT_OPTIONS, undefined, undefined, ctx),
+			/provider exploded/,
+		);
+		assert.equal(lastFinish(record.sid)?.status, "error", "a failed run must not be reported as done");
+		assert.equal(record.running, false, "stale running=true would block every later resume");
+		assert.equal(record.runStartedAt, undefined);
+		assert.equal(record.currentTool, undefined);
+
+		// Slot released and record unclaimed: the same child resumes normally.
+		record.session.prompt = realPrompt;
+		const again = await runChildTool({ prompt: "retry", resume_id: id }, AGENT_OPTIONS, undefined, undefined, ctx);
+		assert.equal(again.isError, undefined, `resume after a failed run: ${JSON.stringify(again.content)}`);
+		assert.equal(lastFinish(record.sid)?.status, "done");
+	} finally {
+		disposeChildren();
+	}
+});
+
+test("runChildTool: caller abort mid-run → abort reaches the child, 'cancelled' finish row, slot held until drained", async () => {
+	try {
+		const ctx = await makeCtx("main-abort");
+		const first = await runChildTool({ prompt: "warm up" }, AGENT_OPTIONS, undefined, undefined, ctx);
+		const id = (first.details as { id: string }).id;
+		const record = liveChildren.get(id)!;
+		const session = record.session;
+		// The aborted child keeps draining (not idle) until the test lets it finish,
+		// so the call's wind-down must hand its slot to the settling path.
+		const realIsIdle = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(session), "isIdle")!.get!;
+		const realWaitForIdle = session.waitForIdle.bind(session);
+		let draining = false;
+		let finishDrain!: () => void;
+		const drained = new Promise<void>((resolve) => {
+			finishDrain = resolve;
+		});
+		Object.defineProperty(session, "isIdle", {
+			configurable: true,
+			get: () => !draining && realIsIdle.call(session),
+		});
+		session.waitForIdle = async () => {
+			if (draining) await drained;
+			return realWaitForIdle();
+		};
+		const realAbort = session.abort.bind(session);
+		let abortCalls = 0;
+		session.abort = async () => {
+			abortCalls++;
+			draining = true;
+			return realAbort();
+		};
+		const controller = new AbortController();
+		let abortScheduled = false;
+		// First status push happens in startRun, before the abort listener is attached
+		// and prompt() starts; a macrotask later the scripted stream (30 ms) is in flight.
+		const onUpdate = () => {
+			if (abortScheduled) return;
+			abortScheduled = true;
+			setTimeout(() => controller.abort(), 0);
+		};
+		const result = await runChildTool(
+			{ prompt: "long task", resume_id: id },
+			AGENT_OPTIONS,
+			controller.signal,
+			onUpdate,
+			ctx,
+		);
+		assert.equal(abortScheduled, true);
+		assert.equal(abortCalls, 1, "the caller's abort must be forwarded to the child session");
+		assert.equal((result.details as { aborted: boolean }).aborted, true);
+		assert.equal(lastFinish(record.sid)?.status, "cancelled");
+		assert.equal(record.running, false);
+		assert.equal(record.runStartedAt, undefined);
+
+		// Still draining: the slot stays held, so the group rejects a new child.
+		assert.equal(session.isIdle, false);
+		const blocked = await runChildTool({ prompt: "overlap" }, AGENT_OPTIONS, undefined, undefined, ctx);
+		assert.equal(
+			(blocked.details as { error?: string }).error,
+			"child_busy",
+			"a new child must not overlap an aborted child that is still draining",
+		);
+
+		// Slot released once the child drains: the same group accepts the next run.
+		draining = false;
+		finishDrain();
+		await session.waitForIdle();
+		await sleep(0);
+		const again = await runChildTool({ prompt: "retry", resume_id: id }, AGENT_OPTIONS, undefined, undefined, ctx);
+		assert.equal(again.isError, undefined, `resume after an aborted run: ${JSON.stringify(again.content)}`);
+		assert.equal(lastFinish(record.sid)?.status, "done");
+	} finally {
+		disposeChildren();
+	}
+});
