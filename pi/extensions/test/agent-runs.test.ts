@@ -425,3 +425,68 @@ test("runChildTool writes spawn/progress/finish rows; a child-spawned child thre
 		disposeChildren();
 	}
 });
+
+// runChildRecord's `finally` is the only place a run is wound down. A miss there
+// leaves running=true (every later resume rejected as child_running, record
+// exempt from eviction) or a finish row claiming "done" for a failed run.
+
+/** The last finish row for `sid` — one is appended per settled run (last wins). */
+function lastFinish(sid: string): RunFinish | undefined {
+	return readRuns(SESSION_DIR)
+		.filter((e): e is RunFinish => e.event === "finish" && e.sid === sid)
+		.at(-1);
+}
+
+test("runChildTool: prompt() throwing → 'error' finish row, error propagates, child stays resumable", async () => {
+	try {
+		const ctx = await makeCtx("main-error");
+		const first = await runChildTool({ prompt: "warm up" }, AGENT_OPTIONS, undefined, undefined, ctx);
+		const id = (first.details as { id: string }).id;
+		const record = liveChildren.get(id)!;
+		const realPrompt = record.session.prompt.bind(record.session);
+		record.session.prompt = async () => {
+			throw new Error("provider exploded");
+		};
+		await assert.rejects(
+			runChildTool({ prompt: "fail", resume_id: id }, AGENT_OPTIONS, undefined, undefined, ctx),
+			/provider exploded/,
+		);
+		assert.equal(lastFinish(record.sid)?.status, "error", "a failed run must not be reported as done");
+		assert.equal(record.running, false, "stale running=true would block every later resume");
+		assert.equal(record.runStartedAt, undefined);
+		assert.equal(record.currentTool, undefined);
+
+		// Slot released and record unclaimed: the same child resumes normally.
+		record.session.prompt = realPrompt;
+		const again = await runChildTool({ prompt: "retry", resume_id: id }, AGENT_OPTIONS, undefined, undefined, ctx);
+		assert.equal(again.isError, undefined, `resume after a failed run: ${JSON.stringify(again.content)}`);
+		assert.equal(lastFinish(record.sid)?.status, "done");
+	} finally {
+		disposeChildren();
+	}
+});
+
+test("runChildTool: caller abort mid-run → 'cancelled' finish row and details.aborted", async () => {
+	try {
+		const ctx = await makeCtx("main-abort");
+		const controller = new AbortController();
+		let abortScheduled = false;
+		// First status push happens in startRun, before the abort listener is attached
+		// and prompt() starts; a macrotask later the scripted stream (30 ms) is in flight.
+		const onUpdate = () => {
+			if (abortScheduled) return;
+			abortScheduled = true;
+			setTimeout(() => controller.abort(), 0);
+		};
+		const result = await runChildTool({ prompt: "long task" }, AGENT_OPTIONS, controller.signal, onUpdate, ctx);
+		const { id, aborted } = result.details as { id: string; aborted: boolean };
+		const record = liveChildren.get(id)!;
+		assert.equal(abortScheduled, true);
+		assert.equal(aborted, true);
+		assert.equal(lastFinish(record.sid)?.status, "cancelled");
+		assert.equal(record.running, false);
+		assert.equal(record.runStartedAt, undefined);
+	} finally {
+		disposeChildren();
+	}
+});
