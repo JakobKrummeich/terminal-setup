@@ -65,7 +65,7 @@ EOF
     echo "UPDATED: $rc wsstate hook -> $src"
 }
 
-# Oldest pi the extensions (and the Azure retry patch) support; README "Install pi runtime".
+# Oldest pi the extensions support; README "Install pi runtime".
 PI_MIN_VERSION="0.87.0"
 
 version_lt() { # <a> <b>: true if dotted numeric version a < b; pure bash (no sort -V)
@@ -93,7 +93,7 @@ warn_if_pi_too_old() {
         return 0
     fi
     if version_lt "${BASH_REMATCH[0]}" "$PI_MIN_VERSION"; then
-        echo "WARNING: pi $version is older than the supported minimum $PI_MIN_VERSION; upgrade pi (extensions and the Azure retry patch target >= $PI_MIN_VERSION)."
+        echo "WARNING: pi $version is older than the supported minimum $PI_MIN_VERSION; upgrade pi (extensions target >= $PI_MIN_VERSION)."
     fi
 }
 
@@ -161,138 +161,10 @@ install_pi_dash_service() {
     fi
 }
 
-pi_ancestor_probe() { # <pi-executable-or-cli-path> <package-tree-root|""> <probe-fn>
-    # Follow the executable into its package tree, then mirror Node's ancestor
-    # lookup: print what <probe-fn> prints for the first ancestor dir it accepts.
-    # A non-empty package-tree-root bounds the walk (managed Pi releases).
-    local resolved_path search_root="$2" search_dir
-    resolved_path="$(readlink -f "$1")" || return 1
-    if [ -n "$search_root" ]; then
-        search_root="$(readlink -f "$search_root")" || return 1
-        case "$resolved_path" in
-            "$search_root"/*) ;;
-            *) return 1 ;;
-        esac
-    fi
-    search_dir="$(dirname "$resolved_path")"
-    while [ "$search_dir" != / ]; do
-        "$3" "$search_dir" && return 0
-        [ -n "$search_root" ] && [ "$search_dir" = "$search_root" ] && break
-        search_dir="$(dirname "$search_dir")"
-    done
-    return 1
-}
-
-probe_pi_ai_root() { # <dir>: pi-ai as Node resolves it from <dir>
-    [ -f "$1/node_modules/@earendil-works/pi-ai/package.json" ] || return 1
-    printf '%s\n' "$1/node_modules/@earendil-works/pi-ai"
-}
-
-probe_pi_coding_agent_root() { # <dir>: <dir> itself, if it is the pi-coding-agent package
-    [ -f "$1/package.json" ] || return 1
-    node -e '
-const pkg = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-process.exit(pkg.name === "@earendil-works/pi-coding-agent" ? 0 : 1);
-' "$1/package.json" 2>/dev/null || return 1
-    printf '%s\n' "$1"
-}
-
-find_pi_ai_root_from() { # <pi-executable-or-cli-path> [package-tree-root]
-    pi_ancestor_probe "$1" "${2-}" probe_pi_ai_root
-}
-
-find_pi_coding_agent_root_from() { # <pi-executable-or-cli-path> [package-tree-root]
-    pi_ancestor_probe "$1" "${2-}" probe_pi_coding_agent_root
-}
-
-# Set by run_pi_azure_retry_patch when the patch needs root; read by report_pending_pi_azure_patch.
-PI_AZURE_PATCH_SUDO_CMD=""
-
-run_pi_azure_retry_patch() { # <"Pi"|"managed Pi"> <pi-executable-or-cli-path> [package-tree-root]
-    # Patches both copies of the retry classifier: pi-ai's dist (SDK) and the
-    # CLI bundle chunk inside pi-coding-agent — see the patch script header.
-    local kind="$1" pi_ai_root pi_coding_agent_root
-    shift
-    if ! pi_ai_root="$(find_pi_ai_root_from "$@")"; then
-        echo "ERROR: Pi AI package not found from $kind executable $1; patch not applied." >&2
-        return 1
-    fi
-    if ! pi_coding_agent_root="$(find_pi_coding_agent_root_from "$@")"; then
-        echo "ERROR: Pi coding-agent package not found from $kind executable $1; patch not applied." >&2
-        return 1
-    fi
-    local patch="$REPO/pi/patches/pi-azure-response-failed-retry.cjs" rc=0
-    PI_AI_ROOT="$pi_ai_root" PI_CODING_AGENT_ROOT="$pi_coding_agent_root" node "$patch" || rc=$?
-    # 3 = EXIT_NOT_WRITABLE in the patch: valid and needed, but a root-owned install.
-    # Defer the failure (install-pi.sh exits non-zero at the end) so the per-user
-    # steps still run, and hand out a root command for the patch alone.
-    [ "$rc" -eq 3 ] || return "$rc"
-    PI_AZURE_PATCH_SUDO_CMD="sudo env PI_AI_ROOT=$(printf '%q' "$pi_ai_root")"
-    PI_AZURE_PATCH_SUDO_CMD+=" PI_CODING_AGENT_ROOT=$(printf '%q' "$pi_coding_agent_root")"
-    PI_AZURE_PATCH_SUDO_CMD+=" $(printf '%q' "$(command -v node)") $(printf '%q' "$patch")"
-    print_pi_azure_patch_sudo_hint
-}
-
-print_pi_azure_patch_sudo_hint() {
-    echo "ACTION NEEDED: apply ONLY the Pi Azure retry patch as root:" >&2
-    echo "    $PI_AZURE_PATCH_SUDO_CMD" >&2
-    echo "  then re-run ./install-pi.sh WITHOUT sudo (everything else it installs is per-user: HOME, systemd --user, ~/.bashrc)." >&2
-}
-
-report_pending_pi_azure_patch() {
-    # install-pi.sh's last step: non-zero while a needed patch is still unapplied (fail-closed).
-    [ -n "$PI_AZURE_PATCH_SUDO_CMD" ] || return 0
-    echo "ERROR: Pi Azure retry patch NOT applied (Pi install not writable); the other steps completed." >&2
-    print_pi_azure_patch_sudo_hint
-    return 1
-}
-
 warn_if_run_with_sudo() {
     # Warning only: under sudo, per-user steps (links, systemd --user, ~/.bashrc) act as root.
     if [ "$(id -u)" -ne 0 ] || [ -z "${SUDO_USER-}" ]; then return 0; fi
-    echo "WARNING: install-pi.sh is running as root via sudo (SUDO_USER=$SUDO_USER): per-user steps act as root on HOME=$HOME, not as $SUDO_USER. Run it without sudo; if the Pi Azure retry patch needs root, the installer prints a sudo command for that patch alone." >&2
-}
-
-install_pi_azure_response_retry_patch() {
-    # Temporary fail-closed workaround for Azure Responses failed SSE events
-    # (Pi 0.87.1, 0.99.0, 0.99.1 and 0.99.2; pinned hashes live in the patch script).
-    if ! command -v pi >/dev/null; then
-        echo "SKIPPED: Pi Azure retry patch (pi is not installed)"
-        return 0
-    fi
-    local pi_bin managed_root managed_marker current_file current_version managed_pi_bin
-    pi_bin="$(readlink -f "$(command -v pi)")"
-    managed_root="$(dirname "$(dirname "$pi_bin")")/install"
-    managed_marker="$managed_root/managed-install.json"
-
-    # Managed Pi uses a regular launcher at <agent>/bin/pi, not a symlink to
-    # the active release. Its marker must win over any unrelated ancestor package.
-    if [ -f "$managed_marker" ]; then
-        if ! node -e '
-const fs = require("node:fs");
-const marker = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-if (marker.kind !== "pi-managed-install" || marker.schemaVersion !== 1 || marker.layout !== "releases-v1") process.exit(1);
-' "$managed_marker" 2>/dev/null; then
-            echo "ERROR: Managed Pi marker is invalid: $managed_marker; patch not applied." >&2
-            return 1
-        fi
-        current_file="$managed_root/current-version"
-        if ! IFS= read -r current_version < "$current_file" 2>/dev/null \
-            || [[ ! "$current_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "ERROR: Managed Pi current version is missing or invalid: $current_file; patch not applied." >&2
-            return 1
-        fi
-        managed_pi_bin="$managed_root/releases/$current_version/node_modules/.bin/pi"
-        if [ ! -x "$managed_pi_bin" ]; then
-            echo "ERROR: Managed Pi executable is missing: $managed_pi_bin; patch not applied." >&2
-            return 1
-        fi
-        run_pi_azure_retry_patch "managed Pi" "$managed_pi_bin" "$managed_root/releases/$current_version"
-        return
-    fi
-
-    # Legacy/npm installs resolve directly into the active package tree.
-    run_pi_azure_retry_patch "Pi" "$pi_bin"
+    echo "WARNING: install-pi.sh is running as root via sudo (SUDO_USER=$SUDO_USER): per-user steps act as root on HOME=$HOME, not as $SUDO_USER. Run it without sudo." >&2
 }
 
 install_wezterm() {
