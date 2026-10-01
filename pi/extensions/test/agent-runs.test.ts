@@ -466,9 +466,18 @@ test("runChildTool: prompt() throwing → 'error' finish row, error propagates, 
 	}
 });
 
-test("runChildTool: caller abort mid-run → 'cancelled' finish row and details.aborted", async () => {
+test("runChildTool: caller abort mid-run → abort reaches the child, 'cancelled' finish row, slot released", async () => {
 	try {
 		const ctx = await makeCtx("main-abort");
+		const first = await runChildTool({ prompt: "warm up" }, AGENT_OPTIONS, undefined, undefined, ctx);
+		const id = (first.details as { id: string }).id;
+		const record = liveChildren.get(id)!;
+		const realAbort = record.session.abort.bind(record.session);
+		let abortCalls = 0;
+		record.session.abort = async () => {
+			abortCalls++;
+			return realAbort();
+		};
 		const controller = new AbortController();
 		let abortScheduled = false;
 		// First status push happens in startRun, before the abort listener is attached
@@ -478,14 +487,25 @@ test("runChildTool: caller abort mid-run → 'cancelled' finish row and details.
 			abortScheduled = true;
 			setTimeout(() => controller.abort(), 0);
 		};
-		const result = await runChildTool({ prompt: "long task" }, AGENT_OPTIONS, controller.signal, onUpdate, ctx);
-		const { id, aborted } = result.details as { id: string; aborted: boolean };
-		const record = liveChildren.get(id)!;
+		const result = await runChildTool(
+			{ prompt: "long task", resume_id: id },
+			AGENT_OPTIONS,
+			controller.signal,
+			onUpdate,
+			ctx,
+		);
 		assert.equal(abortScheduled, true);
-		assert.equal(aborted, true);
+		assert.equal(abortCalls, 1, "the caller's abort must be forwarded to the child session");
+		assert.equal((result.details as { aborted: boolean }).aborted, true);
 		assert.equal(lastFinish(record.sid)?.status, "cancelled");
 		assert.equal(record.running, false);
 		assert.equal(record.runStartedAt, undefined);
+
+		// Slot released once the child drains: the same group accepts the next run.
+		await record.session.waitForIdle();
+		const again = await runChildTool({ prompt: "retry", resume_id: id }, AGENT_OPTIONS, undefined, undefined, ctx);
+		assert.equal(again.isError, undefined, `resume after an aborted run: ${JSON.stringify(again.content)}`);
+		assert.equal(lastFinish(record.sid)?.status, "done");
 	} finally {
 		disposeChildren();
 	}
