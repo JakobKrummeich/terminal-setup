@@ -24,7 +24,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
-// sha256 per Pi version, per target. Upstream (0.99.1) still maps Azure
+// sha256 per Pi version, per target. Upstream (0.99.2) still maps Azure
 // response.failed without details to the same hidden error, and the classifier
 // has no Azure-specific branch yet.
 const EXPECTED_HASHES = new Map([
@@ -56,6 +56,16 @@ const EXPECTED_HASHES = new Map([
     bundle: { // dist/bundle/chunks/chunk-GUORCHFS.js
       baseline: "b858ce2c4ddbfa1594142e39d7b6ebce328010e116c08db9663602cd26171425",
       patched: "c591ec18eb975f4d0c4c2fedce898b6a0b6f18e790f59200f0d9ba19afeefe25",
+    },
+  }],
+  ["0.99.2", {
+    retry: { // unchanged from 0.99.0
+      baseline: "ae91b950515c239d8bbae9e6a85074b10d5ae4195b20effa228ea51898c0658d",
+      patched: "c088b8a265306a252b851e926112d66e7cec2503175a8d883b3fca27eac64c68",
+    },
+    bundle: { // dist/bundle/chunks/chunk-3YAHQSW6.js
+      baseline: "12483435ca5a250213e8860009cd6e258afcfc13003d7dcb6a2b2f63cda71e00",
+      patched: "eaaff0cf3762406fc4c24d160f9537cf97ec29fdf653cdec26da66c0180ef812",
     },
   }],
 ]);
