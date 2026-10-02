@@ -22,7 +22,8 @@ pi/skills/        agent skills (each dir symlinked into ~/.pi/agent/skills/;
 pi/settings.json  reference copy (copied on fresh install, never symlinked --
                   pi rewrites it at runtime). Pins `"tuiMode": "regular"`:
                   pi >= 1.0 defaults to fullscreen, which takes the transcript
-                  out of wezterm/tmux scrollback and owns the mouse
+                  out of wezterm/tmux scrollback and owns the mouse (existing
+                  installs: add it to ~/.pi/agent/settings.json by hand)
 pi/themes/        Solarized dark+light pi themes matching wezterm palette
                   (symlinked as ~/.pi/agent/themes; hot-reloaded on edit).
                   Switch via /settings -> Theme (auto-detect broken under
