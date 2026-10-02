@@ -13,6 +13,12 @@
  *
  * Observed through the real runChildTool: the child's LLM call carries the tool
  * list, so a marker tool registered by an extension proves which set was loaded.
+ *
+ * The listed extensions must also load INSIDE the child-session scope
+ * (runInChildSession): their child guards (inChildSession/childSessionInfo) only
+ * see it during load/bind. Loaded outside it, podman-hands children lost their
+ * delegate contract and wrote wsstate/wswait escapes into the parent's terminal
+ * (wezterm showed "needs you" mid-subagent call).
  */
 
 import assert from "node:assert/strict";
@@ -30,7 +36,7 @@ process.env.PI_CODING_AGENT_SESSION_DIR = mkdtempSync(path.join(tmpdir(), "pi-ch
 // and hang the test process.
 process.env.PI_OFFLINE = "1";
 
-import { createAssistantMessageEventStream, getCurrentTools } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { initTheme, ModelRuntime, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { liveChildren, runChildTool } from "../lib/child-session.ts";
@@ -95,11 +101,17 @@ const CHILD_OPTIONS = {
 	excludeTools: [],
 };
 
+/** What one child LLM call was given. */
+interface ChildCall {
+	tools: string[];
+	systemPrompt: string;
+}
+
 /**
  * Fake ExtensionContext whose model runtime answers with one scripted text reply
- * and records the tool names each LLM call was given.
+ * and records the tool names and system prompt each LLM call was given.
  */
-async function makeCtx(toolNames: string[][]): Promise<ExtensionContext> {
+async function makeCtx(calls: ChildCall[]): Promise<ExtensionContext> {
 	const dir = mkdtempSync(path.join(tmpdir(), "pi-childext-cwd-"));
 	const runtime = await ModelRuntime.create({
 		authPath: path.join(dir, "auth.json"),
@@ -107,7 +119,10 @@ async function makeCtx(toolNames: string[][]): Promise<ExtensionContext> {
 	});
 	runtime.setRuntimeApiKey("anthropic", "test-key-not-used");
 	(runtime as unknown as { streamSimple: unknown }).streamSimple = (m: any, context: any) => {
-		toolNames.push(getCurrentTools(context.messages).map((tool: { name: string }) => tool.name));
+		calls.push({
+			tools: getCurrentTools(context.messages).map((tool: { name: string }) => tool.name),
+			systemPrompt: getCurrentSystemPrompt(context.messages) ?? "",
+		});
 		const scripted = textStep("done") as ResponseStep;
 		const stream = createAssistantMessageEventStream();
 		void (async () => {
@@ -152,13 +167,13 @@ async function makeCtx(toolNames: string[][]): Promise<ExtensionContext> {
 	} as unknown as ExtensionContext;
 }
 
-/** Tool names the freshly spawned child handed to the LLM on its first turn. */
-async function spawnChildTools(): Promise<string[]> {
-	const calls: string[][] = [];
+/** The freshly spawned child's first LLM call. */
+async function spawnChild(options: typeof CHILD_OPTIONS & { contract?: string } = CHILD_OPTIONS): Promise<ChildCall> {
+	const calls: ChildCall[] = [];
 	const ctx = await makeCtx(calls);
 	try {
-		await runChildTool({ prompt: "which extensions do you have?" }, CHILD_OPTIONS, undefined, undefined, ctx);
-		return calls[0] ?? [];
+		await runChildTool({ prompt: "which extensions do you have?" }, options, undefined, undefined, ctx);
+		return calls[0] ?? { tools: [], systemPrompt: "" };
 	} finally {
 		for (const record of liveChildren.values()) record.session.dispose();
 		liveChildren.clear();
@@ -170,7 +185,7 @@ test("PI_CHILD_EXTENSIONS set: the child loads exactly those extensions, discove
 	process.env.PI_CHILD_EXTENSIONS = explicitExtension;
 	let tools: string[];
 	try {
-		tools = await spawnChildTools();
+		tools = (await spawnChild()).tools;
 	} finally {
 		delete process.env.PI_CHILD_EXTENSIONS;
 	}
@@ -180,6 +195,32 @@ test("PI_CHILD_EXTENSIONS set: the child loads exactly those extensions, discove
 
 test("PI_CHILD_EXTENSIONS unset: the child keeps auto-discovering <agentDir>/extensions", async () => {
 	delete process.env.PI_CHILD_EXTENSIONS;
-	const tools = await spawnChildTools();
+	const { tools } = await spawnChild();
 	assert.ok(tools.includes(MARKER_DISCOVERED), `discovered extension not loaded: ${tools.join(", ")}`);
+});
+
+test("PI_CHILD_EXTENSIONS set: listed extensions load inside the child scope (contract in, no terminal escapes)", async () => {
+	const CONTRACT = "CHILD-CONTRACT-SENTINEL: you are a delegated test child.";
+	// The real repo extensions whose child guards regressed: subagent.ts injects the
+	// contract only when childSessionInfo() is set at load; wsstate.ts and
+	// agent-busy-tracker.ts must stay silent in a child.
+	process.env.PI_CHILD_EXTENSIONS = ["subagent.ts", "wsstate.ts", "agent-busy-tracker.ts"]
+		.map((file) => path.join(EXT_DIR, file))
+		.join(":");
+	const writes: string[] = [];
+	const originalWrite = process.stdout.write;
+	process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
+		writes.push(String(chunk));
+		return (originalWrite as (...a: unknown[]) => boolean).call(process.stdout, chunk, ...rest);
+	}) as typeof process.stdout.write;
+	let call: ChildCall;
+	try {
+		call = await spawnChild({ ...CHILD_OPTIONS, contract: CONTRACT });
+	} finally {
+		process.stdout.write = originalWrite;
+		delete process.env.PI_CHILD_EXTENSIONS;
+	}
+	assert.ok(call.systemPrompt.includes(CONTRACT), "child system prompt must carry the delegate contract");
+	const escapes = writes.filter((w) => w.includes("SetUserVar=ws"));
+	assert.deepEqual(escapes, [], "a child must not write wsstate/wswait into the parent's terminal");
 });

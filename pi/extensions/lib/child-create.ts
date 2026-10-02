@@ -123,7 +123,6 @@ export async function createChildSession(
 	const saved = sessionFile ? savedModelSettings(ctx, sessionManager) : {};
 	const agentDir = getAgentDir();
 	const settingsManager = SettingsManager.create(cwd, agentDir);
-	const resourceLoader = await childResourceLoader(cwd, agentDir, settingsManager);
 	const modelRuntime = parentModelRuntime(ctx);
 	const model = saved.model ?? options.model ?? ctx.model;
 	const thinkingLevel = saved.thinkingLevel ?? options.thinkingLevel ?? ctx.thinkingLevel;
@@ -131,8 +130,14 @@ export async function createChildSession(
 	// child and which contract it carries (subagent.ts appends it to the system
 	// prompt via before_agent_start — see the comment there).
 	const info: ChildSessionInfo = { kind: options.kind, contract: options.contract };
-	const { session, extensionsResult } = await runInChildSession(info, () =>
-		createAgentSession({
+	const { session, extensionsResult } = await runInChildSession(info, async () => {
+		// Inside the scope: the explicit loader runs the extension factories in its
+		// reload(), and createAgentSession skips its own reload when handed a loader.
+		// Built outside, every factory saw inChildSession() === false — children
+		// lost their contract and leaked wsstate/wswait escapes, agent-dash rows and
+		// the timer tool into the parent (PI_CHILD_EXTENSIONS / podman-hands only).
+		const resourceLoader = await childResourceLoader(cwd, agentDir, settingsManager);
+		return createAgentSession({
 			cwd,
 			agentDir,
 			model,
@@ -143,8 +148,8 @@ export async function createChildSession(
 			settingsManager,
 			...(resourceLoader && { resourceLoader }),
 			...(modelRuntime !== undefined && { modelRuntime }),
-		} as Parameters<typeof createAgentSession>[0]),
-	);
+		} as Parameters<typeof createAgentSession>[0]);
+	});
 	notifyLoadErrors(ctx, options.kind, extensionsResult?.errors);
 	await runInChildSession(info, () => session.bindExtensions({}));
 	return session;
