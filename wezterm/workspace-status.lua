@@ -179,15 +179,11 @@ end
 
 -- ── Strip colors: follow the window's tab_bar palette ──────────
 -- The light/dark toggle swaps `colors` via per-window overrides; a
--- window without overrides uses the base config's colors. Fallbacks
--- keep the strip readable if a palette lacks tab_bar.
+-- window without overrides uses the base config's colors.
 local function strip_colors(window, base_colors)
   local o = window:get_config_overrides()
-  local c = (o and o.colors) or base_colors or {}
-  local tb = c.tab_bar or {}
-  local active = (tb.active_tab or {}).fg_color or '#eee8d5'
-  local inactive = (tb.inactive_tab or {}).fg_color or '#657b83'
-  return active, inactive
+  local tb = ((o and o.colors) or base_colors).tab_bar
+  return tb.active_tab.fg_color, tb.inactive_tab.fg_color
 end
 
 -- ── Wiring ─────────────────────────────────────────────────────
