@@ -10,7 +10,7 @@ import { type KeyId, matchesKey, type TUI, truncateToWidth } from "@earendil-wor
 import { collectMeta, metaLine, statusLine } from "./child-runs.ts";
 import { liveChildren } from "./child-session.ts";
 import type { ChildRecord } from "./child-types.ts";
-import { enterAltScreenWatch } from "./alt-screen.ts";
+import { enterAltScreenWatch, enterWatchMouse } from "./alt-screen.ts";
 import { CONTEXT_CAP_STATUS_KEY, resolveTriggers } from "./env.ts";
 import { formatCapStatus } from "./format.ts";
 import { renderFooterLines } from "./footer.ts";
@@ -24,9 +24,6 @@ import {
 	watchHintLine,
 	watchPositionLabel,
 } from "./watch-viewport.ts";
-
-const MOUSE_ON = "\u001b[?1000h\u001b[?1006h";
-const MOUSE_OFF = "\u001b[?1006l\u001b[?1000l";
 
 // On globalThis like child-session's state (see lib/shared-state.ts): the cursor must
 // survive the module re-import pi does on every session bind (jiti, moduleCache: false).
@@ -154,6 +151,7 @@ class WatchOverlay {
 	private record: ChildRecord | undefined;
 	private readonly childFooter: (width: number, current: ChildRecord) => string[];
 	private readonly altScreen: { exit(): void } | null;
+	private readonly mouse: { exit(): void } | null;
 	private readonly ticker: NodeJS.Timeout;
 	private readonly scroll = new WatchViewport();
 
@@ -176,8 +174,9 @@ class WatchOverlay {
 		const branch = gitBranch(ctx.cwd);
 		this.childFooter = (width, current) =>
 			renderFooterLines(width, theme as never, childFooterData(ctx, current, branch));
-		process.stdout.write(MOUSE_ON);
-		// Alt screen for the whole picker/view lifetime; null on alt-screen pi.
+		// Wheel reports for scrolling; null on fullscreen pi, which already has them.
+		this.mouse = enterWatchMouse(tui);
+		// Alt screen for the whole picker/view lifetime; null on fullscreen pi.
 		this.altScreen = enterAltScreenWatch(tui);
 		// Picker rows must track running children (turn count, current tool) even
 		// when no view renderer is attached; a coarse tick beats subscribing to
@@ -187,11 +186,11 @@ class WatchOverlay {
 
 	dispose() {
 		clearInterval(this.ticker);
-		// Before MOUSE_OFF so the terminal leaves the alt screen first; both
+		// Before the mouse reset so the terminal leaves the alt screen first; both
 		// run before pi's next render (dispose is synchronous in the close path,
 		// renders are scheduled), so the renderer never draws between them.
 		this.altScreen?.exit();
-		process.stdout.write(MOUSE_OFF);
+		this.mouse?.exit();
 		this.record?.view.setRenderer(() => {});
 	}
 

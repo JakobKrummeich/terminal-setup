@@ -1,8 +1,11 @@
-// The F2 watch's alternate-screen switch (enterAltScreenWatch) and the internal
-// pi-tui render-state API it drives. Used by lib/child-watch.ts.
+// The F2 watch's terminal mode switches — alternate screen (enterAltScreenWatch),
+// with the internal pi-tui render-state API it drives, and SGR mouse wheel
+// reporting (enterWatchMouse). Used by lib/child-watch.ts.
 
 const ALT_SCREEN_ON = "\u001b[?1049h";
 const ALT_SCREEN_OFF = "\u001b[?1049l";
+const MOUSE_ON = "\u001b[?1000h\u001b[?1006h";
+const MOUSE_OFF = "\u001b[?1006l\u001b[?1000l";
 
 /**
  * The slice of TuiMainScreen the watch view needs to move rendering onto the
@@ -37,7 +40,7 @@ interface AltScreenCapableTui {
  * state so it resumes diffing against what is actually on screen.
  *
  * Returns null (no-op) when pi already runs its whole TUI on the alt screen
- * (tuiMode "alt-screen") or the internal API is missing — the plain overlay
+ * (tuiMode "fullscreen", the default since pi 1.0) or the internal API is missing — the plain overlay
  * behavior is kept there.
  */
 export function enterAltScreenWatch(tui: unknown): { exit(): void } | null {
@@ -75,6 +78,32 @@ export function enterAltScreenWatch(tui: unknown): { exit(): void } | null {
 			process.stdout.write(ALT_SCREEN_OFF);
 			t.restoreRenderState?.(saved);
 			t.requestRender();
+		},
+	};
+}
+
+/**
+ * Turn on SGR mouse reporting (button presses + wheel) for the watch view's
+ * wheel scrolling; exit() turns it off again.
+ *
+ * Only on the main-screen TUI (mode "regular"), which never enables the mouse
+ * itself. Fullscreen pi owns mouse tracking (button-motion/any-motion, focus,
+ * SGR) and already hands wheel reports raw to a focused overlay — writing our
+ * pair there first downgrades its tracking while the watch is open, and the
+ * reset on exit (?1000l clears every tracking mode) leaves pi with no mouse at
+ * all: wheel scroll, clicks and selection dead until pi restarts. Returns
+ * null (no-op) for every mode but "regular", so an unknown future mode is
+ * never clobbered.
+ */
+export function enterWatchMouse(tui: unknown): { exit(): void } | null {
+	if ((tui as AltScreenCapableTui).mode !== "regular") return null;
+	process.stdout.write(MOUSE_ON);
+	let exited = false;
+	return {
+		exit() {
+			if (exited) return;
+			exited = true;
+			process.stdout.write(MOUSE_OFF);
 		},
 	};
 }

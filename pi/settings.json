@@ -4,6 +4,7 @@
 	"defaultProvider": "anthropic",
 	"defaultModel": "claude-fable-5",
 	"defaultThinkingLevel": "xhigh",
+	"tuiMode": "regular",
 	"markdown": {
 		"codeBlockIndent": ""
 	}
