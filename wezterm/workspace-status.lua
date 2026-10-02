@@ -177,6 +177,19 @@ local function relabel(window, pane)
   )
 end
 
+-- ── Strip colors: follow the window's tab_bar palette ──────────
+-- The light/dark toggle swaps `colors` via per-window overrides; a
+-- window without overrides uses the base config's colors. Fallbacks
+-- keep the strip readable if a palette lacks tab_bar.
+local function strip_colors(window, base_colors)
+  local o = window:get_config_overrides()
+  local c = (o and o.colors) or base_colors or {}
+  local tb = c.tab_bar or {}
+  local active = (tb.active_tab or {}).fg_color or '#eee8d5'
+  local inactive = (tb.inactive_tab or {}).fg_color or '#657b83'
+  return active, inactive
+end
+
 -- ── Wiring ─────────────────────────────────────────────────────
 function M.apply(config)
   -- Tab bar doubles as status bar: left = windows of current workspace,
@@ -189,6 +202,7 @@ function M.apply(config)
   -- Status/poll tick: 500ms for snappier icon flips (default 1s).
   -- Also drives apply_padding re-checks in wezterm.lua (no-op guarded).
   config.status_update_interval = 500
+  local base_colors = config.colors
 
   config.keys = config.keys or {}
   table.insert(config.keys, { key = 'w', mods = 'ALT',
@@ -215,21 +229,22 @@ function M.apply(config)
     -- fall through to default title on any error
   end)
 
-  -- Right: overview strip of ALL workspaces (current one bold + accent).
+  -- Right: overview strip of ALL workspaces (current one bold, styled
+  -- like the active tab; others like inactive tabs).
   wezterm.on('update-status', function(window, pane)
     local ok, err = pcall(function()
       local current = window:active_workspace()
+      local active_fg, inactive_fg = strip_colors(window, base_colors)
       local fmt = {}
       for _, name in ipairs(mux.get_workspace_names()) do
         local icon = workspace_is_idle(name) and ICON_IDLE or ICON_BUSY
         if name == current then
-          -- Active workspace: bold + accent color.
           table.insert(fmt, { Attribute = { Intensity = 'Bold' } })
-          table.insert(fmt, { Foreground = { Color = '#b58900' } })
+          table.insert(fmt, { Foreground = { Color = active_fg } })
           table.insert(fmt, { Text = string.format(' %s %s ', icon, name) })
           table.insert(fmt, 'ResetAttributes')
         else
-          table.insert(fmt, { Foreground = { Color = '#586e75' } })
+          table.insert(fmt, { Foreground = { Color = inactive_fg } })
           table.insert(fmt, { Text = string.format(' %s %s ', icon, name) })
         end
         table.insert(fmt, { Text = ' ' })

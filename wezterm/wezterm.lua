@@ -103,6 +103,23 @@ local solarized_ansi = { '#073642', '#dc322f', '#859900', '#b58900',
 local solarized_brights = { '#002b36', '#cb4b16', '#586e75', '#657b83',
                             '#839496', '#6c71c4', '#93a1a1', '#fdf6e3' }
 
+-- Tab bar flush with the terminal background: no band, the bar reads as
+-- part of the field. Active = bold emphasis color; inactive = base00
+-- (legible on both base03 and base3, unlike base01/base1); hover = the
+-- selection-shade band. workspace-status.lua reuses the active/inactive
+-- fg colors for its right-hand workspace strip.
+local function tab_bar(bg, hover_bg, active_fg)
+  local inactive_fg = '#657b83'
+  return {
+    background = bg,
+    active_tab = { bg_color = bg, fg_color = active_fg, intensity = 'Bold' },
+    inactive_tab = { bg_color = bg, fg_color = inactive_fg },
+    inactive_tab_hover = { bg_color = hover_bg, fg_color = active_fg },
+    new_tab = { bg_color = bg, fg_color = inactive_fg },
+    new_tab_hover = { bg_color = hover_bg, fg_color = active_fg },
+  }
+end
+
 -- Dark: contrast-bumped (fg base1, bold base2).
 local dark_colors = {
   background = '#002b36',
@@ -113,6 +130,7 @@ local dark_colors = {
   selection_fg = '#93a1a1',
   ansi = solarized_ansi,
   brights = solarized_brights,
+  tab_bar = tab_bar('#002b36', '#073642', '#eee8d5'),
 }
 
 -- Light: for bright ambient light. Positive polarity (dark-on-light)
@@ -134,6 +152,7 @@ local light_colors = {
   selection_fg = '#073642',
   ansi = { '#fdf6e3', '#dc322f', '#859900', '#b58900', '#268bd2', '#d33682', '#2aa198', '#073642' },
   brights = solarized_brights_light,
+  tab_bar = tab_bar('#fdf6e3', '#eee8d5', '#073642'),
 }
 
 config.colors = dark_colors
@@ -141,14 +160,16 @@ config.bold_brightens_ansi_colors = true
 
 -- ── Light-mode toggle: Alt+Shift+L (per window) ────────────────
 -- New windows start dark; toggle when ambient light demands it.
+-- Mode is read from THIS window's overrides, not a global flag: a global
+-- went stale across windows and made the next toggle elsewhere a no-op.
 config.keys = {
   {
     key = 'L',
     mods = 'ALT',
     action = wezterm.action_callback(function(window, pane)
-      local light = not (wezterm.GLOBAL.light_mode or false)
-      wezterm.GLOBAL.light_mode = light
       local overrides = window:get_config_overrides() or {}
+      local cur = overrides.colors
+      local light = not (cur and cur.background == light_colors.background)
       overrides.colors = light and light_colors or dark_colors
       -- Brights are mostly lighter than base colors: on a light bg,
       -- bold-brightening lowers contrast instead of raising it.
