@@ -143,3 +143,26 @@ test("/handoff harvests only after its own prompt entered a run, then seeds the 
 	await run;
 	assert.deepEqual(seeded, [{ customType: HANDOFF_SUMMARY_TYPE, content: `${HANDOFF_PREAMBLE}\n\n${doc}`, display: true }]);
 });
+
+test("/handoff shutdown before its prompt ran: handler returns without harvesting or seeding", async () => {
+	type Handler = (event: unknown) => void;
+	const handlers = new Map<string, Handler>();
+	let command: ((args: string, ctx: unknown) => Promise<void>) | undefined;
+	defaultExport(handoffModule)({
+		on: (name: string, handler: Handler) => handlers.set(name, handler),
+		registerCommand: (_name: string, spec: { handler: typeof command }) => (command = spec.handler),
+		sendUserMessage: () => {},
+	});
+	// The branch still ends in the pre-handoff reply: harvesting it would seed the
+	// successor with the wrong document (the very thing `delivered` guards against).
+	const calls: string[] = [];
+	const run = command!("", {
+		isIdle: () => false,
+		ui: { notify: () => calls.push("notify") },
+		sessionManager: { getBranch: () => (calls.push("getBranch"), [assistant("pre-handoff reply")]) },
+		newSession: async () => calls.push("newSession"),
+	});
+	handlers.get("session_shutdown")!({});
+	await run; // must settle: shutdown never leaves the command hanging
+	assert.deepEqual(calls, [], "a shut-down session is neither harvested nor replaced");
+});

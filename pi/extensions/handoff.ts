@@ -68,9 +68,11 @@ export default function handoffExtension(pi: ExtensionAPI) {
 	 * agent_end must not resolve the wait — harvesting then would seed the last
 	 * pre-handoff reply as the summary. Only an agent_end after the prompt was
 	 * observed entering a run (message_start) counts — same evidence pattern as
-	 * timer.ts's wake-up release.
+	 * timer.ts's wake-up release. resolve(false) = session shut down: skip the
+	 * harvest — the branch may still end in the pre-handoff reply, and the old
+	 * ctx is being torn down, so a newSession() from it would race the teardown.
 	 */
-	let pending: { resolve: () => void; delivered: boolean } | undefined;
+	let pending: { resolve: (harvest: boolean) => void; delivered: boolean } | undefined;
 
 	pi.on("message_start", (event) => {
 		if (!pending || pending.delivered) return;
@@ -83,12 +85,12 @@ export default function handoffExtension(pi: ExtensionAPI) {
 
 	pi.on("agent_end", () => {
 		if (!pending?.delivered) return;
-		pending.resolve();
+		pending.resolve(true);
 		pending = undefined;
 	});
 
 	pi.on("session_shutdown", () => {
-		pending?.resolve(); // never leave the command handler hanging
+		pending?.resolve(false); // never leave the command handler hanging
 		pending = undefined;
 	});
 
@@ -99,7 +101,7 @@ export default function handoffExtension(pi: ExtensionAPI) {
 				ctx.ui.notify("/handoff already in progress", "warning");
 				return;
 			}
-			const agentDone = new Promise<void>((resolve) => {
+			const agentDone = new Promise<boolean>((resolve) => {
 				pending = { resolve, delivered: false };
 			});
 
@@ -111,7 +113,7 @@ export default function handoffExtension(pi: ExtensionAPI) {
 			}
 
 			// Wait for the handoff run (not merely the current run) to complete
-			await agentDone;
+			if (!(await agentDone)) return;
 
 			const summary = extractHandoffSummary(ctx.sessionManager.getBranch());
 			if (!summary.ok) {
