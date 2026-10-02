@@ -18,10 +18,12 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { enterAltScreenWatch } from "../lib/alt-screen.ts";
+import { enterAltScreenWatch, enterWatchMouse } from "../lib/alt-screen.ts";
 
 const ALT_ON = "\u001b[?1049h";
 const ALT_OFF = "\u001b[?1049l";
+const MOUSE_ON = "\u001b[?1000h\u001b[?1006h";
+const MOUSE_OFF = "\u001b[?1006l\u001b[?1000l";
 
 interface FakeState {
 	previousLines: string[];
@@ -130,4 +132,35 @@ test("exit: leaves alt screen, restores the captured state, requests a render â€
 	assert.deepEqual(writesAgain, []);
 	assert.equal(fake.restored.length, 1);
 	assert.equal(fake.renders(), 1);
+});
+
+test("watch mouse: SGR wheel on/off on the main-screen TUI, off exactly once", () => {
+	let handle: { exit(): void } | null = null;
+	const onWrites = captureStdout(() => {
+		handle = enterWatchMouse(makeTui().tui);
+	});
+	assert.ok(handle, "main-screen TUI gets the watch's own wheel reporting");
+	assert.deepEqual(onWrites, [MOUSE_ON]);
+	const h = handle as { exit(): void };
+	assert.deepEqual(
+		captureStdout(() => h.exit()),
+		[MOUSE_OFF],
+	);
+	assert.deepEqual(
+		captureStdout(() => h.exit()),
+		[],
+	);
+});
+
+test("watch mouse: never touches fullscreen pi's own mouse tracking (or an unknown mode)", () => {
+	// Regression (pi 1.0 made fullscreen the default): ?1000l on F2 close
+	// cleared every tracking mode pi had set \u2014 wheel, clicks and selection
+	// stayed dead until restart. Fullscreen pi already forwards wheel reports
+	// to the focused overlay, so the watch must write nothing there.
+	for (const mode of ["fullscreen", null, "some-future-mode"]) {
+		const writes = captureStdout(() => {
+			assert.equal(enterWatchMouse(makeTui(mode).tui), null, `mode ${mode}`);
+		});
+		assert.deepEqual(writes, [], `mode ${mode} must see no mouse escapes`);
+	}
 });

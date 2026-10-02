@@ -20,7 +20,9 @@ pi/extensions/test/  extension tests: real AgentSession + scripted fake LLM
 pi/skills/        agent skills (each dir symlinked into ~/.pi/agent/skills/;
                   per-skill links so non-repo skills can coexist there)
 pi/settings.json  reference copy (copied on fresh install, never symlinked --
-                  pi rewrites it at runtime)
+                  pi rewrites it at runtime). Pins `"tuiMode": "regular"`:
+                  pi >= 1.0 defaults to fullscreen, which takes the transcript
+                  out of wezterm/tmux scrollback and owns the mouse
 pi/themes/        Solarized dark+light pi themes matching wezterm palette
                   (symlinked as ~/.pi/agent/themes; hot-reloaded on edit).
                   Switch via /settings -> Theme (auto-detect broken under
@@ -226,7 +228,7 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | `lib/child-context.ts` | `inChildSession()` / `childSessionInfo()`: the AsyncLocalStorage scope a child's extensions load and bind in — split out so child-guarded extensions (`wsstate.ts`, `timer.ts`, …) don't import all of `lib/child-session.ts` |
 | `lib/child-watch.ts` | the F2 watch overlay: child picker, per-child view with its own footer, watch cursor (`watchTarget`/`nextChild`/`prevChild`) |
 | `lib/watch-viewport.ts` | the F2 view's pure chrome: `WatchViewport` scroll state, header/hint/position text, handoff-jump math, SGR wheel decoding, `WATCH_KEY`/`EXPAND_KEY` |
-| `lib/alt-screen.ts` | `enterAltScreenWatch`: moves the F2 overlay onto the terminal's alternate screen via pi-tui's internal render-state API (re-verify after `pi update`) |
+| `lib/alt-screen.ts` | F2 watch terminal modes, both main-screen (`tuiMode: "regular"`) only: `enterAltScreenWatch` moves the overlay onto the terminal's alternate screen via pi-tui's internal render-state API (re-verify after `pi update`); `enterWatchMouse` turns on SGR wheel reporting — never under fullscreen pi, whose own mouse tracking the reset would wipe |
 | `lib/child-view.ts` | `ChildView`: one child's transcript as the F2 watch view renders it (live events and replay of a reopened child), with a `⇄ handoff i/N` divider before each context-cap swap marker |
 | `lib/context-cap-decide.ts` | `context-cap.ts`'s state machine, pure half: the per-cycle `CycleState` (lifecycle documented on the type) and the `decideMessageEnd` / `decideTurnGate` / `decideTurnEnd` functions the handlers call before running the chosen action's side effects; each branch is one row in `test/context-cap-decisions.test.ts`, the effect order is pinned by `test/context-cap-effects.test.ts` |
 | `lib/context-cap-session.ts` | `CapSession`: one `context-cap.ts` instance's state (cycle, cap resolver, last LLM-visible context) plus the helpers every effect path shares (status footer, cycle arming, cap stamping, handoff file write); passed explicitly to the `context-cap-*` modules below — no module state |
@@ -293,7 +295,9 @@ nesting at one layer (structural, not a counter — nothing to configure).
   while it is up, and `Esc` restores the exact pre-F2 screen — no watch-view rows can end up
   mingled into the parent transcript's history. (Coupled to pi-tui's internal
   capture/restoreRenderState API; if a pi update removes it, F2 degrades to the old
-  main-screen overlay.)
+  main-screen overlay.) Under `tuiMode: "fullscreen"` pi is already on the alternate
+  screen and owns mouse tracking, so the watch switches neither — the overlay renders in
+  place and pi forwards wheel reports to it.
 - Child sessions are persisted (named `agent#<id>`), so a finished run can be reopened from
   the session picker and audited.
 - A child that needs a decision just asks; the main agent answers by calling `Agent` again

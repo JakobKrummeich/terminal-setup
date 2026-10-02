@@ -124,7 +124,9 @@ function openOverlay(initial: ChildRecord | undefined, rows = ROWS): Overlay {
 		dispose(): void;
 	};
 	let component: Component | undefined;
-	const tui = { terminal: { rows, columns: WIDTH }, requestRender() {} };
+	// mode "regular" like pi-tui's TuiMainScreen: the watch only enables its own
+	// wheel reporting there (no render-state API here, so no alt-screen switch).
+	const tui = { mode: "regular", terminal: { rows, columns: WIDTH }, requestRender() {} };
 	const ctx = {
 		cwd: CWD,
 		modelRegistry: { isUsingOAuth: () => false },
