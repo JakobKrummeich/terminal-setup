@@ -3,8 +3,6 @@
 // child's own footer, rendered on the terminal's alternate screen. Reads the child
 // registry (liveChildren) owned by lib/child-session.ts; child-session never calls
 // back into this file.
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type KeyId, matchesKey, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import { collectMeta, metaLine, statusLine } from "./child-runs.ts";
@@ -14,6 +12,7 @@ import { enterAltScreenWatch, enterWatchMouse } from "./alt-screen.ts";
 import { CONTEXT_CAP_STATUS_KEY, resolveTriggers } from "./env.ts";
 import { formatCapStatus } from "./format.ts";
 import { renderFooterLines } from "./footer.ts";
+import { gitBranch } from "./git-branch.ts";
 import { sharedState } from "./shared-state.ts";
 import {
 	EXPAND_KEY,
@@ -55,23 +54,6 @@ function dispatchKey(data: string, table: KeyTable): boolean {
 	const hit = table.find(([key]) => matchesKey(data, key));
 	hit?.[1]();
 	return hit !== undefined;
-}
-
-function gitBranch(cwd: string): string | null {
-	try {
-		let gitDir = join(cwd, ".git");
-		try {
-			const pointer = readFileSync(gitDir, "utf8").match(/^gitdir: (.+)$/m);
-			if (pointer?.[1]) gitDir = pointer[1].trim();
-		} catch {
-			// .git is a directory (or missing), not a worktree pointer file: keep gitDir; the HEAD read decides.
-		}
-		const head = readFileSync(join(gitDir, "HEAD"), "utf8").trim();
-		const match = /^ref: refs\/heads\/(.+)$/.exec(head);
-		return match?.[1] ?? head.slice(0, 7);
-	} catch {
-		return null;
-	}
 }
 
 function childFooterData(ctx: ExtensionContext, record: ChildRecord, branch: string | null) {
@@ -169,7 +151,7 @@ class WatchOverlay {
 		this.record = initial;
 		this.record?.view.setRenderer(() => tui.requestRender());
 		// Resolved once per view open: childFooterData runs in render() on every frame,
-		// and gitBranch does up to 2 sync file reads. Branch changes mid-view are rare
+		// and gitBranch does sync fs calls per ancestor dir. Branch changes mid-view are rare
 		// and the view is reopened often, so a per-open snapshot is fine.
 		const branch = gitBranch(ctx.cwd);
 		this.childFooter = (width, current) =>
