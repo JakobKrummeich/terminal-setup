@@ -228,7 +228,7 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | `lib/child-busy.ts` | the busy-group semaphore (one Agent at a time, N explorers), incl. the wind-down of a still-settling child |
 | `lib/child-context.ts` | `inChildSession()` / `childSessionInfo()`: the AsyncLocalStorage scope a child's extensions load and bind in — split out so child-guarded extensions (`wsstate.ts`, `timer.ts`, …) don't import all of `lib/child-session.ts` |
 | `lib/child-watch.ts` | the F2 watch overlay: child picker, per-child view with its own footer, watch cursor (`watchTarget`/`nextChild`/`prevChild`) |
-| `lib/git-branch.ts` | `gitBranch`: the F2 child footer's branch, found like pi's own footer (nearest `.git` above cwd; relative `gitdir:` pointers resolved against the `.git` file's dir) |
+| `lib/git-branch.ts` | `gitBranch`: the F2 child footer's branch, found like pi's own footer (nearest `.git` at or above cwd; relative `gitdir:` pointers resolved against the `.git` file's dir) |
 | `lib/watch-viewport.ts` | the F2 view's pure chrome: `WatchViewport` scroll state, header/hint/position text, handoff-jump math, SGR wheel decoding, `WATCH_KEY`/`EXPAND_KEY` |
 | `lib/alt-screen.ts` | F2 watch terminal modes, both main-screen (`tuiMode: "regular"`) only: `enterAltScreenWatch` moves the overlay onto the terminal's alternate screen via pi-tui's internal render-state API (re-verify after `pi update`); `enterWatchMouse` turns on SGR wheel reporting — never under fullscreen pi, whose own mouse tracking the reset would wipe |
 | `lib/child-view.ts` | `ChildView`: one child's transcript as the F2 watch view renders it (live events and replay of a reopened child), with a `⇄ handoff i/N` divider before each context-cap swap marker |
