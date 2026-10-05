@@ -21,6 +21,7 @@ import {
 	MAX_RETRIES,
 	type MessageEndAction,
 	type MessageEndInput,
+	messageEndTokens,
 	type StagedSwap,
 	type TurnEndAction,
 	type TurnEndInput,
@@ -95,6 +96,16 @@ for (const [name, state, input, expected] of messageEndRows) {
 		assert.deepEqual(decideMessageEnd(state, input), expected);
 	});
 }
+
+test("messageEndTokens: fresh usage wins, failed stops and missing usage fall back", () => {
+	assert.equal(messageEndTokens("toolUse", 120, 80), 120);
+	assert.equal(messageEndTokens("stop", 0, 80), 0, "a real 0 reading is still a reading");
+	assert.equal(messageEndTokens("stop", undefined, 80), 80);
+	assert.equal(messageEndTokens("stop", Number.NaN, 80), 80);
+	assert.equal(messageEndTokens("aborted", 0, 80), 80, "ESC-abort's zeroed usage must not reach the footer");
+	assert.equal(messageEndTokens("error", 99, 80), 80);
+	assert.equal(messageEndTokens("aborted", 0, undefined), undefined);
+});
 
 test("hardFallbackSwap: fresh file / older stale file / no file", () => {
 	assert.deepEqual(hardFallbackSwap(PATH, PATH), { stale: false, trigger: "hard" });

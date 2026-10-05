@@ -229,7 +229,8 @@ const EXPECTED: Record<string, string[]> = {
 		"boundary continue=true marker=hard/agent/stale=true",
 	],
 	skipsAndAbort: [
-		"status 99/5",
+		"status 10/5",
+		"status 10/5",
 		"status 10/5",
 		"status 10/5 ⚠ handoff",
 		"send steer [context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at 10 tokens (soft cap 5, hard cap 50).",
@@ -323,7 +324,8 @@ test("effects: refused tool outside a cycle → silent stop → soft swap → ha
 test("effects: skips, shrink reset, abort while drafting", async () => {
 	const log = await scenario(async (d) => {
 		d.usage.tokens = 10;
-		await d.messageEnd("error", 99); // errored: status only
+		await d.messageEnd("error", 99); // errored: status only, from getContextUsage (10), not the message's usage
+		await d.messageEnd("aborted", 0); // ESC-aborted: zeroed usage must not flash the footer to 0
 		await d.messageEnd("toolUse", undefined); // falls back to getContextUsage (10) → soft steer
 		d.usage.tokens = null;
 		await d.messageEnd("toolUse", undefined); // unknown usage: status only
