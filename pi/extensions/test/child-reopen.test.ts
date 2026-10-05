@@ -243,6 +243,45 @@ test("after a restart (resetChildState) the child is found via agent-runs.jsonl 
 	}
 });
 
+// The live-registry twin of the restart test's kind check (resumableLiveChild).
+// WHY it matters: an agent child holds write tools, so Explore resuming it by id
+// would hand an Explore call — promised read-only — a writable session; and an
+// Agent call resuming an explorer would bypass the explorer's busy group.
+test("live child of the other kind is rejected without being claimed or prompted", async () => {
+	const calls: string[] = [];
+	const ctx = await makeCtx("root-live-kind", calls);
+	try {
+		const agentId = idOf(await run(ctx, "agent task", {}, AGENT_OPTIONS));
+		const explorerId = idOf(await run(ctx, "explorer task"));
+		const cases = [
+			{ id: agentId, options: OPTIONS, wanted: "explorer", actual: "agent" },
+			{ id: explorerId, options: AGENT_OPTIONS, wanted: "agent", actual: "explorer" },
+		];
+		for (const { id, options, wanted, actual } of cases) {
+			const record = liveChildren.get(id)!;
+			assert.ok(record, `${actual} ${id} must still be live (no reopen path)`);
+			const callsBefore = calls.length;
+			const turnsBefore = record.turns;
+			const wrongKind = await run(ctx, "WRONG-KIND follow-up", { resume_id: id }, options);
+			assert.equal(errorOf(wrongKind), "unknown_resume_id");
+			assert.ok(
+				resultText(wrongKind).includes(`No ${wanted} session with id "${id}" (that id is a ${actual})`),
+				resultText(wrongKind),
+			);
+			assert.equal(calls.length, callsBefore, "the other kind's session must not be prompted");
+			assert.equal(record.running, false, "a rejected resume must not claim the record");
+			assert.equal(record.turns, turnsBefore);
+			assert.equal(liveChildren.get(id), record, "record stays registered as-is");
+		}
+		// Its own kind still resumes it.
+		const own = await run(ctx, "own-kind follow-up", { resume_id: agentId }, AGENT_OPTIONS);
+		assert.equal(errorOf(own), undefined, resultText(own));
+		assert.match(resultText(own), /answer: own-kind follow-up/);
+	} finally {
+		restart();
+	}
+});
+
 test("missing session file → unknown_resume_id naming the missing file", async () => {
 	const ctx = await makeCtx("root-missing");
 	try {
