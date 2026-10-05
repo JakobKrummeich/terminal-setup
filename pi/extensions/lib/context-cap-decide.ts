@@ -153,7 +153,7 @@ export function messageEndTokens(
 export interface MessageEndInput {
 	/** The assistant message's stopReason ("toolUse" ⇒ another turn is guaranteed). */
 	stopReason: string | undefined;
-	/** Provider usage of this message, else ctx.getContextUsage(); null/undefined = unknown. */
+	/** This message's context reading (messageEndTokens); null/undefined = unknown. */
 	tokens: number | null | undefined;
 	caps: CapsView;
 }
