@@ -147,6 +147,7 @@ import {
 	decideMessageEnd,
 	decideTurnEnd,
 	decideTurnGate,
+	messageEndTokens,
 	type MessageEndAction,
 	type TurnEndAction,
 } from "./lib/context-cap-decide.ts";
@@ -236,11 +237,9 @@ async function onMessageEnd(s: CapSession, event: MessageEndEvent, ctx: Extensio
 	// Re-read per check: the model (and with it the window) can change mid-session
 	// and pi has no model-switch event.
 	const usage = ctx.getContextUsage();
-	// Pi persists the assistant after message_end listeners, so context usage
-	// can still describe the pre-response marker. Prefer this event's provider
-	// usage; getContextUsage() is the fallback when the message carries none.
-	const messageTokens = msg.usage?.totalTokens;
-	const tokens = typeof messageTokens === "number" && Number.isFinite(messageTokens) ? messageTokens : usage?.tokens;
+	// This message's provider usage, else getContextUsage(); never the zeroed
+	// usage of an aborted/errored message (see messageEndTokens).
+	const tokens = messageEndTokens(msg.stopReason, msg.usage?.totalTokens, usage?.tokens);
 	const capsNow = capsFrom(s, ctx, usage);
 	// Before the decision, so even a skipped (errored) message refreshes the footer.
 	updateStatus(s, ctx, tokens, capsNow);

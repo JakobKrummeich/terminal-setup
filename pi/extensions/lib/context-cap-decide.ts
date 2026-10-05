@@ -128,6 +128,24 @@ function isFailedStop(reason: string | undefined): boolean {
 	return reason === "error" || reason === "aborted";
 }
 
+/**
+ * The context reading for an assistant message_end: this message's provider
+ * usage, else `fallback` (ctx.getContextUsage()). Pi persists the assistant
+ * after message_end listeners, so the fallback can still describe the previous
+ * reading — fresh usage wins when it exists. Failed stops never carry fresh
+ * usage: an ESC-aborted (or errored) message is synthesized with zeroed usage,
+ * and trusting it flashed the footer to 0 until the next request. Pi's own
+ * getContextUsage() skips those messages too, so use the fallback for them.
+ */
+export function messageEndTokens(
+	stopReason: string | undefined,
+	messageTokens: unknown,
+	fallback: number | null | undefined,
+): number | null | undefined {
+	if (isFailedStop(stopReason)) return fallback;
+	return typeof messageTokens === "number" && Number.isFinite(messageTokens) ? messageTokens : fallback;
+}
+
 // ---------------------------------------------------------------------------
 // message_end
 // ---------------------------------------------------------------------------
