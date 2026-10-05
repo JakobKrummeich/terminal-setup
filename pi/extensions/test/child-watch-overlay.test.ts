@@ -6,7 +6,9 @@
  *   - hint: `shift+↑↓ handoff` only with handoffs, `paused` first, truncated;
  *   - Shift+↓/↑ handoff jumps, including anchors on the final screen (→ tail,
  *     never stuck) and the tail's `context k` = the last visible line's;
- *   - picker rows carry `⇄N` right after `kind#id` and fit the width.
+ *   - picker rows carry `⇄N` right after `kind#id` and fit the width;
+ *   - picker ↔ view switching: enter/1-9/F2 in the picker, ←/→/F2 in the view,
+ *     esc back to the child's row — or closing when there is nothing to go back to.
  *
  * Every test disposes the overlay (its 1s ticker would otherwise keep the
  * process alive) and clears liveChildren. process.stdout.write is captured
@@ -28,10 +30,16 @@ import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { ChildView } from "../lib/child-view.ts";
 import { liveChildren } from "../lib/child-session.ts";
 import type { ChildRecord } from "../lib/child-types.ts";
-import { openChildPicker, openChildView, pickerRow } from "../lib/child-watch.ts";
+import { openChildPicker, openChildView, pickerRow, resetWatchCursor } from "../lib/child-watch.ts";
 
 initTheme(undefined, false);
 
+const ESC = "\x1b";
+const ENTER = "\r";
+const DOWN = "\x1b[B";
+const LEFT = "\x1b[D";
+const RIGHT = "\x1b[C";
+const F2 = "\x1bOQ";
 const SHIFT_UP = "\x1b[1;2A";
 const SHIFT_DOWN = "\x1b[1;2B";
 const HOME = "\x1b[H";
@@ -107,6 +115,8 @@ interface Overlay {
 	render(width?: number): string[];
 	/** handleInput + render (the real TUI renders between inputs). */
 	press(data: string, width?: number): string[];
+	/** How often the overlay called ui.custom's done() (i.e. asked to close). */
+	closed(): number;
 	dispose(): void;
 }
 
@@ -124,6 +134,7 @@ function openOverlay(initial: ChildRecord | undefined, rows = ROWS): Overlay {
 		dispose(): void;
 	};
 	let component: Component | undefined;
+	let closed = 0;
 	// mode "regular" like pi-tui's TuiMainScreen: the watch only enables its own
 	// wheel reporting there (no render-state API here, so no alt-screen switch).
 	const tui = { mode: "regular", terminal: { rows, columns: WIDTH }, requestRender() {} };
@@ -132,7 +143,7 @@ function openOverlay(initial: ChildRecord | undefined, rows = ROWS): Overlay {
 		modelRegistry: { isUsingOAuth: () => false },
 		ui: {
 			custom(factory: (...args: unknown[]) => Component) {
-				component = factory(tui, theme, {}, () => {});
+				component = factory(tui, theme, {}, () => closed++);
 				return new Promise(() => {}); // settles on done(); never needed here
 			},
 		},
@@ -147,6 +158,7 @@ function openOverlay(initial: ChildRecord | undefined, rows = ROWS): Overlay {
 			c.handleInput(data);
 			return plain(c.render(width));
 		},
+		closed: () => closed,
 		dispose: () => c.dispose(),
 	};
 }
@@ -333,4 +345,57 @@ test("picker rows: ⇄N right after kind#id, rows truncated to the width", () =>
 		for (const line of narrow.slice(2, 5)) assert.ok(visibleWidth(line) <= 40, `row fits 40 cols: ${line}`);
 		assert.ok(narrow[2]!.startsWith("> ■ agent#h2 ⇄2 · "), "⇄N survives truncation");
 	});
+});
+
+/** The picker row marked `> ` (the selection), as `kind#id`; undefined in view mode. */
+const selectedRow = (frame: string[]) => frame.find((line) => line.startsWith("> "))?.match(/agent#\w+/)?.[0];
+
+test("picker ↔ view: enter/1-9 open a child, ←/→/F2 cycle, esc returns to that child's row", () => {
+	resetWatchCursor(); // the picker opens on the last-watched child; start on row 0
+	for (const id of ["a", "b", "c"]) makeRecord(id, [userEntry("TASK")]);
+	withOverlay(undefined, (overlay) => {
+		assert.equal(selectedRow(overlay.render()), "agent#a");
+		assert.equal(selectedRow(overlay.press(DOWN)), "agent#b");
+		assert.equal(selectedRow(overlay.press(F2)), "agent#c", "F2 in the picker walks the rows");
+		assert.equal(selectedRow(overlay.press(DOWN)), "agent#a", "down wraps");
+		assert.equal(overlay.press(DOWN)[0], "Agent sessions (3)");
+
+		assert.equal(overlay.press(ENTER)[0], "■ agent#b · desc b · 3 turns · finished (2/3)");
+		assert.equal(overlay.press(RIGHT)[0], "■ agent#c · desc c · 3 turns · finished (3/3)");
+		assert.equal(overlay.press(F2)[0], "■ agent#a · desc a · 3 turns · finished (1/3)", "F2 in the view wraps");
+		assert.equal(overlay.press(LEFT)[0], "■ agent#c · desc c · 3 turns · finished (3/3)", "← wraps back");
+
+		const frame = overlay.press(ESC);
+		assert.equal(frame[0], "Agent sessions (3)", "esc from a picker-opened view returns to the picker");
+		assert.equal(selectedRow(frame), "agent#c", "on the row of the child last viewed, not the one opened");
+
+		assert.equal(overlay.press("1")[0], "■ agent#a · desc a · 3 turns · finished (1/3)");
+		assert.equal(selectedRow(overlay.press(ESC)), "agent#a");
+		assert.equal(overlay.press("9")[0], "Agent sessions (3)", "a digit past the last row is ignored");
+		assert.equal(overlay.closed(), 0, "no mode switch closed the overlay");
+
+		overlay.press(ESC);
+		assert.equal(overlay.closed(), 1, "esc in the picker closes");
+	});
+	resetWatchCursor();
+});
+
+test("esc closes instead of returning to the picker: view-opened, or ≤1 child left", () => {
+	const a = makeRecord("a", [userEntry("TASK")]);
+	makeRecord("b", [userEntry("TASK")]);
+	withOverlay(a, (overlay) => {
+		overlay.press(ESC);
+		assert.equal(overlay.closed(), 1, "a view opened directly (F2 on a child) has no picker to go back to");
+	});
+
+	resetWatchCursor();
+	makeRecord("a", [userEntry("TASK")]);
+	makeRecord("b", [userEntry("TASK")]);
+	withOverlay(undefined, (overlay) => {
+		assert.equal(overlay.press(ENTER)[0], "■ agent#a · desc a · 3 turns · finished (1/2)");
+		liveChildren.delete("b"); // evicted while viewing a
+		overlay.press(ESC);
+		assert.equal(overlay.closed(), 1, "a one-row picker is pointless: esc closes");
+	});
+	resetWatchCursor();
 });
