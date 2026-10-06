@@ -307,8 +307,10 @@ nesting at one layer (structural, not a counter — nothing to configure).
   Only the 8 most recent finished children stay in memory; an older one (or any child of
   the same main session after `pi -c`, found via `agent-runs.jsonl`) is reopened from its
   session file on resume, and F2 replays its saved history. Only a missing session file
-  (child aborted before pi first wrote it), a child of another main session, or an id of
-  the other kind (`Explore` resuming an `Agent` child or vice versa, live or reopened) fails.
+  (child aborted before pi first wrote it), a session file that no longer holds that
+  child's session (overwritten by another session, or not a pi session at all), a child of
+  another main session, or an id of the other kind (`Explore` resuming an `Agent` child or
+  vice versa, live or reopened) fails.
 - One child at a time: a second `Agent` call while one runs is rejected with an error result
   (`childBusy`, set synchronously before the first `await`, so two calls in one assistant
   message can't both pass). The latch is released only once the child is actually quiet
