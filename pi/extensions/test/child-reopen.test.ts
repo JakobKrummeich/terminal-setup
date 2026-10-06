@@ -9,7 +9,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -298,6 +298,60 @@ test("missing session file → unknown_resume_id naming the missing file", async
 		const unknown = await run(ctx, "follow-up", { resume_id: "nope1234" });
 		assert.equal(errorOf(unknown), "unknown_resume_id");
 		assert.match(resultText(unknown), /No explorer session with id "nope1234"/);
+	} finally {
+		restart();
+	}
+});
+
+// reopenChild's two "could not be reopened" exits. WHY pin them: the sid check is
+// what stops a resume from appending this child's new turns to a file that holds
+// ANOTHER session (a reused/overwritten path), and a ReopenError must become a
+// tool error result, never a thrown tool call. Neither may cost the id its
+// resumability once the file is sound again.
+test("session file holding another session, or not a pi session → unknown_resume_id; id stays resumable", async () => {
+	const calls: string[] = [];
+	const ctx = await makeCtx("root-unreadable", calls);
+	try {
+		const id = idOf(await run(ctx, "ORIGINAL-TASK of A"));
+		const record = liveChildren.get(id)!;
+		const file = record.session.sessionManager.getSessionFile()!;
+		const sid = record.sid;
+		const other = liveChildren.get(idOf(await run(ctx, "task of B")))!;
+		const otherFile = other.session.sessionManager.getSessionFile()!;
+		await evict(ctx, id);
+		const original = readFileSync(file, "utf8");
+		const prefix = `explorer "${id}" cannot be resumed: its session file could not be reopened (${file}: `;
+
+		// 1. The file now holds B's session: the sid guard rejects it.
+		writeFileSync(file, readFileSync(otherFile, "utf8"));
+		let callsBefore = calls.length;
+		const foreign = await run(ctx, "follow-up", { resume_id: id });
+		assert.equal(errorOf(foreign), "unknown_resume_id");
+		assert.ok(
+			resultText(foreign).startsWith(`${prefix}it holds session ${other.sid}, expected ${sid})`),
+			resultText(foreign),
+		);
+		assert.equal(calls.length, callsBefore, "a rejected reopen must not prompt");
+		assert.ok(!liveChildren.has(id), "a rejected reopen must not register a record");
+
+		// 2. Not a pi session at all: ReopenError, reported — and pi leaves the file as is.
+		writeFileSync(file, "not a session\n");
+		callsBefore = calls.length;
+		const garbage = await run(ctx, "follow-up", { resume_id: id });
+		assert.equal(errorOf(garbage), "unknown_resume_id");
+		assert.ok(resultText(garbage).startsWith(prefix), resultText(garbage));
+		assert.match(resultText(garbage), /not a valid .* session/);
+		assert.equal(readFileSync(file, "utf8"), "not a session\n", "unreadable file left untouched");
+		assert.equal(calls.length, callsBefore);
+		assert.ok(!liveChildren.has(id));
+
+		// Reservation released and the id still findable: the restored file reopens.
+		writeFileSync(file, original);
+		callsBefore = calls.length;
+		const resumed = await run(ctx, "RESTORED follow-up", { resume_id: id });
+		assert.equal(errorOf(resumed), undefined, resultText(resumed));
+		assert.ok(calls[callsBefore]!.includes("ORIGINAL-TASK of A"), "history restored from the file");
+		assert.equal(liveChildren.get(id)!.sid, sid);
 	} finally {
 		restart();
 	}
