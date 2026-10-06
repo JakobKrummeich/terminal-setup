@@ -62,6 +62,7 @@ async function bindExtension(): Promise<BoundExtension> {
 		registerTool: (registered: RegisteredTool) => {
 			tool = registered;
 		},
+		registerToolRenderer: () => undefined,
 		sendUserMessage: () => {},
 	};
 	extension(pi);

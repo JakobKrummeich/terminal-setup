@@ -9,7 +9,7 @@ import {
 	runChildTool,
 } from "./lib/child-session.ts";
 import { openChildPicker, openChildView, resetWatchCursor, watchTarget } from "./lib/child-watch.ts";
-import { childCallSummary, renderCompactCall } from "./lib/tool-call-render.ts";
+import { childCallSummary, registerCompactCallRenderer } from "./lib/tool-call-render.ts";
 import { WATCH_KEY } from "./lib/watch-viewport.ts";
 
 const TOOL_DESCRIPTION = `Delegate a task to a fresh agent session that works autonomously and reports back.
@@ -100,9 +100,6 @@ function registerAgentTool(pi: ExtensionAPI): void {
 				ctx,
 			);
 		},
-		renderCall(args, theme, context) {
-			return renderCompactCall(AGENT_TOOL, childCallSummary(args), theme, context);
-		},
 		renderResult(result, _options, theme, context) {
 			return renderChildResult(result, theme, context);
 		},
@@ -152,8 +149,12 @@ function registerWatchShortcut(pi: ExtensionAPI): void {
 }
 
 export default function (pi: ExtensionAPI) {
+	// Display only, so it precedes the kill switch: a resumed session's Agent calls
+	// keep their compact row while the tool itself is switched off.
+	registerCompactCallRenderer(pi, AGENT_TOOL, childCallSummary);
+
 	// Kill-switch for benchmark runs (context-cap impact study, ~/context-cap-study/plan.html):
-	// non-empty PI_SUBAGENT_DISABLE registers nothing — main and child sessions alike.
+	// non-empty PI_SUBAGENT_DISABLE registers nothing else — main and child sessions alike.
 	// Blast radius beyond the Agent tool: this file is also the single registration
 	// point for the child contract injection (before_agent_start), the F2 watch
 	// shortcut and the session_shutdown child-state reset — all of which cover

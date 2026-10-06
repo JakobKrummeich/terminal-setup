@@ -713,11 +713,11 @@ test("config warnings prepend and parent fallback notifies user", async () => {
 		// This test dir is ESM ("type": "module") but ../explore.ts is checked as CJS,
 		// so tsc sees the default export behind an interop wrapper while node's ESM
 		// runtime hands it over directly. Unwrap whichever shape shows up.
-		type ExploreExtensionFn = (pi: { registerTool: (t: unknown) => void }) => void;
+		type ExploreExtensionFn = (pi: { registerTool: (t: unknown) => void; registerToolRenderer: () => void }) => void;
 		const d = (exploreModule as unknown as { default: ExploreExtensionFn | { default: ExploreExtensionFn } })
 			.default;
 		const exploreExtension = typeof d === "function" ? d : d.default;
-		exploreExtension({ registerTool: (t: unknown) => (tool = t) });
+		exploreExtension({ registerTool: (t: unknown) => (tool = t), registerToolRenderer: () => undefined });
 		const errored = await tool.execute(
 			"call-1",
 			{ prompt: "follow-up", resume_id: "no-such-id" },

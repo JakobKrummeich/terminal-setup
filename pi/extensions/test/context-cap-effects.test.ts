@@ -55,6 +55,7 @@ async function bind(): Promise<Driver> {
 		registerTool: (tool: { execute: ExecuteTool }) => {
 			execute = tool.execute;
 		},
+		registerToolRenderer: () => undefined,
 		sendUserMessage: (text: string, opts?: { deliverAs?: string }) =>
 			void log.push(`send ${opts?.deliverAs} ${text.split("\n")[0]}`),
 	};

@@ -271,7 +271,9 @@ export class ChildView {
 			id,
 			args,
 			{ showImages: false },
-			this.session.getToolDefinition(name),
+			// Through the child's renderer resolvers, like pi's own transcript and
+			// HTML export: the compact call rows (lib/tool-call-render.ts) live there.
+			this.session.extensionRunner.resolveToolRenderers(name, () => this.session.getToolDefinition(name)),
 			this.ui,
 			this.cwd,
 		);
