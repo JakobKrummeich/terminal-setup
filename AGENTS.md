@@ -39,11 +39,12 @@ Read `README.md` first — layout, install, known issues live there. Don't dupli
   into a `/tmp` farm, point a scratch tsconfig's `paths` at it with absolute repo
   `include`s, and run the pinned `pi/extensions/test/tools/node_modules/.bin/tsc -p`
   on it. Never install the new version to test it. Extension-visible shapes a new version may move (as of
-  0.87, the supported minimum — README): the system prompt is ordered XML sections
+  1.0.1, the supported minimum — README): the system prompt is ordered XML sections
   (`<tools>`/`<rules>`/`<docs>`/`<cwd>`); the prompt + tool declarations ride as
   `system` messages inside the provider `context.messages` (filtered out of
   extension `context` events); `turn_end` handlers get boundary events and may
-  return entries/continue.
+  return entries/continue; compact tool-call rows are `pi.registerToolRenderer()`
+  resolvers (lib/tool-call-render.ts), not the tools' `renderCall`.
   To also RUN repo code against the uninstalled version, add third-party deps from
   the installed pi into the farm and use
   `node --experimental-strip-types --preserve-symlinks --preserve-symlinks-main`
@@ -62,8 +63,9 @@ Read `README.md` first — layout, install, known issues live there. Don't dupli
   `dist/bundle/cli.js`. `PATH=<bin>:$PATH ./run.sh` / `./check.sh` then build
   their farm from it unmodified. Build it with `npm install -g --prefix <tmp>
   @earendil-works/pi-coding-agent@<version>` from the registry, then move
-  `<tmp>/lib/node_modules` into place — installing the `npm pack` tarball
-  instead ignored pi's `npm-shrinkwrap.json` (got `@types/node` 26, not 22).
+  `<tmp>/lib/node_modules` into place. Since 1.0.1 pi publishes no
+  `npm-shrinkwrap.json`, so transitive deps float (1.0.4 resolved `@types/node`
+  26.6.4; the gate passes with it) — a registry and a tarball install now match.
 - pi extension code: from `pi/extensions/test`, run `timeout 200 ./run.sh` (tests)
   THEN `./check.sh` (quality gate). Both need exit 0; both build the node_modules
   symlink farm (`farm.sh`). Details of each below.

@@ -214,10 +214,9 @@ function readIndexLines(dir: string): string[] {
  *    an intro row (session-start/spawn) carrying a sessionFile.
  *
  * Note: pi writes a session file only once the conversation starts — at the
- * first user message since pi 0.99, at the first assistant message before
- * (0.87). So a just-started session can be invisible here for a moment (on 0.87
- * for the whole first LLM call) — and a child aborted before that point never
- * gets a file at all, so its rows are pruned forever, not just temporarily.
+ * first user message. So a just-started session can be invisible here for a
+ * moment — and a child aborted before that point never gets a file at all, so
+ * its rows are pruned forever, not just temporarily.
  * Accepted in v1.
  * File order is preserved; the file itself is never modified.
  */
@@ -294,8 +293,8 @@ export function findSpawnsByLabel(dir: string, label: string): SpawnLookup[] {
 /**
  * Drop rows whose session transcript is gone (and orphan rows with no intro).
  * "Gone" includes never-created: a child aborted before pi first wrote its
- * session file (first user message on pi >= 0.99, first assistant message on
- * 0.87) has none, so its rows stay pruned permanently.
+ * session file (at its first user message) has none, so its rows stay pruned
+ * permanently.
  */
 function pruneVanished(events: AgentRunEvent[]): AgentRunEvent[] {
 	const fileBySid = new Map<string, string>();

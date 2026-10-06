@@ -77,10 +77,12 @@ Run `install-pi.sh` as your normal user, **never with `sudo`**: everything it in
 per-user (`~/.pi`, `systemd --user`, `~/.bashrc`); under `sudo` it warns that those steps act as
 root.
 
-**Minimum supported pi: 0.87** (`PI_MIN_VERSION` in `lib/install-common.sh`). The
-extensions rely on 0.87 extension APIs (e.g. actionable `turn_end` boundary results,
-transcript system messages) and carry no fallbacks for older pi; `install-pi.sh`
-prints a warning — without blocking — when the installed pi is older.
+**Minimum supported pi: 1.0.1** (`PI_MIN_VERSION` in `lib/install-common.sh`). The
+extensions draw their compact tool-call rows through `pi.registerToolRenderer()`
+(new in 1.0.1 — on older pi, explore/subagent/timer/context-cap fail to load), on top
+of earlier extension APIs (e.g. actionable `turn_end` boundary results, transcript
+system messages), and carry no fallbacks for older pi; `install-pi.sh` prints a
+warning — without blocking — when the installed pi is older.
 
 Then install apps themselves if flagged:
 - wezterm: https://wezterm.org/install/linux.html (apt repo)
@@ -243,7 +245,7 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | `lib/context-cap-files.ts` | handoff files `<sessionId>-<seq>.md`: seq/paths, frontmatter write and strip |
 | `lib/context-cap-resolver.ts` | `createCapResolver`: per-session cap resolution (last known window, warn-once) |
 | `lib/format.ts` | `formatTokenCount()` (`950`, `162k`, `1.0M`; a disabled cap shows `off`) and `formatCapStatus()` (`<tokens>/<soft cap>`): the one token format for the main footer (`context-cap.ts`) and the F2 watch |
-| `lib/tool-call-render.ts` | compact `renderCall` rows (bold title + one short muted summary: description label, timer action, handoff line count) for `Explore`, `Agent`, `timer` and `context_handoff` — without one, pi >= 0.99 prints every argument as `key=value`, i.e. the whole prompt / handoff |
+| `lib/tool-call-render.ts` | compact call rows (bold title + one short muted summary: description label, timer action, handoff line count) for `Explore`, `Agent`, `timer` and `context_handoff` — without one, pi prints every argument as `key=value`, i.e. the whole prompt / handoff. Registered via `pi.registerToolRenderer()` (`registerCompactCallRenderer`), not as the tools' `renderCall`, so calls to an unregistered tool keep the row too (resumed session, `PI_EXPLORE_DISABLE`/`PI_SUBAGENT_DISABLE` — the one registration that precedes those kill switches); only fills in a `renderCall` nothing else provides. The F2 view (`lib/child-view.ts`) resolves through the child session's resolvers the same way |
 | `lib/session-quiet.ts` | `waitForSessionQuiet()`: the definition of "child is done" — agent idle *and* no queued steer/follow-up messages (bounded ~2s grace for a queued run about to start) |
 | `handoff.ts` | `/handoff` command: the agent writes a handoff document as a normal reply (same schema + line budget as context-cap — both quote `lib/handoff-writer.ts`, so the `CONTEXT_CAP_SCHEMA` lever governs both), then a fresh session is seeded with it under the same preamble as a cap swap — but with `triggerTurn: false`: the successor waits for the user instead of continuing on its own |
 | `markdown-no-padding.ts` | strip paddingX=1 from rendered markdown (copy-safety); patches pi-tui internals — re-verify after `pi update` |

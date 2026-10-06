@@ -5,7 +5,7 @@ import { Type } from "typebox";
 import { EXPLORE_TOOL, renderChildResult, runChildTool } from "./lib/child-session.ts";
 import type { ChildModel, ChildThinkingLevel } from "./lib/child-types.ts";
 import { agentDir } from "./lib/agent-dir.ts";
-import { childCallSummary, renderCompactCall } from "./lib/tool-call-render.ts";
+import { childCallSummary, registerCompactCallRenderer } from "./lib/tool-call-render.ts";
 import { CONTEXT_CAP_TOOL_NAME } from "./lib/env.ts";
 
 const TOOL_DESCRIPTION = `Delegate readonly exploration to a fast, cheap agent that reports back.
@@ -220,8 +220,12 @@ const exploreParams = Type.Object({
 });
 
 export default function (pi: ExtensionAPI) {
+	// Display only, so it precedes the kill switch: a resumed session's Explore calls
+	// keep their compact row while the tool itself is switched off.
+	registerCompactCallRenderer(pi, EXPLORE_TOOL, childCallSummary);
+
 	// Kill-switch for benchmark runs (context-cap impact study, ~/context-cap-study/plan.html):
-	// non-empty PI_EXPLORE_DISABLE registers nothing — main and child sessions alike.
+	// non-empty PI_EXPLORE_DISABLE registers nothing else — main and child sessions alike.
 	if (process.env.PI_EXPLORE_DISABLE) return;
 
 	// Registered in child sessions too, deliberately: that is how subagents get it.
@@ -262,9 +266,6 @@ export default function (pi: ExtensionAPI) {
 				result.content[0].text = `${config.warnings.join("\n")}\n\n${result.content[0].text}`;
 			}
 			return result;
-		},
-		renderCall(args, theme, context) {
-			return renderCompactCall(EXPLORE_TOOL, childCallSummary(args), theme, context);
 		},
 		renderResult(result, _options, theme, context) {
 			return renderChildResult(result, theme, context);

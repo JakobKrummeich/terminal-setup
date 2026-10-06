@@ -3,7 +3,9 @@
  * work item 1): a non-empty PI_SUBAGENT_DISABLE / PI_EXPLORE_DISABLE makes the
  * subagent / explore extension register NOTHING — no tool, no shortcut, no event
  * handlers — in main and child sessions alike (the bail precedes the child-session
- * branches, so one code path covers both).
+ * branches, so one code path covers both). The one exception is display-only: the
+ * compact call-row renderer (lib/tool-call-render.ts) precedes the bail, so a
+ * resumed session's old calls still render compactly.
  *
  * The extensions read the env inside their default export (call time, not module
  * load), so these tests import the modules once and toggle process.env per call
@@ -22,6 +24,7 @@ interface StubPi {
 	registerShortcut: (key: unknown, options: unknown) => void;
 	registerCommand: (name: string, options: unknown) => void;
 	on: (event: string, handler: unknown) => void;
+	registerToolRenderer: (resolver: unknown) => void;
 }
 
 interface Recorded {
@@ -30,6 +33,7 @@ interface Recorded {
 	shortcuts: unknown[];
 	commands: string[];
 	events: string[];
+	renderers: unknown[];
 }
 
 function recordingPi(): Recorded {
@@ -37,17 +41,20 @@ function recordingPi(): Recorded {
 	const shortcuts: unknown[] = [];
 	const commands: string[] = [];
 	const events: string[] = [];
+	const renderers: unknown[] = [];
 	return {
 		pi: {
 			registerTool: (tool) => tools.push(tool.name),
 			registerShortcut: (key) => shortcuts.push(key),
 			registerCommand: (name) => commands.push(name),
 			on: (event) => events.push(event),
+			registerToolRenderer: (resolver) => renderers.push(resolver),
 		},
 		tools,
 		shortcuts,
 		commands,
 		events,
+		renderers,
 	};
 }
 
@@ -89,6 +96,7 @@ test("PI_SUBAGENT_DISABLE set → subagent extension registers nothing", () => {
 		assert.deepEqual(recorded.shortcuts, []);
 		assert.deepEqual(recorded.commands, []);
 		assert.deepEqual(recorded.events, []);
+		assert.equal(recorded.renderers.length, 1, "display-only call-row renderer");
 	});
 });
 
@@ -117,6 +125,7 @@ test("PI_EXPLORE_DISABLE set → explore extension registers nothing", () => {
 		assert.deepEqual(recorded.shortcuts, []);
 		assert.deepEqual(recorded.commands, []);
 		assert.deepEqual(recorded.events, []);
+		assert.equal(recorded.renderers.length, 1, "display-only call-row renderer");
 	});
 });
 

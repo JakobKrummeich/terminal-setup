@@ -48,7 +48,7 @@ import { Type } from "typebox";
 import { inChildSession } from "./lib/child-context.ts";
 import { envInt } from "./lib/env.ts";
 import { messageText } from "./lib/message-text.ts";
-import { renderCompactCall } from "./lib/tool-call-render.ts";
+import { registerCompactCallRenderer } from "./lib/tool-call-render.ts";
 
 /** Re-send attempts for a stranded wake-up before giving up. */
 const MAX_WAKE_RESENDS = 3;
@@ -289,6 +289,7 @@ class WakeTimer {
 }
 
 function registerTimerTool(pi: ExtensionAPI, timer: WakeTimer): void {
+	registerCompactCallRenderer(pi, "timer", timerCallSummary);
 	pi.registerTool({
 		name: "timer",
 		label: "Timer",
@@ -307,9 +308,6 @@ function registerTimerTool(pi: ExtensionAPI, timer: WakeTimer): void {
 			const name = params.name?.trim() || "timer";
 			if (!interactive) return blockingWait(name, params.seconds, signal, onUpdate);
 			return timer.arm(name, params.seconds);
-		},
-		renderCall(args, theme, context) {
-			return renderCompactCall("timer", timerCallSummary(args), theme, context);
 		},
 	});
 }
