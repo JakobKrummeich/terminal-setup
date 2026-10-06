@@ -77,10 +77,12 @@ Run `install-pi.sh` as your normal user, **never with `sudo`**: everything it in
 per-user (`~/.pi`, `systemd --user`, `~/.bashrc`); under `sudo` it warns that those steps act as
 root.
 
-**Minimum supported pi: 0.87** (`PI_MIN_VERSION` in `lib/install-common.sh`). The
-extensions rely on 0.87 extension APIs (e.g. actionable `turn_end` boundary results,
-transcript system messages) and carry no fallbacks for older pi; `install-pi.sh`
-prints a warning — without blocking — when the installed pi is older.
+**Minimum supported pi: 1.0.1** (`PI_MIN_VERSION` in `lib/install-common.sh`). The
+extensions draw their compact tool-call rows through `pi.registerToolRenderer()`
+(new in 1.0.1 — on older pi, explore/subagent/timer/context-cap fail to load), on top
+of earlier extension APIs (e.g. actionable `turn_end` boundary results, transcript
+system messages), and carry no fallbacks for older pi; `install-pi.sh` prints a
+warning — without blocking — when the installed pi is older.
 
 Then install apps themselves if flagged:
 - wezterm: https://wezterm.org/install/linux.html (apt repo)

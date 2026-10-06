@@ -66,7 +66,7 @@ EOF
 }
 
 # Oldest pi the extensions support; README "Install pi runtime".
-PI_MIN_VERSION="0.87.0"
+PI_MIN_VERSION="1.0.1"
 
 version_lt() { # <a> <b>: true if dotted numeric version a < b; pure bash (no sort -V)
     local -a a b
