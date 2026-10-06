@@ -8,10 +8,10 @@ Anthropic, Azure OpenAI, and gateway credentials differ between environments.
 Set `PI_EXPLORER_MODEL` before starting pi:
 
 ```bash
-# Azure OpenAI Responses environment (Pi 0.87.1+)
-export PI_EXPLORER_MODEL=azure-openai-responses/gpt-6-luna
+# Azure OpenAI environment
+export PI_EXPLORER_MODEL=azure/gpt-6-luna
 
-# Anthropic environment (Pi 0.87.1+)
+# Anthropic environment
 export PI_EXPLORER_MODEL=anthropic/claude-opus-5-5
 ```
 
@@ -24,15 +24,15 @@ Create `~/.pi/agent/extensions/explorer-models.json`:
 ```json
 {
   "candidates": [
-    "azure-openai-responses/gpt-6-luna"
+    "azure/gpt-6-luna"
   ]
 }
 ```
 
-Use `anthropic/claude-opus-5-5` instead on Anthropic-only machines. Both model
-IDs require Pi 0.87.1+; on Pi 0.87.0 use `azure-openai-responses/gpt-5.6-luna`.
-`anthropic/claude-sonnet-5-5` ships in Pi's bundled catalog from 0.99.0 on; on
-0.87.x refresh the catalog first (`pi update --models`).
+Use `anthropic/claude-opus-5-5` (or `anthropic/claude-sonnet-5-5`) instead on
+Anthropic-only machines. The Azure provider is `azure` since Pi 1.0.3 (renamed
+from `azure-openai-responses`); on Pi 1.0.1–1.0.2 write
+`azure-openai-responses/gpt-6-luna`.
 If `PI_CODING_AGENT_DIR` is set, place file under
 `$PI_CODING_AGENT_DIR/extensions/explorer-models.json` instead.
 
