@@ -6,14 +6,12 @@
 --       pane                                        <- tmux pane
 --
 -- Status model:
---   * Every pane reports 'wsstate' = busy|idle via OSC 1337 SetUserVar:
---       - shells: shell/wsstate.sh (prompt hooks)
---       - pi agents: pi/extensions/wsstate.ts (agent_start/agent_end)
---     Unknown panes count as idle.
---   * Second axis 'wswait' = waiting|free (pi/extensions/agent-busy-tracker.ts):
---     agent is between turns but parked on a timer it set itself, so it will
---     wake without you. Idle-but-waiting must NOT read as "needs you".
---     Unknown/unset counts as free.
+--   * Every pane reports 'wsstate' via OSC 1337 SetUserVar:
+--       - shells: shell/wsstate.sh (prompt hooks): busy|idle
+--       - pi agents: pi/extensions/wsstate.ts: busy|blocked|waiting|idle
+--         (waiting = between runs but parked on a timer it set itself, so
+--         it wakes without you; blocked = a dialog waits for you).
+--     busy and waiting = cooking; idle, blocked and unknown = needs you.
 --   * State is POLLED from pane:get_user_vars() on the ~1s status tick.
 --     Do NOT use the user-var-changed event: it only fires for panes
 --     whose GUI window is focused — background workspaces never deliver
@@ -51,8 +49,7 @@ local ICON_IDLE, ICON_BUSY = '●', '○'
 local function pane_is_idle(p)
   local ok, vars = pcall(function() return p:get_user_vars() end)
   if not (ok and vars) then return true end -- unknown pane counts as idle
-  if vars.wsstate == 'busy' then return false end
-  return vars.wswait ~= 'waiting'
+  return vars.wsstate ~= 'busy' and vars.wsstate ~= 'waiting'
 end
 
 -- ── Aggregation: pane -> tab -> workspace ──────────────────────

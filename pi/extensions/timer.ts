@@ -332,7 +332,7 @@ export default function timerExtension(pi: ExtensionAPI) {
 	// and inviting park-semantics confusion. Explorers already exclude timer via
 	// their readonly allowlist; this guard removes it from every other child kind
 	// too: the tool is not registered, so a child's prompt never offers it.
-	// Same bind-time ALS guard as wsstate.ts / agent-busy-tracker.ts.
+	// Same bind-time ALS guard as wsstate.ts.
 	if (inChildSession()) return;
 
 	const timer = new WakeTimer(pi);
