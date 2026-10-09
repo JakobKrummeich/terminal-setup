@@ -134,7 +134,7 @@ export async function createChildSession(
 		// Inside the scope: the explicit loader runs the extension factories in its
 		// reload(), and createAgentSession skips its own reload when handed a loader.
 		// Built outside, every factory saw inChildSession() === false — children
-		// lost their contract and leaked wsstate/wswait escapes, agent-dash rows and
+		// lost their contract and leaked wsstate escapes, agent-dash rows and
 		// the timer tool into the parent (PI_CHILD_EXTENSIONS / podman-hands only).
 		const resourceLoader = await childResourceLoader(cwd, agentDir, settingsManager);
 		return createAgentSession({

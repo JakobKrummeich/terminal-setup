@@ -171,10 +171,11 @@ manager anymore.
 |---|---|
 | WezTerm workspace | task/container/intent; shown in right status overview |
 | WezTerm tab | window inside current workspace; shown on left tab bar |
-| pane | shell/agent process; reports `wsstate=busy|idle` |
+| pane | shell/agent process; reports `wsstate` (shell `busy|idle`, pi also `blocked|waiting`) |
 
-Icons: `●` = idle / needs you, `○` = busy / cooking. Unknown panes count as
-idle. Status is polled from WezTerm pane user vars every 500ms; background
+Icons: `●` = idle / needs you, `○` = busy / cooking. A pi pane counts as busy
+while `busy` or `waiting` (parked on its own timer), as idle while `idle` or
+`blocked` (a dialog waits for you). Unknown panes count as idle. Status is polled from WezTerm pane user vars every 500ms; background
 workspaces stay accurate because status does not rely on focused-pane events.
 
 ### How colors and status flow
@@ -184,7 +185,8 @@ chain. Standard ANSI colors map to the Solarized palette, so anything inside
 WSL/container using standard colors is Solarized, and `Alt+Shift+L` remaps live.
 
 Busy/idle status uses OSC 1337 `SetUserVar=wsstate`:
-- `pi/extensions/wsstate.ts`: `agent_start` -> busy, `agent_end` -> idle.
+- `pi/extensions/wsstate.ts`: `agent_start` -> busy, `agent_settled` -> idle,
+  or waiting when a timer is armed; an open dialog -> blocked.
 - `shell/wsstate.sh`: command preexec -> busy, prompt precmd -> idle.
 - `wezterm/workspace-status.lua`: polls panes and aggregates pane -> tab -> workspace.
 
@@ -214,7 +216,6 @@ If colors look degraded (8-color, wrong bg) inside a container:
 
 | file | purpose |
 |---|---|
-| `agent-busy-tracker.ts` | second status axis on top of wsstate, reported via OSC 1337 SetUserVar: `wswait=waiting\|free` — is the agent parked between turns but able to wake itself (armed timer)? wsstate correctly says idle then, but the workspace must not show "needs you". Deliberately standalone: detects timers via the timer tool's public contract — args harvested at `tool_execution_start`, verdict at `tool_execution_end`, joined by `toolCallId` (pi's end event carries no args) — knows nothing of `timer.ts`/`wsstate.ts` internals; aggregation lives in `wezterm/workspace-status.lua`. Arms only under `ctx.mode === "tui"` (elsewhere timer blocks inside the call, so nothing stays armed) and, like wsstate, registers nothing in child sessions |
 | `agent-dash.ts` | agent dashboard (`docs/agent-dashboard-spec.md`, “Agent dashboard” below): writes the main session's `session-start` rows into the per-project `agent-runs.jsonl` index (spawn/progress/finish rows come from `lib/child-runs.ts`, reset from `context-cap.ts`) and probes the machine-global dashboard daemon (`GET /api/meta`, ~1s, once per process): daemon up → notifies its URL + hostname, down → “re-run install-pi.sh”; a daemon running stale code of this checkout (its `/api/meta` `codeHash` ≠ the checkout on disk, e.g. after `git pull`) is restarted via `systemctl --user try-restart pi-dash.service`. pi itself never serves the dashboard. Opt out with `PI_AGENT_DASH_DISABLE`; never probes under `PI_OFFLINE` (test suite) |
 | `builtin-tools.ts` | register pi's builtin `grep`/`find`/`ls` tools (rg/fd-backed, output-capped) — pi's default toolset is read/bash/edit/write only, and the pi-native `defaultTools` setting lives in the pi-owned `settings.json` the repo can't manage. Loaded by children too; re-registering a builtin is a same-behavior override, so no child guard |
 | `caveman-prompt.ts` | terse response style system prompt |
@@ -252,7 +253,7 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | `rtk.ts` | rewrite bash commands through rtk token filter (grep/find/ls tool overrides were dropped — pi builtins already cap output; see git history of `rtk-tools.ts`) |
 | `subagent.ts` | `Agent` tool: delegate a task to a child agent session, capped at one layer deep. Press **F2** to watch the running child live in the normal TUI style, `Esc` to step back out (override the key with `PI_SUBAGENT_WATCH_KEY`) |
 | `timer.ts` | wait tool for long background tasks — main session only: child sessions are always headless (`bindExtensions({})` → mode `print`), where a timer could only block inside the tool call, which buys nothing over `bash sleep N` — so the extension registers nothing in children (bind-time `inChildSession()` guard) and a child's prompt never offers the tool. In the main session, two strategies picked from `ctx.mode` (the per-call result text says which one ran — the registered description can't, it is written before any mode is known). **Interactive (`tui`)**: one-shot wakeup timer — the agent ends its turn and the expiry is injected with `deliverAs: "steer"` so it lands at the next turn boundary; `"followUp"` only lands when the whole run ends, which stacked stale wake-ups during long runs (regression-tested). A wake-up stranded by the settle race (expiry fired after the run's final queue drain) is detected by watching for its delivery and re-sent (up to 3×) instead of lost. **Headless (`print`/`json`/`rpc`, and any unknown mode — fail-safe)**: the tool call itself blocks for the wait and returns "continue your task", never "end your turn". `pi -p` awaits a single `session.prompt()` and disposes the runtime right after, so a timer armed for after the turn wakes nothing and the run exits 0 mid-task; blocking keeps the run — and the process — alive. The requested duration is honoured in full — an hour is one call, one result: chopping it into re-callable chunks would bill a whole LLM round-trip at full context per chunk, and nothing in pi times a tool call out (`pi-agent-core` `dist/agent-loop.js:453` awaits `tool.execute()` bare). Instead the call reports progress on the `onUpdate` channel ("Ns elapsed, Ms remaining", ~20 ticks spread over the wait, floor 30s / ceiling 5min) so it never looks frozen, and aborting the tool call ends the wait at once. `PI_TIMER_MAX_WAIT_S` opts into a cap (unset/0 = none): a longer request then returns after the cap with how much time is left and asks to be called again |
-| `wsstate.ts` | report pi agent busy/idle to WezTerm workspace status via OSC 1337. Main session only: child sessions (Agent/Explore) load this file too but share the parent's stdout — a child's `agent_end` would flip the terminal to "idle" mid-parent-run, so children register nothing (`inChildSession()` guard at bind time) |
+| `wsstate.ts` | report pi agent state to WezTerm workspace status via OSC 1337 `SetUserVar=wsstate` (same var as `shell/wsstate.sh`): `busy` from `agent_start` until `agent_settled` (not `agent_end`: retries, compaction and queued continuations run after it); `blocked` while a select/confirm/input/editor dialog is open (`ui_prompt_start`/`ui_prompt_end`; `custom` overlays such as the F2 watch don't count); `waiting` when settled with an armed timer — the agent wakes by itself, so the workspace must not show "needs you"; else `idle`. Timers are detected via the timer tool's public contract — args harvested at `tool_execution_start`, verdict at `tool_execution_end`, joined by `toolCallId` (pi's end event carries no args) — and only under `ctx.mode === "tui"` (elsewhere timer blocks inside the call). pi ≥ 1.1.0's own OSC 7501 program status is no substitute: tmux drops it, wezterm's Lua can't read it, and it has no timer-park state. Main session only: child sessions (Agent/Explore) load this file too but share the parent's stdout, so children register nothing (`inChildSession()` guard at bind time) |
 
 ### Agent dashboard (`pi-dash` daemon)
 

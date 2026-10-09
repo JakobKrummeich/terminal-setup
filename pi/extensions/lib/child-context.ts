@@ -1,9 +1,9 @@
 // "Am I inside a child session?" — the AsyncLocalStorage scope createChildSession
 // (lib/child-session.ts) runs a child's extension load/bind in.
 //
-// Its own small module so the guards in wsstate.ts, agent-busy-tracker.ts,
-// agent-dash.ts and timer.ts don't pull a copy of the whole child-session module
-// into every extension that loads them.
+// Its own small module so the guards in wsstate.ts, agent-dash.ts and timer.ts
+// don't pull a copy of the whole child-session module into every extension
+// that loads them.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { sharedState } from "./shared-state.ts";
 

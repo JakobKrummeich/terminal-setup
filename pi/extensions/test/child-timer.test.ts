@@ -8,19 +8,18 @@
  * over `bash sleep N` (nothing in pi times a tool call out) while costing
  * tool-listing tokens in every child prompt and inviting park-semantics
  * confusion. timer.ts therefore registers nothing in children (bind-time
- * inChildSession() guard, same pattern as wsstate.ts / agent-busy-tracker.ts).
+ * inChildSession() guard, same pattern as wsstate.ts).
  * Explorers never had it (readonly allowlist); this covers agent children too.
  *
  * Pinned here on a REAL child driven through runChildTool, with timer.ts (and
- * the two OSC extensions) present in the child's extensions dir like in
+ * the OSC extension wsstate.ts) present in the child's extensions dir like in
  * production:
  *  - a scripted timer call comes back "Tool timer not found" — the tool is
  *    structurally absent, not merely discouraged;
  *  - nothing blocks: the child's run completes far quicker than the requested
  *    wait;
- *  - the child emits NO wsstate/wswait OSC on the shared stdout (those
- *    extensions are main-session-only, agent-busy-tracker.test.ts has the
- *    positive side).
+ *  - the child emits NO wsstate OSC on the shared stdout (wsstate.ts is
+ *    main-session-only, wsstate.test.ts has the positive side).
  */
 
 // Children resolve their agent dir and session dir from the environment; point
@@ -48,11 +47,11 @@ const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..")
 // Children discover extensions in <agentDir>/extensions. Re-export wrappers
 // (real files, not symlinks) let each repo extension resolve its relative
 // imports from its real location (same trick as child-contract.test.ts).
-// wsstate + agent-busy-tracker ride along like in a production child: all three
+// wsstate rides along like in a production child: both
 // must detect the child at bind time and register nothing.
 const childExtDir = path.join(process.env.PI_CODING_AGENT_DIR, "extensions");
 mkdirSync(childExtDir, { recursive: true });
-for (const name of ["timer.ts", "wsstate.ts", "agent-busy-tracker.ts"]) {
+for (const name of ["timer.ts", "wsstate.ts"]) {
 	writeFileSync(
 		path.join(childExtDir, name),
 		`export { default } from ${JSON.stringify(path.join(EXT_DIR, name))};\n`,
@@ -148,7 +147,7 @@ test("a real child has no timer tool: call errors fast, nothing blocks, no OSC",
 		calls,
 	);
 	// Capture everything the child writes to the shared stdout: a child's
-	// wsstate/agent-busy-tracker emission would corrupt the parent terminal's
+	// wsstate emission would corrupt the parent terminal's
 	// workspace state (child agent_end → "idle"/"waiting" mid-parent-run).
 	const stdoutChunks: string[] = [];
 	const originalWrite = process.stdout.write.bind(process.stdout);
@@ -182,10 +181,10 @@ test("a real child has no timer tool: call errors fast, nothing blocks, no OSC",
 		assert.ok(!at(calls, 1).messages.includes("fired after"), "no blocking wait ran");
 		assert.ok(!at(calls, 1).messages.includes("expired."), "no wake-up was injected");
 
-		// The child loaded wsstate.ts and agent-busy-tracker.ts like production
+		// The child loaded wsstate.ts like production
 		// children do — and emitted NO terminal-state OSC: all main-session-only.
 		const osc = stdoutChunks.filter((c) => c.includes("SetUserVar=ws"));
-		assert.deepEqual(osc, [], "child must not write wsstate/wswait to the shared stdout");
+		assert.deepEqual(osc, [], "child must not write wsstate to the shared stdout");
 	} finally {
 		process.stdout.write = originalWrite;
 		for (const record of liveChildren.values()) record.session.dispose();

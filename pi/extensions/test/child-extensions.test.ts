@@ -17,7 +17,7 @@
  * The listed extensions must also load INSIDE the child-session scope
  * (runInChildSession): their child guards (inChildSession/childSessionInfo) only
  * see it during load/bind. Loaded outside it, podman-hands children lost their
- * delegate contract and wrote wsstate/wswait escapes into the parent's terminal
+ * delegate contract and wrote wsstate escapes into the parent's terminal
  * (wezterm showed "needs you" mid-subagent call).
  */
 
@@ -202,9 +202,9 @@ test("PI_CHILD_EXTENSIONS unset: the child keeps auto-discovering <agentDir>/ext
 test("PI_CHILD_EXTENSIONS set: listed extensions load inside the child scope (contract in, no terminal escapes)", async () => {
 	const CONTRACT = "CHILD-CONTRACT-SENTINEL: you are a delegated test child.";
 	// The real repo extensions whose child guards regressed: subagent.ts injects the
-	// contract only when childSessionInfo() is set at load; wsstate.ts and
-	// agent-busy-tracker.ts must stay silent in a child.
-	process.env.PI_CHILD_EXTENSIONS = ["subagent.ts", "wsstate.ts", "agent-busy-tracker.ts"]
+	// contract only when childSessionInfo() is set at load; wsstate.ts
+	// must stay silent in a child.
+	process.env.PI_CHILD_EXTENSIONS = ["subagent.ts", "wsstate.ts"]
 		.map((file) => path.join(EXT_DIR, file))
 		.join(":");
 	const writes: string[] = [];
@@ -222,5 +222,5 @@ test("PI_CHILD_EXTENSIONS set: listed extensions load inside the child scope (co
 	}
 	assert.ok(call.systemPrompt.includes(CONTRACT), "child system prompt must carry the delegate contract");
 	const escapes = writes.filter((w) => w.includes("SetUserVar=ws"));
-	assert.deepEqual(escapes, [], "a child must not write wsstate/wswait into the parent's terminal");
+	assert.deepEqual(escapes, [], "a child must not write wsstate into the parent's terminal");
 });
