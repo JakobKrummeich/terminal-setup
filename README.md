@@ -171,7 +171,7 @@ manager anymore.
 |---|---|
 | WezTerm workspace | task/container/intent; shown in right status overview |
 | WezTerm tab | window inside current workspace; shown on left tab bar |
-| pane | shell/agent process; reports `wsstate` (shell `busy|idle`, pi also `blocked|waiting`) |
+| pane | shell/agent process; reports `wsstate` (shell `busy\|idle`, pi also `blocked\|waiting`) |
 
 Icons: `●` = idle / needs you, `○` = busy / cooking. A pi pane counts as busy
 while `busy` or `waiting` (parked on its own timer), as idle while `idle` or
