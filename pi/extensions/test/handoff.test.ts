@@ -166,3 +166,71 @@ test("/handoff shutdown before its prompt ran: handler returns without harvestin
 	await run; // must settle: shutdown never leaves the command hanging
 	assert.deepEqual(calls, [], "a shut-down session is neither harvested nor replaced");
 });
+
+/** Loads the extension against a recording stub; returns its handlers, /handoff and the sent prompts. */
+function loadHandoff() {
+	type Handler = (event: unknown) => void;
+	const handlers = new Map<string, Handler>();
+	let command: ((args: string, ctx: unknown) => Promise<void>) | undefined;
+	const sentPrompts: string[] = [];
+	defaultExport(handoffModule)({
+		on: (name: string, handler: Handler) => handlers.set(name, handler),
+		registerCommand: (_name: string, spec: { handler: typeof command }) => (command = spec.handler),
+		sendUserMessage: (text: string) => sentPrompts.push(text),
+	});
+	const deliverAndEnd = () => {
+		handlers.get("message_start")!({ message: { role: "user", content: [{ type: "text", text: HANDOFF_PROMPT }] } });
+		handlers.get("agent_end")!({});
+	};
+	return { run: command!, sentPrompts, deliverAndEnd };
+}
+
+/** A command ctx whose branch ends in `reply`; records notifications and successor sessions. */
+function handoffCtx(reply: ReturnType<typeof assistant>) {
+	const notices: Array<[string, string]> = [];
+	const sessions: unknown[] = [];
+	const ctx = {
+		isIdle: () => false,
+		ui: { notify: (text: string, level: string) => notices.push([text, level]) },
+		sessionManager: { getBranch: () => [user(HANDOFF_PROMPT), reply] },
+		newSession: async (options: unknown) => sessions.push(options),
+	};
+	return { ctx, notices, sessions };
+}
+
+test("/handoff while one is in flight is refused; the first still completes", async () => {
+	// Without the guard the second call would overwrite the in-flight wait: the
+	// first handler would never settle and the prompt would be queued twice.
+	const { run, sentPrompts, deliverAndEnd } = loadHandoff();
+	const first = handoffCtx(assistant("## Current Task\nship it"));
+	const firstRun = run("", first.ctx);
+	const second = handoffCtx(assistant("unused"));
+	await run("", second.ctx);
+	assert.deepEqual(second.notices, [["/handoff already in progress", "warning"]]);
+	assert.deepEqual(sentPrompts, [HANDOFF_PROMPT], "the refused call queues no second prompt");
+
+	deliverAndEnd();
+	await firstRun;
+	assert.equal(first.sessions.length, 1, "the in-flight /handoff still seeds its successor");
+});
+
+test("/handoff with a rejected harvest reports it, seeds nothing, and can be run again", async () => {
+	const { run, sentPrompts, deliverAndEnd } = loadHandoff();
+	const failed = handoffCtx(assistant("## Current Task\ntruncated", "error"));
+	const failedRun = run("", failed.ctx);
+	deliverAndEnd();
+	await failedRun;
+	assert.equal(failed.sessions.length, 0, "a rejected reply must never become the successor's summary");
+	assert.equal(failed.notices.length, 1);
+	assert.equal(failed.notices[0]![1], "error");
+	assert.match(failed.notices[0]![0], /^No summary generated — handoff generation failed — run \/handoff again$/);
+
+	// The failure released the in-flight slot: the retry the message asks for works.
+	const retry = handoffCtx(assistant("## Current Task\nship it"));
+	const retryRun = run("", retry.ctx);
+	deliverAndEnd();
+	await retryRun;
+	assert.deepEqual(retry.notices, [], "the retry is not refused as 'already in progress'");
+	assert.equal(retry.sessions.length, 1);
+	assert.deepEqual(sentPrompts, [HANDOFF_PROMPT, HANDOFF_PROMPT]);
+});
