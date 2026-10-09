@@ -28,12 +28,17 @@
  * returns with the wait already over.
  *
  * The park is a deadline derived from the same public contract: a successful
- * `set` parks until now + its `seconds` arg (plus WAKE_GRACE_MS), a successful
- * `cancel` ends it, a later `set` replaces it. Runs do NOT end it: timer.ts keeps its
- * timer across human-started runs, retries and continuations re-emit
- * agent_start inside one run, and a timer expiring mid-run wakes the agent by
- * an in-run steer rather than a new run. One unref'd fallback timeout re-reports
- * at the deadline's end, so a wake that never arrives turns into "needs you".
+ * `set` parks until now + its `seconds` arg, a successful `cancel` ends it, a
+ * later `set` replaces it. Runs before the deadline do NOT end it: timer.ts
+ * keeps its timer across human-started runs, and retries and continuations
+ * re-emit agent_start inside one run. Once the deadline has passed, the park is
+ * consumed by the next run start (the wake run) or settle (the wake arrived as
+ * an in-run steer, or timer.ts re-sends a stranded one at settle, which starts
+ * a new run). One unref'd fallback timeout ends a park whose wake never arrives.
+ *
+ * The derived state is written on every relevant event, unchanged or not:
+ * duplicate writes are harmless, and a fresh process overwrites whatever a
+ * previous one left in the pane's var.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -41,9 +46,10 @@ import { inChildSession } from "./lib/child-context.ts";
 
 type WsState = "busy" | "blocked" | "waiting" | "idle";
 
-// The wake is delivered slightly after expiry (a steer queued into pi's input
-// loop), so "waiting" holds this long past the deadline to bridge the gap to
-// the wake run. Past it, a wake that never came reads as idle / "needs you".
+// The wake run starts slightly after expiry (a steer queued into pi's input
+// loop), so an idle agent stays "waiting" this long past the deadline until the
+// wake run's agent_start consumes the park. Past it, the fallback timeout ends
+// the park: a wake that never came reads as idle / "needs you".
 const WAKE_GRACE_MS = 30_000;
 
 interface Status {
@@ -76,6 +82,8 @@ interface TimerTracking {
 	clearPending: () => void;
 	/** End the park and its fallback timeout. */
 	disarm: () => void;
+	/** End the park if its deadline has passed: the wake has had its chance. */
+	consumeIfDue: () => void;
 }
 
 /** Park/unpark status.timerDeadline from timer tool calls; calls report() on a verdict. */
@@ -90,8 +98,11 @@ function trackTimer(pi: ExtensionAPI, status: Status, report: () => void): Timer
 		fallback = undefined;
 		status.timerDeadline = undefined;
 	}
-	function arm(seconds: unknown) {
-		if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) return;
+	function arm(rawSeconds: unknown) {
+		// Same coercion timer.ts gets from typebox Value.Convert ("300" → 300);
+		// the event args are the raw, unconverted tool arguments.
+		const seconds = Number(rawSeconds);
+		if (!Number.isFinite(seconds) || seconds <= 0) return;
 		disarm();
 		status.timerDeadline = Date.now() + seconds * 1000;
 		fallback = setTimeout(() => {
@@ -118,7 +129,11 @@ function trackTimer(pi: ExtensionAPI, status: Status, report: () => void): Timer
 		report();
 	});
 
-	return { clearPending: () => pendingArgs.clear(), disarm };
+	function consumeIfDue() {
+		if (status.timerDeadline !== undefined && Date.now() >= status.timerDeadline) disarm();
+	}
+
+	return { clearPending: () => pendingArgs.clear(), disarm, consumeIfDue };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -130,12 +145,8 @@ export default function (pi: ExtensionAPI) {
 	if (inChildSession()) return;
 
 	const status: Status = { running: false, prompting: false, timerDeadline: undefined };
-	let lastSent: WsState | undefined;
 	function report() {
-		const next = deriveState(status);
-		if (next === lastSent) return;
-		lastSent = next;
-		setUserVar("wsstate", next);
+		setUserVar("wsstate", deriveState(status));
 	}
 	const timer = trackTimer(pi, status, report);
 
@@ -143,22 +154,25 @@ export default function (pi: ExtensionAPI) {
 		timer.clearPending();
 		timer.disarm();
 		Object.assign(status, { running: false, prompting: false });
-		// Always send: the pane's var may still hold a previous process's state.
-		lastSent = undefined;
 		report();
 	}
 	pi.on("session_start", reset);
 	pi.on("session_shutdown", reset);
 
 	// Retries and continuations re-emit agent_start inside one run; only the
-	// first one is a run boundary where unfinished timer calls are stale.
+	// first one is a run boundary where unfinished timer calls are stale and a
+	// due park is consumed by the wake run.
 	pi.on("agent_start", () => {
-		if (!status.running) timer.clearPending();
+		if (!status.running) {
+			timer.clearPending();
+			timer.consumeIfDue();
+		}
 		status.running = true;
 		report();
 	});
 	pi.on("agent_settled", () => {
 		status.running = false;
+		timer.consumeIfDue();
 		report();
 	});
 

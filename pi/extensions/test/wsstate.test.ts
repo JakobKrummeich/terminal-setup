@@ -12,14 +12,14 @@
  *    verdict at tool_execution_end, joined by toolCallId — pi's end event
  *    carries NO args (an earlier version read `e.args` off the end event and
  *    therefore never armed). A successful `set` parks until its `seconds`
- *    deadline plus a 30 s wake grace, `cancel` disarms, a later `set`
- *    replaces, errored calls do neither, and only the TUI arms (timer blocks
- *    elsewhere);
- *  - runs never clear the park (retries re-emit agent_start, timer.ts keeps
- *    its timer across human-started runs, a mid-run expiry wakes by steer);
- *    once deadline + grace passes the park is over, and a fallback timeout
- *    reports idle if no run is in progress;
- *  - a state is sent once per change; session start/shutdown always send;
+ *    deadline (numeric strings coerced, as timer.ts gets them), `cancel`
+ *    disarms, a later `set` replaces, errored calls do neither, and only the
+ *    TUI arms (timer blocks elsewhere);
+ *  - runs before the deadline never clear the park (retries re-emit
+ *    agent_start, timer.ts keeps its timer across human-started runs); past
+ *    the deadline the next run start or settle consumes it, and an idle agent
+ *    whose wake never comes turns idle after a 30 s grace (fallback timeout);
+ *  - the derived state is written on every relevant event, changed or not;
  *  - inside tmux the OSC is wrapped in DCS passthrough with doubled ESC,
  *    same pattern as shell/wsstate.sh.
  *
@@ -62,7 +62,7 @@ function fire(handlers: Map<string, Handler>, event: string, payload?: unknown, 
 
 // Event payloads mirror what agent-session.js actually emits: args ride on
 // the START event only; the END event has toolCallId/toolName/result/isError.
-const timerStart = (toolCallId: string, action: string, seconds?: number) => ({
+const timerStart = (toolCallId: string, action: string, seconds?: number | string) => ({
 	type: "tool_execution_start",
 	toolCallId,
 	toolName: "timer",
@@ -82,7 +82,7 @@ function timerCall(
 	handlers: Map<string, Handler>,
 	id: string,
 	action: string,
-	seconds?: number,
+	seconds?: number | string,
 	isError = false,
 	ctx: unknown = TUI_CTX,
 ): void {
@@ -154,28 +154,41 @@ test("run lifecycle: busy from agent_start until agent_settled; agent_end is ign
 		// so it must not end "busy" — the extension does not even listen.
 		assert.equal(h.has("agent_end"), false, "agent_end must not drive wsstate");
 		assert.deepEqual(emitted(() => fire(h, "agent_settled", { type: "agent_settled" })), ["idle"]);
-		// Unchanged state is not re-sent; session boundaries always send.
-		assert.deepEqual(emitted(() => fire(h, "agent_settled", { type: "agent_settled" })), []);
+		// Every event writes the derived state, unchanged or not.
+		assert.deepEqual(emitted(() => fire(h, "agent_settled", { type: "agent_settled" })), ["idle"]);
 		assert.deepEqual(emitted(() => fire(h, "session_start")), ["idle"]);
 		assert.deepEqual(emitted(() => fire(h, "session_shutdown")), ["idle"]);
 	});
 });
 
-test("a successful timer set parks the settled agent as waiting until the wake run is over", (t) => {
+test("a successful timer set parks the settled agent as waiting; the wake run consumes the park", (t) => {
 	withEnv("TMUX", undefined, () => {
 		const tick = mockClock(t);
 		const h = loadWsstate();
 		fire(h, "session_start");
 		fire(h, "agent_start");
-		// Armed mid-run: still busy, nothing to send.
-		assert.deepEqual(emitted(() => timerCall(h, "t1", "set", 60)), []);
+		// Armed mid-run: still busy.
+		assert.deepEqual(emitted(() => timerCall(h, "t1", "set", 60)), ["busy"]);
 		assert.deepEqual(emitted(() => fire(h, "agent_settled")), ["waiting"]);
 		// Expiry: the wake run starts a little later, within the grace.
 		tick(60_000 + 5_000);
 		assert.deepEqual(emitted(() => fire(h, "agent_start")), ["busy"]);
-		tick(WAKE_GRACE_MS);
+		// A quick wake run settles still inside the grace window: needs you.
+		tick(5_000);
 		assert.deepEqual(emitted(() => fire(h, "agent_settled")), ["idle"]);
 		assert.deepEqual(emitted(() => tick(10 * 60_000)), []);
+	});
+});
+
+test("numeric-string seconds park like numbers — timer.ts gets them converted", (t) => {
+	withEnv("TMUX", undefined, () => {
+		const tick = mockClock(t);
+		const h = loadWsstate();
+		fire(h, "session_start");
+		fire(h, "agent_start");
+		timerCall(h, "t1", "set", "300");
+		assert.deepEqual(emitted(() => fire(h, "agent_settled")), ["waiting"]);
+		assert.deepEqual(emitted(() => tick(300_000 + WAKE_GRACE_MS)), ["idle"]);
 	});
 });
 
@@ -187,7 +200,7 @@ test("retries and continuations inside one run keep the park", (t) => {
 		fire(h, "agent_start");
 		timerCall(h, "t1", "set", 60);
 		// auto-retry / compaction recovery / queued continuation: agent.continue()
-		assert.deepEqual(emitted(() => fire(h, "agent_start")), []);
+		assert.deepEqual(emitted(() => fire(h, "agent_start")), ["busy"]);
 		assert.deepEqual(emitted(() => fire(h, "agent_settled")), ["waiting"]);
 	});
 });
@@ -207,15 +220,16 @@ test("a human-started run before the deadline keeps the park — timer.ts keeps 
 	});
 });
 
-test("a timer that expires mid-run (wake delivered as steer) leaves the settled agent idle", (t) => {
+test("a timer that expires mid-run (wake delivered as steer) leaves the settled agent idle at once", (t) => {
 	withEnv("TMUX", undefined, () => {
 		const tick = mockClock(t);
 		const h = loadWsstate();
 		fire(h, "session_start");
 		fire(h, "agent_start");
 		timerCall(h, "t1", "set", 60);
-		assert.deepEqual(emitted(() => tick(60_000 + WAKE_GRACE_MS)), []);
+		tick(60_000 + 1_000);
 		assert.deepEqual(emitted(() => fire(h, "agent_settled")), ["idle"]);
+		assert.deepEqual(emitted(() => tick(WAKE_GRACE_MS)), []);
 	});
 });
 
