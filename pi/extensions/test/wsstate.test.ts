@@ -11,9 +11,14 @@
  *    tool's public surface: args are harvested at tool_execution_start, the
  *    verdict at tool_execution_end, joined by toolCallId — pi's end event
  *    carries NO args (an earlier version read `e.args` off the end event and
- *    therefore never armed). A successful `set` arms, `cancel` disarms,
- *    errored calls do neither, and only the TUI arms (timer blocks elsewhere);
- *  - any run start clears the park (a wake or a human both start a run);
+ *    therefore never armed). A successful `set` parks until its `seconds`
+ *    deadline plus a 30 s wake grace, `cancel` disarms, a later `set`
+ *    replaces, errored calls do neither, and only the TUI arms (timer blocks
+ *    elsewhere);
+ *  - runs never clear the park (retries re-emit agent_start, timer.ts keeps
+ *    its timer across human-started runs, a mid-run expiry wakes by steer);
+ *    once deadline + grace passes the park is over, and a fallback timeout
+ *    reports idle if no run is in progress;
  *  - a state is sent once per change; session start/shutdown always send;
  *  - inside tmux the OSC is wrapped in DCS passthrough with doubled ESC,
  *    same pattern as shell/wsstate.sh.
@@ -24,7 +29,7 @@
  */
 
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import * as wsstateModule from "../wsstate.ts";
 import { at } from "./assert-helpers.ts";
 
@@ -57,11 +62,11 @@ function fire(handlers: Map<string, Handler>, event: string, payload?: unknown, 
 
 // Event payloads mirror what agent-session.js actually emits: args ride on
 // the START event only; the END event has toolCallId/toolName/result/isError.
-const timerStart = (toolCallId: string, action: string) => ({
+const timerStart = (toolCallId: string, action: string, seconds?: number) => ({
 	type: "tool_execution_start",
 	toolCallId,
 	toolName: "timer",
-	args: { action },
+	args: seconds === undefined ? { action } : { action, seconds },
 });
 
 const timerEnd = (toolCallId: string, isError = false) => ({
@@ -77,11 +82,21 @@ function timerCall(
 	handlers: Map<string, Handler>,
 	id: string,
 	action: string,
+	seconds?: number,
 	isError = false,
 	ctx: unknown = TUI_CTX,
 ): void {
-	fire(handlers, "tool_execution_start", timerStart(id, action), ctx);
+	fire(handlers, "tool_execution_start", timerStart(id, action, seconds), ctx);
 	fire(handlers, "tool_execution_end", timerEnd(id, isError), ctx);
+}
+
+/** Must match WAKE_GRACE_MS in wsstate.ts. */
+const WAKE_GRACE_MS = 30_000;
+
+/** Fake Date and setTimeout so deadlines and the fallback timeout are driven by tick(). */
+function mockClock(t: TestContext): (ms: number) => void {
+	t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+	return (ms) => t.mock.timers.tick(ms);
 }
 
 const prompt = (type: "ui_prompt_start" | "ui_prompt_end", kind: string) => ({ type, reason: "ui_prompt", kind });
@@ -146,33 +161,122 @@ test("run lifecycle: busy from agent_start until agent_settled; agent_end is ign
 	});
 });
 
-test("a successful timer set parks the settled agent as waiting; the next run unparks", () => {
+test("a successful timer set parks the settled agent as waiting until the wake run is over", (t) => {
 	withEnv("TMUX", undefined, () => {
+		const tick = mockClock(t);
 		const h = loadWsstate();
 		fire(h, "session_start");
 		fire(h, "agent_start");
 		// Armed mid-run: still busy, nothing to send.
-		assert.deepEqual(emitted(() => timerCall(h, "t1", "set")), []);
+		assert.deepEqual(emitted(() => timerCall(h, "t1", "set", 60)), []);
 		assert.deepEqual(emitted(() => fire(h, "agent_settled")), ["waiting"]);
-		// A wake and human input both start a run.
+		// Expiry: the wake run starts a little later, within the grace.
+		tick(60_000 + 5_000);
+		assert.deepEqual(emitted(() => fire(h, "agent_start")), ["busy"]);
+		tick(WAKE_GRACE_MS);
+		assert.deepEqual(emitted(() => fire(h, "agent_settled")), ["idle"]);
+		assert.deepEqual(emitted(() => tick(10 * 60_000)), []);
+	});
+});
+
+test("retries and continuations inside one run keep the park", (t) => {
+	withEnv("TMUX", undefined, () => {
+		mockClock(t);
+		const h = loadWsstate();
+		fire(h, "session_start");
+		fire(h, "agent_start");
+		timerCall(h, "t1", "set", 60);
+		// auto-retry / compaction recovery / queued continuation: agent.continue()
+		assert.deepEqual(emitted(() => fire(h, "agent_start")), []);
+		assert.deepEqual(emitted(() => fire(h, "agent_settled")), ["waiting"]);
+	});
+});
+
+test("a human-started run before the deadline keeps the park — timer.ts keeps the timer", (t) => {
+	withEnv("TMUX", undefined, () => {
+		const tick = mockClock(t);
+		const h = loadWsstate();
+		fire(h, "session_start");
+		fire(h, "agent_start");
+		timerCall(h, "t1", "set", 60);
+		fire(h, "agent_settled");
+		tick(10_000);
+		assert.deepEqual(emitted(() => fire(h, "agent_start")), ["busy"]);
+		tick(10_000);
+		assert.deepEqual(emitted(() => fire(h, "agent_settled")), ["waiting"]);
+	});
+});
+
+test("a timer that expires mid-run (wake delivered as steer) leaves the settled agent idle", (t) => {
+	withEnv("TMUX", undefined, () => {
+		const tick = mockClock(t);
+		const h = loadWsstate();
+		fire(h, "session_start");
+		fire(h, "agent_start");
+		timerCall(h, "t1", "set", 60);
+		assert.deepEqual(emitted(() => tick(60_000 + WAKE_GRACE_MS)), []);
+		assert.deepEqual(emitted(() => fire(h, "agent_settled")), ["idle"]);
+	});
+});
+
+test("a lost wake turns into idle once the deadline grace passes", (t) => {
+	withEnv("TMUX", undefined, () => {
+		const tick = mockClock(t);
+		const h = loadWsstate();
+		fire(h, "session_start");
+		fire(h, "agent_start");
+		timerCall(h, "t1", "set", 60);
+		assert.deepEqual(emitted(() => fire(h, "agent_settled")), ["waiting"]);
+		assert.deepEqual(emitted(() => tick(60_000 + WAKE_GRACE_MS - 1)), []);
+		assert.deepEqual(emitted(() => tick(1)), ["idle"]);
+	});
+});
+
+test("a later set replaces the deadline; cancel and session_shutdown end the park and its fallback", (t) => {
+	withEnv("TMUX", undefined, () => {
+		const tick = mockClock(t);
+		const h = loadWsstate();
+		fire(h, "session_start");
+
+		fire(h, "agent_start");
+		timerCall(h, "t1", "set", 60);
+		timerCall(h, "t2", "set", 600);
+		assert.deepEqual(emitted(() => fire(h, "agent_settled")), ["waiting"]);
+		assert.deepEqual(emitted(() => tick(60_000 + WAKE_GRACE_MS)), []);
+		assert.deepEqual(emitted(() => tick(540_000)), ["idle"]);
+
+		fire(h, "agent_start");
+		timerCall(h, "t3", "set", 60);
+		timerCall(h, "t4", "cancel");
+		assert.deepEqual(emitted(() => fire(h, "agent_settled")), ["idle"]);
+		assert.deepEqual(emitted(() => tick(60_000 + WAKE_GRACE_MS)), []);
+
+		fire(h, "agent_start");
+		timerCall(h, "t5", "set", 60);
+		assert.deepEqual(emitted(() => fire(h, "agent_settled")), ["waiting"]);
+		assert.deepEqual(emitted(() => fire(h, "session_shutdown")), ["idle"]);
+		assert.deepEqual(emitted(() => tick(60_000 + WAKE_GRACE_MS)), []);
+		fire(h, "session_start");
 		assert.deepEqual(emitted(() => fire(h, "agent_start")), ["busy"]);
 		assert.deepEqual(emitted(() => fire(h, "agent_settled")), ["idle"]);
 	});
 });
 
-test("cancel disarms; errored, foreign, arg-less and stale timer calls never arm", () => {
+test("cancel disarms; errored, foreign, arg-less, seconds-less and stale timer calls never arm", () => {
 	withEnv("TMUX", undefined, () => {
 		const h = loadWsstate();
 		fire(h, "session_start");
 
 		fire(h, "agent_start");
-		timerCall(h, "t1", "set");
+		timerCall(h, "t1", "set", 60);
 		timerCall(h, "t2", "cancel");
 		assert.deepEqual(emitted(() => fire(h, "agent_settled")), ["idle"]);
 
 		fire(h, "agent_start");
-		timerCall(h, "t3", "set", true);
-		fire(h, "tool_execution_start", { ...timerStart("t4", "set"), toolName: "bash" });
+		timerCall(h, "t3", "set", 60, true);
+		timerCall(h, "t3b", "set");
+		timerCall(h, "t3c", "set", 0);
+		fire(h, "tool_execution_start", { ...timerStart("t4", "set", 60), toolName: "bash" });
 		fire(h, "tool_execution_end", { ...timerEnd("t4"), toolName: "bash" });
 		fire(h, "tool_execution_start", { type: "tool_execution_start", toolCallId: "t5", toolName: "timer", args: undefined });
 		fire(h, "tool_execution_end", timerEnd("t5"));
@@ -181,14 +285,14 @@ test("cancel disarms; errored, foreign, arg-less and stale timer calls never arm
 
 		// A straggler start (call aborted before its end event) is cleared at the
 		// next run start — its late end event must not arm anything.
-		fire(h, "tool_execution_start", timerStart("t-stale", "set"));
+		fire(h, "tool_execution_start", timerStart("t-stale", "set", 60));
 		fire(h, "agent_start");
 		fire(h, "tool_execution_end", timerEnd("t-stale"));
 		assert.deepEqual(emitted(() => fire(h, "agent_settled")), ["idle"]);
 
 		// Shutdown resets an armed park.
 		fire(h, "agent_start");
-		timerCall(h, "t7", "set");
+		timerCall(h, "t7", "set", 60);
 		fire(h, "agent_settled");
 		assert.deepEqual(emitted(() => fire(h, "session_shutdown")), ["idle"]);
 	});
@@ -199,7 +303,7 @@ test("outside the TUI a successful set arms nothing — timer blocked, the wait 
 		const h = loadWsstate();
 		fire(h, "session_start");
 		fire(h, "agent_start");
-		timerCall(h, "t1", "set", false, { mode: "print" });
+		timerCall(h, "t1", "set", 60, false, { mode: "print" });
 		assert.deepEqual(emitted(() => fire(h, "agent_settled")), ["idle"]);
 	});
 });
@@ -217,10 +321,11 @@ test("an open dialog is blocked — over busy and waiting; custom overlays never
 		assert.deepEqual(emitted(() => fire(h, "ui_prompt_start", prompt("ui_prompt_start", "custom"))), []);
 		assert.deepEqual(emitted(() => fire(h, "ui_prompt_end", prompt("ui_prompt_end", "custom"))), []);
 
-		timerCall(h, "t1", "set");
+		timerCall(h, "t1", "set", 60);
 		fire(h, "agent_settled");
 		assert.deepEqual(emitted(() => fire(h, "ui_prompt_start", prompt("ui_prompt_start", "select"))), ["blocked"]);
 		assert.deepEqual(emitted(() => fire(h, "ui_prompt_end", prompt("ui_prompt_end", "select"))), ["waiting"]);
+		fire(h, "session_shutdown");
 	});
 });
 
