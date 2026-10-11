@@ -417,7 +417,9 @@ test("interactive: set arms the async timer and hands the turn back", async () =
 			`interactive result changed, got: ${JSON.stringify(results)}`,
 		);
 	} finally {
-		t.dispose(); // session_shutdown disarms the 300s timer
+		// session.dispose() emits NO session_shutdown (only pi's runtime teardown and
+		// reload do); the 300s timeout is unref'd, so it cannot hold the test open.
+		t.dispose();
 	}
 });
 
@@ -442,6 +444,68 @@ test("interactive: cancel disarms the timer", async () => {
 			`cancel result missing, got: ${JSON.stringify(results)}`,
 		);
 		assert.ok(results.includes("No active timer."), `second cancel should be a no-op, got: ${JSON.stringify(results)}`);
+	} finally {
+		t.dispose();
+	}
+});
+
+// "One timer; new set replaces old" (tool description) — wsstate.ts mirrors this
+// contract (a later set replaces the park deadline), so a timer that stacked
+// instead would wake twice and desync the workspace state.
+test("interactive: a second set replaces the first — only the second one wakes", async () => {
+	const t = await createTestSession({
+		extensionPaths: [TIMER_EXTENSION],
+		mode: "tui",
+		tools: ["timer"],
+		llmDelayMs: 20,
+		script: [
+			toolStep("s1", "timer", { action: "set", name: "t1", seconds: 0.2 }),
+			toolStep("s2", "timer", { action: "set", name: "t2", seconds: 0.4 }),
+			textStep("waiting"),
+			textStep("woke up"),
+		],
+	});
+	try {
+		await t.session.prompt("start");
+		const results = toolResultTexts(t);
+		assert.ok(
+			results.some((text) => text.startsWith('Timer "t2" set') && /Replaced timer "t1" \(\d+s remaining\)\./.test(text)),
+			`second set must report the replaced timer, got: ${JSON.stringify(results)}`,
+		);
+
+		const deadline = Date.now() + 5000;
+		while (Date.now() < deadline && !assistantTexts(t).includes("woke up")) await sleep(20);
+		await sleep(300); // t1 would have fired long before now if it were still armed
+		await t.session.waitForIdle();
+		assert.deepEqual(
+			t.deliveredUserMessages.filter((m) => isExpiry(m.text)).map((m) => m.text),
+			['Timer "t2" expired. Continue your task.'],
+		);
+	} finally {
+		t.dispose();
+	}
+});
+
+// pi emits session_shutdown before /reload, /new, /resume, /fork and quit, then
+// invalidates this extension instance or disposes its session; an armed timer
+// surviving it would fire a wake-up through a stale instance.
+test("interactive: session_shutdown disarms an armed timer — no wake-up afterwards", async () => {
+	const t = await createTestSession({
+		extensionPaths: [TIMER_EXTENSION],
+		mode: "tui",
+		tools: ["timer"],
+		llmDelayMs: 20,
+		script: [toolStep("s1", "timer", { action: "set", name: "t1", seconds: 0.2 }), textStep("waiting")],
+	});
+	try {
+		await t.session.prompt("start");
+		await t.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+		await sleep(500);
+		assert.deepEqual(
+			t.deliveredUserMessages.filter((m) => isExpiry(m.text)),
+			[],
+			"a timer armed before session_shutdown must never wake",
+		);
 	} finally {
 		t.dispose();
 	}
