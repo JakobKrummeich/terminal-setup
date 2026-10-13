@@ -277,7 +277,11 @@ test("mid-session model switch moves the soft cap: no steer at 1M, steer at 200k
 	});
 	const sessionId = t.session.sessionManager.getSessionId();
 	try {
-		assert.equal(t.session.model?.contextWindow, 1_000_000, "harness model precondition");
+		// Pin the 1M window here instead of trusting pi-ai's catalog: 1.2.0 cut the
+		// harness model (claude-sonnet-4-5) from 1M to 200k, which broke this test.
+		assert.ok(t.session.model, "harness model precondition");
+		await t.session.setModel({ ...t.session.model, contextWindow: 1_000_000 });
+		assert.equal(t.session.model?.contextWindow, 1_000_000, "1M window in force");
 
 		await t.session.prompt("first");
 		assert.equal(
