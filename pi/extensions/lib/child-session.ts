@@ -76,25 +76,18 @@ export const liveChildren = state.liveChildren;
 type ChildUpdate = ((partial: ReturnType<typeof textResult>) => void) | undefined;
 
 function watchChild(record: ChildRecord, onUpdate: ChildUpdate): { text(): string; pushStatus(): void; stop(): void } {
-	const parts: string[] = [];
+	// The child's final message: the last assistant message with non-blank text,
+	// WHOLE — all its text blocks, not just the last one (that dropped everything
+	// before e.g. a thinking block from the result the parent sees).
+	let finalText = "";
 	const pushStatus = () => onUpdate?.(textResult(statusLine(record), { id: record.id }));
 	const unsub = record.session.subscribe((event: AgentSessionEvent) => {
 		record.view.handle(event);
 		trackChildActivity(record, event, pushStatus);
-		if (event.type === "message_end") parts.push(...assistantTexts(event.message));
+		if (event.type === "message_end") finalText = assistantText(event.message) || finalText;
 	});
 	pushStatus();
-	return {
-		pushStatus,
-		text: () => {
-			for (let i = parts.length - 1; i >= 0; i--) {
-				const part = parts[i]?.trim();
-				if (part) return part;
-			}
-			return "";
-		},
-		stop: unsub,
-	};
+	return { pushStatus, text: () => finalText, stop: unsub };
 }
 
 /** Turn count, current tool, progress rows and live status of a running child. */
@@ -119,16 +112,10 @@ function trackChildActivity(record: ChildRecord, event: AgentSessionEvent, pushS
 	}
 }
 
-/** The non-blank text blocks of an assistant message (none for other roles). */
-function assistantTexts(message: { role: string }): string[] {
-	if (message.role !== "assistant") return [];
-	const content = (message as { content?: unknown }).content;
-	if (!Array.isArray(content)) return [];
-	return (content as Array<{ type?: string; text?: string }>).filter(isNonBlankText).map((block) => block.text);
-}
-
-function isNonBlankText(block: { type?: string; text?: string }): block is { type: "text"; text: string } {
-	return block?.type === "text" && !!block.text?.trim();
+/** The trimmed text of an assistant message ("" for other roles or no text). */
+function assistantText(message: { role: string }): string {
+	if (message.role !== "assistant") return "";
+	return messageText((message as { content?: unknown }).content).trim();
 }
 
 function labelFromPrompt(prompt: string): string {
