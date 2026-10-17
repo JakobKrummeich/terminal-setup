@@ -39,6 +39,7 @@ import { createAssistantMessageEventStream, getCurrentSystemPrompt, withoutIniti
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { initTheme, ModelRuntime, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { AGENT_TOOL, liveChildren, runChildTool } from "../lib/child-session.ts";
+import * as subagentModule from "../subagent.ts";
 import { CHILD_CONTRACT } from "../subagent.ts";
 import { CONTEXT_CAP_TOOL_NAME } from "../lib/env.ts";
 import { type ResponseStep, type ScriptedStep, sleep, textStep, toolStep } from "./harness.ts";
@@ -260,4 +261,46 @@ test("contract survives the swap: still in the system prompt on post-swap and re
 test("child contract names no tool that is unavailable to children", () => {
 	assert.doesNotMatch(CHILD_CONTRACT, /\btimer\b/i, "children have no timer tool");
 	assert.ok(!CHILD_CONTRACT.includes(`${AGENT_TOOL} tool`), "Agent children cannot delegate further");
+});
+
+// The tests above pass their own CHILD_OPTIONS to runChildTool; this one drives
+// the options subagent.ts's REAL Agent tool passes. The child loads subagent.ts
+// too (wrapper above), so it registers an Agent tool of its own — only the
+// tool's `excludeTools: [AGENT_TOOL]` keeps nesting capped at one layer, and
+// only its `contract: CHILD_CONTRACT` tells the child it is a delegate.
+test("real Agent tool: the child gets CHILD_CONTRACT and no Agent tool of its own", async () => {
+	type Execute = (...args: unknown[]) => Promise<{ content: Array<{ text?: string }>; details?: unknown }>;
+	let agent: { execute: Execute } | undefined;
+	const pi = {
+		registerTool: (tool: { name: string; execute: Execute }) => {
+			if (tool.name === AGENT_TOOL) agent = tool;
+		},
+		registerToolRenderer: () => undefined,
+		registerShortcut: () => undefined,
+		on: () => undefined,
+	};
+	// ESM/CJS default-export unwrap, as in subagent-wiring.test.ts.
+	type Ext = (api: typeof pi) => void;
+	const d = (subagentModule as unknown as { default: Ext | { default: Ext } }).default;
+	(typeof d === "function" ? d : d.default)(pi);
+	assert.ok(agent, "subagent.ts registers the Agent tool");
+
+	const calls: CapturedCall[] = [];
+	const ctx = await makeCtx([textStep("agent done", 2)], calls);
+	let childId: string | undefined;
+	try {
+		const result = await agent.execute("call-1", { prompt: "nested?", description: "real agent" }, undefined, undefined, ctx);
+		childId = (result.details as { id?: string }).id;
+		assert.match(resultText(result), /agent done/);
+		const record = liveChildren.get(childId!);
+		assert.ok(record, "Agent child is live");
+		assert.equal(record.kind, "agent");
+		const active = record.session.getActiveToolNames();
+		// Proves the child did load the wrapped extensions, so Agent's absence is the exclusion.
+		assert.ok(active.includes(CONTEXT_CAP_TOOL_NAME), `child extensions loaded: ${active.join(",")}`);
+		assert.ok(!active.includes(AGENT_TOOL), "an Agent child must not be able to spawn agents");
+		assert.ok(at(calls, 0).systemPrompt.includes(CHILD_CONTRACT), "Agent child's system prompt carries CHILD_CONTRACT");
+	} finally {
+		cleanup(childId);
+	}
 });
