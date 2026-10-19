@@ -339,3 +339,57 @@ test("effects: skips, shrink reset, abort while drafting", async () => {
 	});
 	assert.deepEqual(log, EXPECTED.skipsAndAbort);
 });
+
+// Handoff-file I/O failures (characterization, recorded from the handlers as of
+// 2026-10-19 — not part of the pre-extraction EXPECTED table above). Both pin that
+// a missing document never turns into a swap: a swap marker with no handoff
+// behind it would replace the agent's whole context with nothing.
+
+test("effects: a failed handoff write is reported to the agent and never counted as written", async () => {
+	let reply = "";
+	const log = await scenario(async (d) => {
+		d.usage.tokens = 10;
+		await d.messageEnd("toolUse", 10); // soft steer: cycle armed for <sid>-1.md
+		// A directory at the expected path: writeFileSync fails with EISDIR.
+		const blocked = path.join(contextCapDir(), `${d.sessionId}-1.md`);
+		fs.mkdirSync(blocked);
+		try {
+			reply = await d.handoff("## Current Task\nNever lands on disk.");
+		} finally {
+			fs.rmdirSync(blocked);
+		}
+		await d.messageEnd("stop", 10);
+		await d.turnEnd(0); // handoffWritten still false → reminder, not a swap
+	});
+	assert.equal(reply, "error: Handoff write failed");
+	assert.deepEqual(log, [
+		"status 10/5",
+		"status 10/5 ⚠ handoff",
+		"send steer [context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at 10 tokens (soft cap 5, hard cap 50).",
+		"notify info context-cap: soft cap (10) — handoff requested",
+		"status 10/5 ⚠ handoff",
+		"send followUp [context-cap] No handoff was recorded — the `context_handoff` tool was not called.",
+		"boundary continue=true",
+	]);
+});
+
+test("effects: a handoff file gone before the swap resets the cycle — no marker, error shown, next check re-arms", async () => {
+	const log = await scenario(async (d) => {
+		d.usage.tokens = 10;
+		await d.messageEnd("toolUse", 10); // soft steer
+		assert.match(await d.handoff("## Current Task\nWritten, then lost."), /^ok: /);
+		fs.rmSync(path.join(contextCapDir(), `${d.sessionId}-1.md`)); // deleted under us
+		await d.turnEnd(0); // soft swap cannot read the file → reset, no boundary
+		await d.messageEnd("toolUse", 10); // idle again: a fresh cycle is armed
+	});
+	assert.equal(log.length, 10, log.join("\n"));
+	assert.deepEqual(log.slice(0, 4), [
+		"status 10/5",
+		"status 10/5 ⚠ handoff",
+		"send steer [context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at 10 tokens (soft cap 5, hard cap 50).",
+		"notify info context-cap: soft cap (10) — handoff requested",
+	]);
+	assert.equal(at(log, 4), "status 10/5"); // phase idle: no "⚠ handoff" suffix
+	assert.match(at(log, 5), /^notify error context-cap: failed to read handoff file: ENOENT/);
+	assert.deepEqual(log.slice(6), log.slice(0, 4), "the reset cycle re-arms exactly like the first one");
+});
