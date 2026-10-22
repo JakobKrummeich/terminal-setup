@@ -27,7 +27,8 @@ process.env.PI_OFFLINE = "1";
 
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
-import { ModelRuntime, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type AgentSessionEvent, initTheme, ModelRuntime, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import * as agentDashModule from "../agent-dash.ts";
 import {
 	type AgentRunEvent,
@@ -42,6 +43,8 @@ import {
 import { liveChildren, runChildTool } from "../lib/child-session.ts";
 import { sleep } from "./harness.ts";
 import { at } from "./assert-helpers.ts";
+
+initTheme(undefined, false);
 
 // --- pure reader/writer tests -----------------------------------------------
 
@@ -537,6 +540,48 @@ test("runChildTool: caller abort mid-run → abort reaches the child, 'cancelled
 		const again = await runChildTool({ prompt: "retry", resume_id: id }, AGENT_OPTIONS, undefined, undefined, ctx);
 		assert.equal(again.isError, undefined, `resume after an aborted run: ${JSON.stringify(again.content)}`);
 		assert.equal(lastFinish(record.sid)?.status, "done");
+	} finally {
+		disposeChildren();
+	}
+});
+
+function viewText(record: { view: { render(width: number): string[] } }): string {
+	return record.view.render(200).map((line) => stripTerminalSequences(line)).join("\n");
+}
+
+// ESC while the child session is still being created (the createChildSession /
+// reopen await): the abort listener is attached only afterwards, and an
+// AbortSignal never replays a past abort to a late listener — so the child used
+// to run the whole task while the parent's tool call (awaited bare by pi) hung.
+test("runChildTool: caller abort before the run starts → the child never runs, 'cancelled' finish row", async () => {
+	try {
+		const ctx = await makeCtx("main-pre-abort");
+		// Warmed up first so the child has a transcript and its rows survive readRuns' pruning.
+		const first = await runChildTool({ prompt: "warm up" }, AGENT_OPTIONS, undefined, undefined, ctx);
+		const id = (first.details as { id: string }).id;
+		const record = liveChildren.get(id)!;
+		assert.equal(record.turns, 1);
+
+		const controller = new AbortController();
+		controller.abort();
+		const params = { prompt: "long task", resume_id: id };
+		const result = await runChildTool(params, AGENT_OPTIONS, controller.signal, undefined, ctx);
+		assert.equal(record.turns, 1, "an already-aborted call must not run the child's task");
+		assert.equal((result.details as { aborted: boolean }).aborted, true);
+		assert.equal(lastFinish(record.sid)?.status, "cancelled");
+		assert.equal(record.running, false);
+		assert.doesNotMatch(viewText(record), /long task/, "the F2 view must not show a prompt the child never got");
+
+		const again = await runChildTool({ prompt: "retry", resume_id: id }, AGENT_OPTIONS, undefined, undefined, ctx);
+		assert.equal(again.isError, undefined, `resume after a pre-run abort: ${JSON.stringify(again.content)}`);
+		assert.equal(record.turns, 2);
+
+		// A later injected user message (context-cap steer, timer wake…) must still render.
+		record.view.handle({
+			type: "message_start",
+			message: { role: "user", content: [{ type: "text", text: "INJECTED-SENTINEL" }] },
+		} as unknown as AgentSessionEvent);
+		assert.match(viewText(record), /INJECTED-SENTINEL/);
 	} finally {
 		disposeChildren();
 	}
