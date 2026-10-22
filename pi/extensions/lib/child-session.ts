@@ -287,7 +287,7 @@ async function runChildRecord(
 	signal: AbortSignal | undefined,
 	onUpdate: ChildUpdate,
 ) {
-	const watcher = startRun(record, params.prompt, onUpdate);
+	const watcher = startRun(record, onUpdate);
 	const onAbort = () => void record.session.abort();
 	signal?.addEventListener("abort", onAbort, { once: true });
 	const startedAt = Date.now();
@@ -297,6 +297,9 @@ async function runChildRecord(
 		// Aborted during the spawn/reopen await: onAbort never fires for a past
 		// abort, and session.abort() before prompt() would not stop it anyway.
 		if (!signal?.aborted) {
+			// The child gets the task verbatim: the delegate contract rides the system
+			// prompt (options.contract, injected per turn by subagent.ts), not the prompt.
+			record.view.addUserMessage(params.prompt);
 			await record.session.prompt(params.prompt);
 			// prompt() resolving means the model stopped calling tools; a queued
 			// steer/follow-up may still be about to run (lib/session-quiet.ts).
@@ -318,12 +321,9 @@ async function runChildRecord(
 	return childRunResult(record, options.kind, watcher.text(), signal);
 }
 
-/** Show the prompt and start watching the child's events for this run. */
-function startRun(record: ChildRecord, prompt: string, onUpdate: ChildUpdate): ReturnType<typeof watchChild> {
+/** Start watching the child's events for this run. */
+function startRun(record: ChildRecord, onUpdate: ChildUpdate): ReturnType<typeof watchChild> {
 	try {
-		// The child gets the task verbatim: the delegate contract rides the system
-		// prompt (options.contract, injected per turn by subagent.ts), not the prompt.
-		record.view.addUserMessage(prompt);
 		return watchChild(record, onUpdate);
 	} catch (error) {
 		// Before the run's own finally: never leave a stale running=true record

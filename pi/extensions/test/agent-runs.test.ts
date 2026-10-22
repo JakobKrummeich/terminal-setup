@@ -27,7 +27,8 @@ process.env.PI_OFFLINE = "1";
 
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
-import { ModelRuntime, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type AgentSessionEvent, initTheme, ModelRuntime, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import * as agentDashModule from "../agent-dash.ts";
 import {
 	type AgentRunEvent,
@@ -42,6 +43,8 @@ import {
 import { liveChildren, runChildTool } from "../lib/child-session.ts";
 import { sleep } from "./harness.ts";
 import { at } from "./assert-helpers.ts";
+
+initTheme(undefined, false);
 
 // --- pure reader/writer tests -----------------------------------------------
 
@@ -542,6 +545,10 @@ test("runChildTool: caller abort mid-run → abort reaches the child, 'cancelled
 	}
 });
 
+function viewText(record: { view: { render(width: number): string[] } }): string {
+	return record.view.render(200).map((line) => stripTerminalSequences(line)).join("\n");
+}
+
 // ESC while the child session is still being created (the createChildSession /
 // reopen await): the abort listener is attached only afterwards, and an
 // AbortSignal never replays a past abort to a late listener — so the child used
@@ -563,10 +570,18 @@ test("runChildTool: caller abort before the run starts → the child never runs,
 		assert.equal((result.details as { aborted: boolean }).aborted, true);
 		assert.equal(lastFinish(record.sid)?.status, "cancelled");
 		assert.equal(record.running, false);
+		assert.doesNotMatch(viewText(record), /long task/, "the F2 view must not show a prompt the child never got");
 
 		const again = await runChildTool({ prompt: "retry", resume_id: id }, AGENT_OPTIONS, undefined, undefined, ctx);
 		assert.equal(again.isError, undefined, `resume after a pre-run abort: ${JSON.stringify(again.content)}`);
 		assert.equal(record.turns, 2);
+
+		// A later injected user message (context-cap steer, timer wake…) must still render.
+		record.view.handle({
+			type: "message_start",
+			message: { role: "user", content: [{ type: "text", text: "INJECTED-SENTINEL" }] },
+		} as unknown as AgentSessionEvent);
+		assert.match(viewText(record), /INJECTED-SENTINEL/);
 	} finally {
 		disposeChildren();
 	}
