@@ -294,10 +294,14 @@ async function runChildRecord(
 	record.runStartedAt = startedAt;
 	let failed = false;
 	try {
-		await record.session.prompt(params.prompt);
-		// prompt() resolving means the model stopped calling tools; a queued
-		// steer/follow-up may still be about to run (lib/session-quiet.ts).
-		await waitForSessionQuiet(record.session, signal);
+		// Aborted during the spawn/reopen await: onAbort never fires for a past
+		// abort, and session.abort() before prompt() would not stop it anyway.
+		if (!signal?.aborted) {
+			await record.session.prompt(params.prompt);
+			// prompt() resolving means the model stopped calling tools; a queued
+			// steer/follow-up may still be about to run (lib/session-quiet.ts).
+			await waitForSessionQuiet(record.session, signal);
+		}
 	} catch (error) {
 		failed = true; // finish row must say "error", not "done"
 		throw error;

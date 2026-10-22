@@ -541,3 +541,33 @@ test("runChildTool: caller abort mid-run → abort reaches the child, 'cancelled
 		disposeChildren();
 	}
 });
+
+// ESC while the child session is still being created (the createChildSession /
+// reopen await): the abort listener is attached only afterwards, and an
+// AbortSignal never replays a past abort to a late listener — so the child used
+// to run the whole task while the parent's tool call (awaited bare by pi) hung.
+test("runChildTool: caller abort before the run starts → the child never runs, 'cancelled' finish row", async () => {
+	try {
+		const ctx = await makeCtx("main-pre-abort");
+		// Warmed up first so the child has a transcript and its rows survive readRuns' pruning.
+		const first = await runChildTool({ prompt: "warm up" }, AGENT_OPTIONS, undefined, undefined, ctx);
+		const id = (first.details as { id: string }).id;
+		const record = liveChildren.get(id)!;
+		assert.equal(record.turns, 1);
+
+		const controller = new AbortController();
+		controller.abort();
+		const params = { prompt: "long task", resume_id: id };
+		const result = await runChildTool(params, AGENT_OPTIONS, controller.signal, undefined, ctx);
+		assert.equal(record.turns, 1, "an already-aborted call must not run the child's task");
+		assert.equal((result.details as { aborted: boolean }).aborted, true);
+		assert.equal(lastFinish(record.sid)?.status, "cancelled");
+		assert.equal(record.running, false);
+
+		const again = await runChildTool({ prompt: "retry", resume_id: id }, AGENT_OPTIONS, undefined, undefined, ctx);
+		assert.equal(again.isError, undefined, `resume after a pre-run abort: ${JSON.stringify(again.content)}`);
+		assert.equal(record.turns, 2);
+	} finally {
+		disposeChildren();
+	}
+});
