@@ -229,6 +229,8 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | `lib/child-types.ts` | type-only: `ChildRecord`, `ChildSource`, `ChildRegistry`, `RunChildOptions`, … — shared by the child-session modules without import cycles |
 | `lib/child-create.ts` | `createChildSession`: a child's `AgentSession`, fresh or reopened from its file — parent's model runtime, `PI_CHILD_EXTENSIONS` loader, child-context scope |
 | `lib/child-reopen.ts` | eviction of finished children beyond the cap and reopening an evicted / pre-restart child from its session file (`resume_id`) |
+| `lib/child-outcome.ts` | how a child run ended for the parent's tool result: final text, an unrecovered provider error (`failureText`), retry count, and the F2 retry lines |
+| `lib/abort-grace.ts` | `settleWithinAbortGrace`: bounds how long a caller abort waits for the child's run (`ABORT_GRACE_MS`) |
 | `lib/child-runs.ts` | a child run's `agent-runs.jsonl` spawn/progress/finish rows and its meta/status text (`collectMeta`, `metaLine`, `statusLine`) |
 | `lib/child-busy.ts` | the busy-group semaphore (one Agent at a time, N explorers), incl. the wind-down of a still-settling child |
 | `lib/child-context.ts` | `inChildSession()` / `childSessionInfo()`: the AsyncLocalStorage scope a child's extensions load and bind in — split out so child-guarded extensions (`wsstate.ts`, `timer.ts`, …) don't import all of `lib/child-session.ts` |
@@ -292,7 +294,13 @@ tool itself: every child is built with `excludeTools: ["Agent"]`, which is what 
 nesting at one layer (structural, not a counter — nothing to configure).
 
 - Runs in the foreground: the main agent waits, and the tool row shows live child status
-  (`agent#<id> · <description> · turn N · running grep`).
+  (`agent#<id> · <description> · turn N · running grep`; `retrying <n>/<max> after: <error>` while
+  pi auto-retries a failed provider call — the F2 transcript gets a line per retry too).
+  A run that ends on a provider failure pi could not retry away returns an error result
+  (error first, any earlier text marked as partial), not an answer.
+- Aborting the `Agent` call (`Esc` in the main session) cancels the child, but the call waits at most 10 s
+  (`lib/abort-grace.ts`) for the child to wind down: a provider stream that ignores the
+  abort is left orphaned rather than hanging the parent.
 - **F2** opens the child's live conversation, `Esc` returns. The child keeps running either
   way. The key is one constant in the file plus the `PI_SUBAGENT_WATCH_KEY` env override.
 - The watch view uses pi's own message and tool components, so a child's `bash`, `edit` etc.
