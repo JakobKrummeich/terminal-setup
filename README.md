@@ -349,7 +349,7 @@ nesting at one layer (structural, not a counter — nothing to configure).
 ./pi/extensions/test/run.sh          # all extension tests
 ./pi/extensions/test/run.sh --test-name-pattern=timer
 ./pi/extensions/test/check.sh        # quality gate: typecheck, eslint, dependency-cruiser, jscpd, shellcheck, lua syntax
-for t in test/*.test.sh; do bash "$t" || echo "FAIL: $t"; done   # installer shell tests (repo root; sandboxed in mktemp dirs)
+for t in test/*.test.sh; do bash "$t" || echo "FAIL: $t"; done   # shell tests: installers + farm.sh (repo root; sandboxed in mktemp dirs)
 ```
 
 `check.sh` is a local gate (no CI, no git hook) with exact-pinned tools in
