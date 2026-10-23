@@ -62,6 +62,15 @@ mkdir -p "$TMP/global/bin"
 ln -s "$GLOBAL/dist/bundle/cli.js" "$TMP/global/bin/pi"
 farm_from "$TMP/global/bin" "$GLOBAL" "$GLOBAL/node_modules"
 
+# ── a current-version naming a missing release fails closed ────────
+echo 9.9.9 > "$AGENT/install/current-version"
+mkdir -p "$TMP/stale/test"
+if (cd "$TMP/stale/test" && PATH="$AGENT/bin:$PATH" build_pi_farm 2>/dev/null); then
+	fail "a current-version naming a missing release must fail the farm"
+fi
+[ ! -e "$TMP/stale/test/node_modules" ] || fail "stale release left a partial farm"
+echo 1.4.0 > "$AGENT/install/current-version"
+
 # ── a missing dependency fails closed ──────────────────────────────
 rm -rf "$RELEASE/typebox"
 mkdir -p "$TMP/miss/test"

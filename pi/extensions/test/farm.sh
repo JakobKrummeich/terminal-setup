@@ -14,12 +14,17 @@
 # <agent>/install/releases/<current-version>/node_modules/.bin/pi, so its own
 # path leads to no package.json; follow it to the release the launcher runs.
 pi_entry_point() {
-	local pi_bin agent_dir version
+	local pi_bin agent_dir version release_bin
 	pi_bin="$(readlink -f "$1")"
 	agent_dir="$(dirname "$(dirname "$pi_bin")")"
 	if [[ -f "$agent_dir/install/managed-install.json" ]] \
 		&& IFS= read -r version < "$agent_dir/install/current-version"; then
-		pi_bin="$(readlink -f "$agent_dir/install/releases/$version/node_modules/.bin/pi")"
+		release_bin="$agent_dir/install/releases/$version/node_modules/.bin/pi"
+		if [[ ! -e "$release_bin" ]]; then
+			echo "pi release $version not found: $release_bin" >&2
+			return 1
+		fi
+		pi_bin="$(readlink -f "$release_bin")"
 	fi
 	echo "$pi_bin"
 }
@@ -46,7 +51,7 @@ build_pi_farm() {
 		echo "pi executable not found on PATH" >&2
 		return 1
 	fi
-	pi_bin="$(pi_entry_point "$pi_command")"
+	pi_bin="$(pi_entry_point "$pi_command")" || return 1
 	search_dir="$(dirname "$pi_bin")"
 	while true; do
 		package_json="$search_dir/package.json"
