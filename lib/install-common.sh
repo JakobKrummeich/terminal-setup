@@ -185,23 +185,27 @@ install_tmux() {
 # Bump: set RTK_VERSION, then replace every hash in rtk_asset_sha256 with the
 # values from that release's checksums.txt (README "Bumping rtk"). A version
 # without matching hashes fails closed — nothing is extracted or installed.
-RTK_VERSION="0.50.0"
+# Edition: rtk-oss (Apache-2.0 only). Since 1.0.0 the default rtk asset also
+# bundles the BUSL-1.1 compression engine, which serves only rtk pipeline and
+# PostToolUse compression; rtk.ts uses neither (rewrite + command filters are
+# identical in both editions), so we install the smaller Apache-2.0 binary.
+RTK_VERSION="1.0.1"
 
 rtk_asset_name() { # <uname -s> <uname -m> → release asset name; empty if unsupported
     case "$1/$2" in
-        Linux/x86_64) echo "rtk-x86_64-unknown-linux-musl.tar.gz" ;;
-        Linux/aarch64) echo "rtk-aarch64-unknown-linux-gnu.tar.gz" ;;
-        Darwin/x86_64) echo "rtk-x86_64-apple-darwin.tar.gz" ;;
-        Darwin/arm64) echo "rtk-aarch64-apple-darwin.tar.gz" ;;
+        Linux/x86_64) echo "rtk-oss-x86_64-unknown-linux-musl.tar.gz" ;;
+        Linux/aarch64) echo "rtk-oss-aarch64-unknown-linux-gnu.tar.gz" ;;
+        Darwin/x86_64) echo "rtk-oss-x86_64-apple-darwin.tar.gz" ;;
+        Darwin/arm64) echo "rtk-oss-aarch64-apple-darwin.tar.gz" ;;
     esac
 }
 
 rtk_asset_sha256() { # <asset-name> → expected SHA-256 for RTK_VERSION
     case "$1" in
-        rtk-x86_64-unknown-linux-musl.tar.gz) echo "bc2b8902b0d9c796c82ef45f16ae2307e17757afeca5ee156235a3dc7bda5f89" ;;
-        rtk-aarch64-unknown-linux-gnu.tar.gz) echo "d1cc49dfa2cd443fc32625444b59fe616b6c80478cca210985118347174dd758" ;;
-        rtk-x86_64-apple-darwin.tar.gz) echo "ac23e20024ab3c71e7f50069f8b34190aec1b2d8f0c2cc19834039b3dac73373" ;;
-        rtk-aarch64-apple-darwin.tar.gz) echo "fe54761a9950266e3a78ddb66a8af5e067251169da306a288e0751de63d836fe" ;;
+        rtk-oss-x86_64-unknown-linux-musl.tar.gz) echo "a44e8ffc43981100b4ddf1710399a1649a6c874591aa6d0c0727fe6cbd983c41" ;;
+        rtk-oss-aarch64-unknown-linux-gnu.tar.gz) echo "ee24a43dac9162de55fea8460b5efcd56d401ec28b5117c921bffa8a57bc136e" ;;
+        rtk-oss-x86_64-apple-darwin.tar.gz) echo "2cf4d6dd2cabccbc74aa6aba2a48e60aad85b1a31e3d740e6ca0b2fa0060b06a" ;;
+        rtk-oss-aarch64-apple-darwin.tar.gz) echo "4a4d9d09656ff29423336aa506e680afc3f7b6dafe84f0194a1c9a523a3c80e1" ;;
     esac
 }
 
