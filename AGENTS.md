@@ -61,7 +61,8 @@ Read `README.md` first — layout, install, known issues live there. Don't dupli
   otherwise dependency-cruiser follows into pi's `.d.ts` and reports false
   unresolvable imports) — plus a bin dir holding a `pi` symlink to its
   `dist/bundle/cli.js`. `PATH=<bin>:$PATH ./run.sh` / `./check.sh` then build
-  their farm from it unmodified. Build it with `npm install -g --prefix <tmp>
+  their farm from it unmodified (`farm.sh` also follows the pi.dev managed
+  launcher `~/.pi/agent/bin/pi` to its release, deps hoisted). Build it with `npm install -g --prefix <tmp>
   @earendil-works/pi-coding-agent@<version>` from the registry, then move
   `<tmp>/lib/node_modules` into place. Since 1.0.1 pi publishes no
   `npm-shrinkwrap.json`, so transitive deps float (1.0.4 resolved `@types/node`
