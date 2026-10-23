@@ -14,10 +14,12 @@ import {
 	type Component,
 	Container,
 	Spacer,
+	Text,
 	truncateToWidth,
 	type TUI,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
+import { retryLineText } from "./child-outcome.ts";
 import { formatTokenCount } from "./format.ts";
 import { messageText } from "./message-text.ts";
 import { SWAP_MARKER_TYPE, type SwapTrigger } from "./message-types.ts";
@@ -283,7 +285,8 @@ export class ChildView {
 		this.container.addChild(component);
 	}
 	handle(event: AgentSessionEvent) {
-		this.applyMessageEvent(event);
+		if (event.type === "auto_retry_start" || event.type === "auto_retry_end") this.addRetryLine(retryLineText(event));
+		else this.applyMessageEvent(event);
 		this.requestRender();
 	}
 	private applyMessageEvent(event: AgentSessionEvent) {
@@ -305,6 +308,11 @@ export class ChildView {
 			default:
 				this.applyToolEvent(event);
 		}
+	}
+	/** pi's own TUI shows retries as a status indicator; the F2 view has none, so they go into the transcript. */
+	private addRetryLine(text: string | undefined) {
+		if (!text) return;
+		this.container.addChild(new Text(getMarkdownTheme().italic(text), 1, 0));
 	}
 	private applyToolEvent(event: AgentSessionEvent) {
 		switch (event.type) {
