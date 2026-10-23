@@ -42,8 +42,9 @@ test("isRewriteCandidate: non-empty commands not already prefixed with rtk; RTK_
 const RTK_EXTENSION = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "../rtk.ts");
 
 // A fake `rtk` first on PATH. Logs every call; `--version` reports
-// $RTK_STUB_VERSION; `rewrite` answers by command. "slow" outlives rtk.ts's 2s
-// rewrite timeout (exec: pi's SIGTERM must hit the process holding the pipe).
+// $RTK_STUB_VERSION; `rewrite` answers by command. "slow" prints a rewrite, then
+// outlives rtk.ts's 2s rewrite timeout (exec: pi's SIGTERM must hit the process
+// holding the pipe), so only an enforced, fail-open timeout keeps the original.
 // pi.exec's un-unref'd 5s SIGKILL fallback keeps this file's process alive ~5s
 // past its last test; harmless, the runner runs test files in parallel.
 const RTK_STUB = `#!/bin/sh
@@ -54,7 +55,7 @@ case "$2" in
   "echo exit3") echo "echo REWRITTEN-3"; exit 3 ;;
   "echo exit3-empty") exit 3 ;;
   "echo exit2") echo "echo MUST-NOT-RUN"; exit 2 ;;
-  "echo slow") exec sleep 3 ;;
+  "echo slow") echo "echo MUST-NOT-RUN"; exec sleep 3 ;;
 esac
 exit 1
 `;
