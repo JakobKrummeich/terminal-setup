@@ -255,7 +255,9 @@ test("ESC on a child whose stream never ends settles the call after the grace, c
 		const params = { prompt: "do the task", description: "dead stream" };
 		const result = await runChildTool(params, { ...OPTIONS, abortGraceMs: GRACE_MS }, controller.signal, onUpdate, scripted.ctx);
 		const settledAfterMs = Date.now() - abortedAt;
-		assert.ok(settledAfterMs >= GRACE_MS && settledAfterMs < GRACE_MS + 1_000, `settled ${settledAfterMs} ms after ESC`);
+		// setTimeout counts from libuv's cached loop time, which can trail Date.now() by a
+		// millisecond or two, so the lower bound keeps a little slack.
+		assert.ok(settledAfterMs >= GRACE_MS - 5 && settledAfterMs < GRACE_MS + 1_000, `settled ${settledAfterMs} ms after ESC`);
 		assert.equal((result.details as { aborted?: boolean }).aborted, true);
 		const record = recordOf(result);
 		assert.equal(record.running, false);
