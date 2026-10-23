@@ -12,8 +12,10 @@ import type { TextContent } from "@earendil-works/pi-ai";
 import type { AgentSession, AgentSessionEvent, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import type { RunStatus } from "./agent-runs.ts";
+import { ABORT_GRACE_MS, settleWithinAbortGrace } from "./abort-grace.ts";
 import { type BusyGroup, busyGroup, releaseSlot, tryAcquireSlot } from "./child-busy.ts";
 import { createChildSession } from "./child-create.ts";
+import { failureText, isFailedAttempt, newRunOutcome, type RunOutcome, trackOutcome } from "./child-outcome.ts";
 import { evictFinishedChildren, freshHint, reopenEvictedChild } from "./child-reopen.ts";
 import {
 	collectMeta,
@@ -54,7 +56,8 @@ interface SharedState extends ChildRegistry {
 // v8: the child-session ALS (childSessionStore) moved to lib/child-context.ts and the F2
 // watchCursor to lib/child-watch.ts, each under its own key.
 // (Still v8 after the child-busy/child-reopen/child-types split: the object's shape
-// is unchanged, only its interfaces moved.)
+// is unchanged, only its interfaces moved. Still v8 after ChildRecord gained the
+// optional `retry`: readers treat undefined as "not retrying".)
 const STATE_KEY = Symbol.for("terminal-setup.child-session.v8");
 const state = sharedState<SharedState>(STATE_KEY, () => ({
 	liveChildren: new Map(),
@@ -75,19 +78,19 @@ export const liveChildren = state.liveChildren;
 
 type ChildUpdate = ((partial: ReturnType<typeof textResult>) => void) | undefined;
 
-function watchChild(record: ChildRecord, onUpdate: ChildUpdate): { text(): string; pushStatus(): void; stop(): void } {
-	// The child's final message: the last assistant message with non-blank text,
+function watchChild(record: ChildRecord, onUpdate: ChildUpdate): { outcome: RunOutcome; stop(): void } {
+	// The child's final message is the last assistant message with non-blank text,
 	// WHOLE — all its text blocks, not just the last one (that dropped everything
 	// before e.g. a thinking block from the result the parent sees).
-	let finalText = "";
+	const outcome = newRunOutcome();
 	const pushStatus = () => onUpdate?.(textResult(statusLine(record), { id: record.id }));
 	const unsub = record.session.subscribe((event: AgentSessionEvent) => {
 		record.view.handle(event);
 		trackChildActivity(record, event, pushStatus);
-		if (event.type === "message_end") finalText = assistantText(event.message) || finalText;
+		trackOutcome(outcome, event);
 	});
 	pushStatus();
-	return { pushStatus, text: () => finalText, stop: unsub };
+	return { outcome, stop: unsub };
 }
 
 /** Turn count, current tool, progress rows and live status of a running child. */
@@ -97,7 +100,15 @@ function trackChildActivity(record: ChildRecord, event: AgentSessionEvent, pushS
 			record.currentTool = undefined;
 			// Before turns++: the progress row's `turn` is the turn that just ended.
 			writeProgressEvent(record);
-			record.turns++;
+			if (!isFailedAttempt(event.message)) record.turns++;
+			pushStatus();
+			break;
+		case "auto_retry_start":
+			record.retry = { attempt: event.attempt, maxAttempts: event.maxAttempts, errorMessage: event.errorMessage };
+			pushStatus();
+			break;
+		case "auto_retry_end":
+			record.retry = undefined;
 			pushStatus();
 			break;
 		case "tool_execution_start":
@@ -110,12 +121,6 @@ function trackChildActivity(record: ChildRecord, event: AgentSessionEvent, pushS
 			pushStatus();
 			break;
 	}
-}
-
-/** The trimmed text of an assistant message ("" for other roles or no text). */
-function assistantText(message: { role: string }): string {
-	if (message.role !== "assistant") return "";
-	return messageText((message as { content?: unknown }).content).trim();
 }
 
 function labelFromPrompt(prompt: string): string {
@@ -278,7 +283,10 @@ async function spawnChildRecord(
 
 /**
  * Run one prompt on a claimed record and do the run's bookkeeping: elapsed time,
- * runStartedAt and the agent-runs finish row.
+ * runStartedAt and the agent-runs finish row. A caller abort returns after at
+ * most the abort grace (lib/abort-grace.ts); a run still pending then is
+ * orphaned: this finally already stopped its watcher and wrote the only finish
+ * row, and the busy slot stays held until the session is idle (releaseSlot).
  */
 async function runChildRecord(
 	record: ChildRecord,
@@ -300,11 +308,11 @@ async function runChildRecord(
 			// The child gets the task verbatim: the delegate contract rides the system
 			// prompt (options.contract, injected per turn by subagent.ts), not the prompt.
 			record.view.addUserMessage(params.prompt);
-			await record.session.prompt(params.prompt);
-			// prompt() resolving means the model stopped calling tools; a queued
-			// steer/follow-up may still be about to run (lib/session-quiet.ts).
-			await waitForSessionQuiet(record.session, signal);
+			const run = promptUntilQuiet(record, params.prompt, signal);
+			await settleWithinAbortGrace(run, signal, options.abortGraceMs ?? ABORT_GRACE_MS);
 		}
+		// pi auto-retries inside prompt(): an error still standing here is final.
+		failed = watcher.outcome.error !== undefined;
 	} catch (error) {
 		failed = true; // finish row must say "error", not "done"
 		throw error;
@@ -314,11 +322,19 @@ async function runChildRecord(
 		watcher.stop();
 		record.running = false;
 		record.currentTool = undefined;
+		record.retry = undefined;
 		signal?.removeEventListener("abort", onAbort);
 		// After elapsedMs is final: the finish row carries this run's cumulative numbers.
 		writeFinishEvent(record, runStatus(signal, failed));
 	}
-	return childRunResult(record, options.kind, watcher.text(), signal);
+	return childRunResult(record, options.kind, watcher.outcome, signal);
+}
+
+async function promptUntilQuiet(record: ChildRecord, prompt: string, signal: AbortSignal | undefined): Promise<void> {
+	await record.session.prompt(prompt);
+	// prompt() resolving means the model stopped calling tools; a queued
+	// steer/follow-up may still be about to run (lib/session-quiet.ts).
+	await waitForSessionQuiet(record.session, signal);
 }
 
 /** Start watching the child's events for this run. */
@@ -337,11 +353,13 @@ function runStatus(signal: AbortSignal | undefined, failed: boolean): RunStatus 
 	return signal?.aborted ? "cancelled" : failed ? "error" : "done";
 }
 
-function childRunResult(record: ChildRecord, kind: string, text: string, signal: AbortSignal | undefined) {
-	return textResult(
-		`${text || `(${kind} produced no text output)`}\n\n---\n${kind} id: ${record.id} (pass as resume_id to continue)`,
-		{ ...collectMeta(record), aborted: signal?.aborted === true },
-	);
+function childRunResult(record: ChildRecord, kind: string, outcome: RunOutcome, signal: AbortSignal | undefined) {
+	const trailer = `\n\n---\n${kind} id: ${record.id} (pass as resume_id to continue)`;
+	const details = { ...collectMeta(record), aborted: signal?.aborted === true };
+	if (outcome.error !== undefined && !details.aborted) {
+		return textResult(`${failureText(kind, outcome.error, outcome)}${trailer}`, { ...details, error: "child_failed" }, true);
+	}
+	return textResult(`${outcome.text || `(${kind} produced no text output)`}${trailer}`, details);
 }
 
 /** Shared renderResult() for child-session tools. */

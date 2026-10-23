@@ -160,6 +160,20 @@ export function metaLine(meta: RunMeta): string {
 }
 
 export function statusLine(record: ChildRecord): string {
-	const activity = record.currentTool ? `running ${record.currentTool}` : "thinking";
-	return `${record.kind}#${record.id} · ${record.description} · turn ${record.turns + 1} · ${activity}`;
+	return `${record.kind}#${record.id} · ${record.description} · turn ${record.turns + 1} · ${activityOf(record)}`;
+}
+
+/** A pi auto-retry first: the parent must see why a child is silent for minutes (4 × 300 s request timeouts). */
+function activityOf(record: ChildRecord): string {
+	if (record.retry) {
+		const { attempt, maxAttempts, errorMessage } = record.retry;
+		return `retrying ${attempt}/${maxAttempts} after: ${oneLine(errorMessage, 80)}`;
+	}
+	return record.currentTool ? `running ${record.currentTool}` : "thinking";
+}
+
+/** First line of `text`, cut to `max` chars (provider errors can be multi-line JSON). */
+function oneLine(text: string, max: number): string {
+	const line = text.split("\n", 1)[0] ?? "";
+	return line.length > max ? `${line.slice(0, max - 1)}\u2026` : line;
 }

@@ -35,6 +35,15 @@ export interface ChildRecord {
 	runStartedAt?: number;
 	/** Epoch ms of the last agent-runs.jsonl progress row (write throttle). */
 	lastProgressAt?: number;
+	/** Set while pi auto-retries a failed provider call (auto_retry_start … auto_retry_end). */
+	retry?: ChildRetry;
+}
+
+/** The pending auto-retry of a child, from pi's auto_retry_start event. */
+export interface ChildRetry {
+	attempt: number;
+	maxAttempts: number;
+	errorMessage: string;
 }
 
 /**
@@ -115,4 +124,6 @@ export interface RunChildOptions extends ChildSessionOptions {
 	 * before_agent_start handler — the prompt itself is never touched.
 	 */
 	contract?: string;
+	/** Grace a caller abort gives the run before the call returns without it. Default ABORT_GRACE_MS (tests shorten it). */
+	abortGraceMs?: number;
 }
