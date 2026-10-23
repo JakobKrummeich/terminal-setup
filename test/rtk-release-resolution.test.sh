@@ -21,27 +21,29 @@ assert_asset() {
     [ "$actual" = "$expected" ] || fail "expected $expected for $os/$arch, got $actual"
     [[ "$(rtk_asset_sha256 "$actual")" =~ ^[0-9a-f]{64}$ ]] || fail "no SHA-256 pinned for $actual"
 }
-assert_asset Linux x86_64 rtk-x86_64-unknown-linux-musl.tar.gz
-assert_asset Linux aarch64 rtk-aarch64-unknown-linux-gnu.tar.gz
-assert_asset Darwin x86_64 rtk-x86_64-apple-darwin.tar.gz
-assert_asset Darwin arm64 rtk-aarch64-apple-darwin.tar.gz
+assert_asset Linux x86_64 rtk-oss-x86_64-unknown-linux-musl.tar.gz
+assert_asset Linux aarch64 rtk-oss-aarch64-unknown-linux-gnu.tar.gz
+assert_asset Darwin x86_64 rtk-oss-x86_64-apple-darwin.tar.gz
+assert_asset Darwin arm64 rtk-oss-aarch64-apple-darwin.tar.gz
 [ -z "$(rtk_asset_name Linux riscv64)" ] || fail "unsupported platform must map to no asset"
 [ -z "$(rtk_asset_sha256 rtk-unknown.tar.gz)" ] || fail "unknown asset must have no hash"
 
-[ "$(rtk_release_url rtk-x86_64-unknown-linux-musl.tar.gz)" = \
-    "https://github.com/rtk-ai/rtk/releases/download/v$RTK_VERSION/rtk-x86_64-unknown-linux-musl.tar.gz" ] \
-    || fail "release URL is not pinned to v$RTK_VERSION: $(rtk_release_url rtk-x86_64-unknown-linux-musl.tar.gz)"
+[ "$(rtk_release_url rtk-oss-x86_64-unknown-linux-musl.tar.gz)" = \
+    "https://github.com/rtk-ai/rtk/releases/download/v$RTK_VERSION/rtk-oss-x86_64-unknown-linux-musl.tar.gz" ] \
+    || fail "release URL is not pinned to v$RTK_VERSION: $(rtk_release_url rtk-oss-x86_64-unknown-linux-musl.tar.gz)"
 
 # ── fixtures ───────────────────────────────────────────────────────
 FIXTURE="$(mktemp -d)"
 trap 'rm -rf "$FIXTURE"' EXIT
-RTK_ASSET_URL="https://github.com/rtk-ai/rtk/releases/download/v$RTK_VERSION/rtk-x86_64-unknown-linux-musl.tar.gz"
+RTK_ASSET_URL="https://github.com/rtk-ai/rtk/releases/download/v$RTK_VERSION/rtk-oss-x86_64-unknown-linux-musl.tar.gz"
 RTK_ARCHIVE="$FIXTURE/rtk.tar.gz"
 mkdir -p "$FIXTURE/archive"
 printf '#!/usr/bin/env bash\necho rtk %s\n' "$RTK_VERSION" > "$FIXTURE/archive/rtk"
 chmod +x "$FIXTURE/archive/rtk"
-touch -d '2020-01-01 UTC' "$FIXTURE/archive/rtk"
-tar -czf "$RTK_ARCHIVE" -C "$FIXTURE/archive" rtk
+# Real rtk >= 1.0 archives ship LICENSE beside the binary; only rtk may be installed.
+echo "Apache License" > "$FIXTURE/archive/LICENSE"
+touch -d '2020-01-01 UTC' "$FIXTURE/archive/rtk" "$FIXTURE/archive/LICENSE"
+tar -czf "$RTK_ARCHIVE" -C "$FIXTURE/archive" LICENSE rtk
 FIXTURE_SHA256="$(sha256sum "$RTK_ARCHIVE" | cut -d' ' -f1)"
 
 CURL_LOG="$FIXTURE/curl.log"

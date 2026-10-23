@@ -109,7 +109,9 @@ reported as a `NOTE:`. To bump:
 1. Set `RTK_VERSION` to the new release (without the `v`).
 2. Take the four asset hashes from that release's `checksums.txt`
    (`https://github.com/rtk-ai/rtk/releases/download/v<version>/checksums.txt`) and
-   replace every entry in `rtk_asset_sha256`. Check the asset names in
+   replace every entry in `rtk_asset_sha256` — the `rtk-oss-*` ones: we pin the
+   Apache-2.0 edition, since the default asset adds a BUSL engine `rtk.ts` never
+   uses. Check the asset names in
    `rtk_asset_name` still exist in the release.
 3. Run `bash test/rtk-release-resolution.test.sh`; to install it here, remove the old
    `~/.local/bin/rtk` and re-run `install-pi.sh`.
