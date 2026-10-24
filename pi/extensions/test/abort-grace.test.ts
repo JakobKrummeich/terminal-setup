@@ -70,7 +70,8 @@ test("abort, run never settles: resolves after the grace, not before", async () 
 	const controller = new AbortController();
 	const { run } = pendingRun();
 	const settled = settleWithinAbortGrace(run, controller.signal, 100);
-	assert.equal(await stateAfter(settled, 30), "pending", "no abort yet: no grace running");
+	// Wait past graceMs: a grace timer started before the abort would have fired by now.
+	assert.equal(await stateAfter(settled, 250), "pending", "no abort yet: no grace running");
 	controller.abort();
 	assert.equal(await stateAfter(settled, 30), "pending", "still inside the grace");
 	assert.equal(await stateAfter(settled, 1_000), "settled");
