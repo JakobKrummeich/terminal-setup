@@ -2,8 +2,8 @@
  * Custom-message contracts shared across files: the customType strings pi
  * persists in session JSONL, and the swap-trigger vocabulary stored on the
  * swap marker's `details`. Writers (context-cap.ts, handoff.ts) and readers
- * (lib/child-view.ts, lib/session-transcript.ts) all import from here, so a
- * rename cannot silently break one side.
+ * (lib/child-view.ts, lib/child-view-divider.ts, lib/session-transcript.ts)
+ * all import from here, so a rename cannot silently break one side.
  *
  * Must stay free of pi imports: lib/session-transcript.ts is also loaded by
  * pi/dashboard-daemon.mjs outside pi. Constants and types only (see AGENTS.md:
