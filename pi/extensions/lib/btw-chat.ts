@@ -29,7 +29,7 @@ import type { BtwInFlight, BtwSource, BtwThread } from "./btw-thread.ts";
 import { sgrWheelDelta, WatchViewport } from "./watch-viewport.ts";
 
 export const BTW_BANNER = " BTW · SIDE CHAT — the agent does NOT see this · not saved ";
-export const BTW_HINT = "enter send · shift+enter newline · pgup/pgdn scroll · esc close (aborts answer)";
+export const BTW_HINT = "enter send · shift+enter newline · pgup/pgdn scroll · esc close+abort";
 export const BTW_PLACEHOLDER = 'Ask what the agent is doing — e.g. "what are you working on right now?"';
 export const BTW_ANSWERING = "… answering";
 const GUTTER_WIDTH = 2; // "┃ "
