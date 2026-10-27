@@ -2,20 +2,25 @@
 // child) and a per-child transcript view (ChildView, lib/child-view.ts) with the
 // child's own footer, rendered on the terminal's alternate screen. Reads the child
 // registry (liveChildren) owned by lib/child-session.ts; child-session never calls
-// back into this file.
+// back into this file. View mode's BTW_KEY swaps in the child's btw side chat
+// (lib/btw-chat.ts) as a third mode.
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type KeyId, matchesKey, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
-import { collectMeta, metaLine, statusLine } from "./child-runs.ts";
 import { liveChildren } from "./child-session.ts";
 import type { ChildRecord } from "./child-types.ts";
-import { enterAltScreenWatch, enterWatchMouse } from "./alt-screen.ts";
+import { enterAltScreenWatch, enterWatchMouse, fullScreenOverlay } from "./alt-screen.ts";
+import { BtwChat } from "./btw-chat.ts";
+import { childBtw, childBtwSource } from "./btw-child.ts";
 import { CONTEXT_CAP_STATUS_KEY, resolveTriggers } from "./env.ts";
 import { formatCapStatus } from "./format.ts";
 import { renderFooterLines } from "./footer.ts";
 import { gitBranch } from "./git-branch.ts";
 import { sharedState } from "./shared-state.ts";
 import {
+	BTW_KEY,
 	EXPAND_KEY,
+	movePickerSelection,
+	pickerRow,
 	sgrWheelDelta,
 	WATCH_KEY,
 	WatchViewport,
@@ -76,35 +81,6 @@ function childFooterData(ctx: ExtensionContext, record: ChildRecord, branch: str
 	};
 }
 
-/**
- * One picker row (marker + live status / final meta), with `⇄N` right after the
- * leading `kind#id` when the child had handoffs — early in the row, so narrow
- * terminals clip the tail first. Selection styling is added by the caller.
- */
-export function pickerRow(record: ChildRecord): string {
-	const line = record.running
-		? statusLine(record)
-		: `${metaLine(collectMeta(record))} · ${record.description}`;
-	const handoffs = record.view.handoffCount;
-	// statusLine and metaLine both start with `${kind}#${id}`.
-	const label = `${record.kind}#${record.id}`;
-	const tagged =
-		handoffs > 0 && line.startsWith(label)
-			? `${label} \u21c4${handoffs}${line.slice(label.length)}`
-			: line;
-	return `${record.running ? "▶" : "■"} ${tagged}`;
-}
-
-/**
- * Wrapping selection move for the picker. Clamps a stale index first: eviction
- * can shrink the list while the picker is open, leaving `index` past the end.
- */
-export function movePickerSelection(index: number, delta: number, count: number): number {
-	if (count <= 0) return 0;
-	const clamped = Math.min(Math.max(index, 0), count - 1);
-	return (((clamped + delta) % count) + count) % count;
-}
-
 export async function openChildView(ctx: ExtensionContext, initial: ChildRecord): Promise<void> {
 	return watchOverlay(ctx, initial);
 }
@@ -115,17 +91,22 @@ export async function openChildPicker(ctx: ExtensionContext): Promise<void> {
 }
 
 /**
- * The F2 overlay. One overlay, two modes: "picker" (row per child) and "view" (one
- * child's transcript). Mode switching inside a single ui.custom keeps esc-from-view
- * returning to a still-live picker without re-opening the overlay. One instance per
- * open overlay: `mode`, `selected` and `record` are the state both modes share.
+ * The F2 overlay. One overlay, three modes: "picker" (row per child), "view" (one
+ * child's transcript) and "btw" (that child's side chat, BtwChat; esc → view). Mode
+ * switching inside a single ui.custom keeps esc-from-view returning to a still-live
+ * picker without re-opening the overlay. One instance per open overlay: `mode`,
+ * `selected` and `record` are the state the modes share.
  */
 class WatchOverlay {
 	private readonly tui: TUI;
 	private readonly theme: Theme;
 	private readonly done: () => void;
 	private readonly fromPicker: boolean;
-	private mode: "picker" | "view";
+	private mode: "picker" | "view" | "btw";
+	/** The open side chat; set exactly while mode is "btw". */
+	private btw: BtwChat | undefined;
+	private focusState = false;
+	private readonly registry: ExtensionContext["modelRegistry"];
 	/** Picker row; kept while in view mode so esc returns to the child's row. */
 	private selected: number;
 	// Swappable: WATCH_KEY/←/→ inside the view cycle children without closing
@@ -141,6 +122,7 @@ class WatchOverlay {
 		this.tui = tui;
 		this.theme = theme;
 		this.done = done;
+		this.registry = ctx.modelRegistry;
 		this.fromPicker = initial === undefined;
 		this.mode = this.fromPicker ? "picker" : "view";
 		// Open the picker on the last-watched child, not row 0 (fresh cursor → first row).
@@ -174,16 +156,29 @@ class WatchOverlay {
 		this.altScreen?.exit();
 		this.mouse?.exit();
 		this.record?.view.setRenderer(() => {});
+		this.btw?.dispose();
 	}
 
 	invalidate() {}
 
+	get focused(): boolean {
+		return this.focusState;
+	}
+
+	/** Focusable: forwarded to the btw chat's editor (hardware cursor). */
+	set focused(value: boolean) {
+		this.focusState = value;
+		if (this.btw) this.btw.focused = value;
+	}
+
 	render(width: number): string[] {
+		if (this.mode === "btw") return this.btw!.render(width);
 		return this.mode === "picker" ? this.renderPicker(width) : this.renderView(width);
 	}
 
 	handleInput(data: string) {
-		if (this.mode === "picker") this.handlePickerInput(data);
+		if (this.mode === "btw") this.btw!.handleInput(data);
+		else if (this.mode === "picker") this.handlePickerInput(data);
 		else this.handleViewInput(data);
 	}
 
@@ -335,7 +330,32 @@ class WatchOverlay {
 		["left", () => this.showPrevChild()],
 		["right", () => this.showNextChild()],
 		[WATCH_KEY, () => this.showNextChild()],
+		[BTW_KEY, () => this.openBtw()],
 	];
+
+	// ── btw mode ──
+
+	private openBtw() {
+		const record = this.record!;
+		const entry = childBtw(record.session);
+		if (!entry) return;
+		const source = childBtwSource(this.registry, record, entry.snapshot);
+		// terminalModes false: this overlay already holds the alt screen + wheel reporting.
+		const chat = new BtwChat(this.tui, this.theme, entry.thread, source, () => this.closeBtw(), {
+			terminalModes: false,
+		});
+		chat.focused = this.focusState;
+		this.btw = chat;
+		this.mode = "btw";
+		this.tui.requestRender();
+	}
+
+	private closeBtw() {
+		this.btw?.dispose();
+		this.btw = undefined;
+		this.mode = "view";
+		this.tui.requestRender();
+	}
 
 	private handleViewInput(data: string) {
 		// Mouse reports first and always consumed: a click (non-wheel button) is
@@ -349,14 +369,7 @@ class WatchOverlay {
 async function watchOverlay(ctx: ExtensionContext, initial: ChildRecord | undefined): Promise<void> {
 	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => new WatchOverlay(ctx, initial, tui, theme, done), {
 		overlay: true,
-		overlayOptions: () => ({
-			anchor: "top-left",
-			row: 0,
-			col: 0,
-			width: "100%",
-			maxHeight: "100%",
-			margin: 0,
-		}),
+		overlayOptions: fullScreenOverlay,
 	});
 }
 

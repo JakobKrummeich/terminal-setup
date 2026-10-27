@@ -1,17 +1,20 @@
 // F2 watch view chrome, pure: the scroll state of the transcript viewport
 // (WatchViewport), the header / hint / position text around it, the handoff
-// navigation math, and the SGR mouse-wheel decoding. The overlay that wires them
-// to the TUI lives in lib/child-watch.ts.
+// navigation math, the SGR mouse-wheel decoding, and the picker's row text and
+// selection math. The overlay that wires them to the TUI lives in
+// lib/child-watch.ts.
 import type { KeyId } from "@earendil-works/pi-tui";
-import { formatDuration, statusLine } from "./child-runs.ts";
+import { collectMeta, formatDuration, metaLine, statusLine } from "./child-runs.ts";
 import type { ChildRecord } from "./child-types.ts";
 
 const WATCH_KEY = (process.env.PI_SUBAGENT_WATCH_KEY ?? "f2") as KeyId;
 const EXPAND_KEY = (process.env.PI_SUBAGENT_EXPAND_KEY ?? "ctrl+o") as KeyId;
+/** Opens the watched child's btw side chat (lib/btw-chat.ts) inside the F2 view. */
+const BTW_KEY = (process.env.PI_SUBAGENT_BTW_KEY ?? "b") as KeyId;
 const SGR_MOUSE = /^\u001b\[<(\d+);\d+;\d+([Mm])$/;
 const WHEEL_LINES = 3;
 
-export { WATCH_KEY, EXPAND_KEY };
+export { WATCH_KEY, EXPAND_KEY, BTW_KEY };
 
 /** Total run time including the in-flight run (elapsedMs only grows when a run ends). */
 export function liveElapsedMs(
@@ -171,7 +174,7 @@ export function watchHeaderLines(record: ChildRecord, pos: string, k: number): [
 /** The watch view's key hint (untruncated). */
 export function watchHintLine(follow: boolean, handoffs: number, pos: string): string {
 	// `paused` first: a narrow terminal clips the hint's tail, not the state.
-	return `${follow ? "" : "paused · "}esc back · wheel/↑↓/pgup/pgdn scroll${handoffs > 0 ? " · shift+↑↓ handoff" : ""} · end follow · ${EXPAND_KEY} expand${
+	return `${follow ? "" : "paused · "}esc back · wheel/↑↓/pgup/pgdn scroll${handoffs > 0 ? " · shift+↑↓ handoff" : ""} · end follow · ${EXPAND_KEY} expand · ${BTW_KEY} btw${
 		pos ? ` · ←/→ agents · ${WATCH_KEY} next${pos}` : ""
 	}`;
 }
@@ -187,4 +190,33 @@ export function sgrWheelDelta(data: string): number | undefined {
 	if (button === 64) return -WHEEL_LINES;
 	if (button === 65) return WHEEL_LINES;
 	return 0;
+}
+
+/**
+ * One picker row (marker + live status / final meta), with `⇄N` right after the
+ * leading `kind#id` when the child had handoffs — early in the row, so narrow
+ * terminals clip the tail first. Selection styling is added by the caller.
+ */
+export function pickerRow(record: ChildRecord): string {
+	const line = record.running
+		? statusLine(record)
+		: `${metaLine(collectMeta(record))} · ${record.description}`;
+	const handoffs = record.view.handoffCount;
+	// statusLine and metaLine both start with `${kind}#${id}`.
+	const label = `${record.kind}#${record.id}`;
+	const tagged =
+		handoffs > 0 && line.startsWith(label)
+			? `${label} \u21c4${handoffs}${line.slice(label.length)}`
+			: line;
+	return `${record.running ? "▶" : "■"} ${tagged}`;
+}
+
+/**
+ * Wrapping selection move for the picker. Clamps a stale index first: eviction
+ * can shrink the list while the picker is open, leaving `index` past the end.
+ */
+export function movePickerSelection(index: number, delta: number, count: number): number {
+	if (count <= 0) return 0;
+	const clamped = Math.min(Math.max(index, 0), count - 1);
+	return (((clamped + delta) % count) + count) % count;
 }
