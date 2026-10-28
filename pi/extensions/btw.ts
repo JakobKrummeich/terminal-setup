@@ -76,7 +76,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("btw", {
-		description: "Side chat with the agent while it works (forked, tools off, never saved)",
+		description: "Side chat with the agent while it works (forked, tools never run, never saved)",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
 			if (!snapshot.fork()) {
