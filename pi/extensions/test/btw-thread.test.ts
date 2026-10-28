@@ -1,6 +1,6 @@
 /**
  * BtwThread (lib/btw-thread.ts): one direct LLM request per question.
- *   - the request: the fork's model, toolChoice "none", reasoning from the
+ *   - the request: the fork's model, no toolChoice (session shape), reasoning from the
  *     thinking level (none when "off"), the session id, the abort signal;
  *   - streaming partials are visible as inFlight.partial;
  *   - abort() drops the in-flight turn (also when the provider answers anyway);
@@ -30,7 +30,7 @@ function setup(thinkingLevel: "off" | "high" = "off") {
 	return { registry, snapshot, thread, request, changes: () => changes };
 }
 
-test("request: fork model, toolChoice none, no reasoning when off, session id, signal; partial then turn", async () => {
+test("request: fork model, no toolChoice, no reasoning when off, session id, signal; partial then turn", async () => {
 	const { registry, thread, request, changes } = setup();
 	const asked = thread.ask("what now?", request);
 	assert.equal(thread.answering, true);
@@ -38,7 +38,7 @@ test("request: fork model, toolChoice none, no reasoning when off, session id, s
 	assert.equal(registry.calls.length, 1, "request sent synchronously");
 	const [call] = registry.calls;
 	assert.equal(call!.model, MODEL);
-	assert.equal(call!.options.toolChoice, "none");
+	assert.equal(call!.options.toolChoice, undefined, "same request shape as the session: no toolChoice (cache)");
 	assert.equal(call!.options.reasoning, undefined);
 	assert.equal(call!.options.sessionId, "sess-42");
 	assert.ok(call!.options.signal instanceof AbortSignal);

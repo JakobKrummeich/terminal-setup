@@ -108,7 +108,7 @@ for (const [label, extensionPaths] of [
 		assert.equal(question.content[0].text, `${BTW_PREAMBLE}\n\nwhat are you doing?`);
 		assert.equal(btwMessages.length, request.length + 3);
 
-		assert.equal(btwCall.options.toolChoice, "none");
+		assert.equal(btwCall.options.toolChoice, undefined, "same request shape as the session: no toolChoice (cache)");
 		assert.equal(btwCall.options.reasoning, undefined, "thinking off");
 		assert.equal(btwCall.options.sessionId, t.session.sessionManager.getSessionId());
 		assert.equal(btwCall.model, t.session.model);

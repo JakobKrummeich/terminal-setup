@@ -114,7 +114,7 @@ test("child snapshot = the child's model context exactly (forced contract incl.)
 		const call = registry.calls[0]!;
 		assert.equal(call.model, record.session.model);
 		assert.equal(call.options.sessionId, record.session.sessionManager.getSessionId());
-		assert.equal(call.options.toolChoice, "none");
+		assert.equal(call.options.toolChoice, undefined, "same request shape as the session: no toolChoice (cache)");
 		finish(call, assistantMessage("fine"));
 		await asked;
 		assert.equal(thread.turns.length, 1);

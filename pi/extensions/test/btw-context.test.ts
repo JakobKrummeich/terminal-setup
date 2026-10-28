@@ -18,7 +18,7 @@ import {
 	ForkSnapshot,
 	PENDING_RESULT_TEXT,
 	projectForcedPrompt,
-	TOOL_ONLY_TEXT,
+	notRunText,
 } from "../lib/btw-context.ts";
 import { assistantMessage } from "./btw-fakes.ts";
 
@@ -86,7 +86,7 @@ test("buildBtwMessages: no synthetic result when the call has one; old orphans a
 	assert.equal(errored.filter((m) => m.role === "toolResult").length, 0);
 });
 
-test("buildBtwMessages: prior turns replayed without tool calls; errored turns excluded entirely", () => {
+test("buildBtwMessages: prior turns replayed with tool calls as not-run notes; errored turns excluded entirely", () => {
 	const turns = [
 		{ question: "first?", answer: assistantMessage([{ type: "text", text: "A1" }, call("x")], "toolUse") },
 		{ question: "broken?", answer: assistantMessage([], "error", { errorMessage: "overloaded" }) },
@@ -98,9 +98,9 @@ test("buildBtwMessages: prior turns replayed without tool calls; errored turns e
 		[
 			"user:task",
 			`user:${BTW_PREAMBLE}\n\nfirst?`,
-			"assistant:A1",
+			`assistant:A1|${notRunText("bash", { command: "sleep 9" })}`,
 			`user:${BTW_PREAMBLE}\n\ntool only?`,
-			`assistant:${TOOL_ONLY_TEXT}`,
+			`assistant:${notRunText("bash", { command: "sleep 9" })}`,
 			`user:${BTW_PREAMBLE}\n\nthird?`,
 		],
 	);
@@ -109,13 +109,15 @@ test("buildBtwMessages: prior turns replayed without tool calls; errored turns e
 	}
 });
 
-test("displayAnswer: strips tool calls, placeholder only when nothing else remains, errors untouched", () => {
+test("displayAnswer: tool calls become not-run notes in place, errored answers drop them", () => {
 	const plain = assistantMessage("hi");
 	assert.equal(displayAnswer(plain), plain, "no tool call: same object");
 	const mixed = displayAnswer(assistantMessage([{ type: "text", text: "A" }, call("x")], "toolUse"));
-	assert.equal(text(mixed), "A");
+	assert.equal(text(mixed), `A|${notRunText("bash", { command: "sleep 9" })}`);
 	assert.equal(mixed.stopReason, "stop");
-	assert.equal(text(displayAnswer(assistantMessage([call("x")], "toolUse"))), TOOL_ONLY_TEXT);
+	assert.equal(text(displayAnswer(assistantMessage([call("x")], "toolUse"))), notRunText("bash", { command: "sleep 9" }));
+	assert.equal(notRunText("bash", { command: "sleep 9" }), '⛔ not run (btw has no tools): bash {"command":"sleep 9"}');
+	assert.ok(notRunText("x", { s: "y".repeat(500) }).length < 220, "long args clipped");
 	const failed = displayAnswer(assistantMessage([call("x")], "error", { errorMessage: "boom" }));
 	assert.deepEqual(failed.content, [], "errored: AssistantMessageComponent shows the errorMessage instead");
 });

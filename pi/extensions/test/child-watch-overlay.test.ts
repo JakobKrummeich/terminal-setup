@@ -461,7 +461,7 @@ test("view → btw mode: the child's side chat in place, asks with the child's m
 			const call = registry.calls[0]!;
 			assert.equal(call.model, record.session.model, "the child's model");
 			assert.equal(call.options.sessionId, "child-sid-w1", "the child's session id");
-			assert.equal(call.options.toolChoice, "none");
+			assert.equal(call.options.toolChoice, undefined, "same request shape as the session: no toolChoice (cache)");
 			finish(call, assistantMessage("on it"));
 			await flush();
 			assert.ok(overlay.render().some((line) => line.includes("on it")));

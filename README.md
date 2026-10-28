@@ -239,7 +239,7 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | `lib/git-branch.ts` | `gitBranch`: the F2 child footer's branch, found like pi's own footer (nearest `.git` at or above cwd; relative `gitdir:` pointers resolved against the `.git` file's dir) |
 | `lib/watch-viewport.ts` | the F2 view's pure chrome: `WatchViewport` scroll state, header/hint/position text, handoff-jump math, SGR wheel decoding, picker row text + selection math, `WATCH_KEY`/`EXPAND_KEY`/`BTW_KEY` |
 | `lib/btw-context.ts` | btw, pure half: `ForkSnapshot` (the request as last sent + messages finished since), `buildBtwMessages` (fork → forced-prompt projection → synthetic “still running” results → prior turns → framed question), `BTW_PREAMBLE` |
-| `lib/btw-thread.ts` | `BtwThread`: one side chat's turns + the answer in flight, streamed via `ctx.modelRegistry.streamSimple` with `toolChoice: "none"` (tools stay declared for the prompt cache); abort drops the turn |
+| `lib/btw-thread.ts` | `BtwThread`: one side chat's turns + the answer in flight, streamed via `ctx.modelRegistry.streamSimple` in the session's own request shape (tools declared, no `toolChoice` — prompt cache); abort drops the turn |
 | `lib/btw-chat.ts` | `BtwChat`: the side chat's full-screen UI (warning banner, `┃` gutter, editor) for `/btw` and F2 → `b`; owns a fresh `BtwThread` per open (ephemeral); strips OSC 133 marks behind the gutter (mid-line they break rows in WezTerm) |
 | `lib/btw-child.ts` | a child's btw fork snapshot (`trackChildBtw` wraps its `agent.transformContext` — exact capture — in a `sharedState` WeakMap) and its `BtwSource` |
 | `lib/alt-screen.ts` | F2 watch terminal modes, both main-screen (`tuiMode: "regular"`) only: `enterAltScreenWatch` moves the overlay onto the terminal's alternate screen via pi-tui's internal render-state API (re-verify after `pi update`); `enterWatchMouse` turns on SGR wheel reporting — never under fullscreen pi, whose own mouse tracking the reset would wipe; `fullScreenOverlay` geometry (shared with `/btw`) |
@@ -274,16 +274,20 @@ in a long tool call) — without disturbing it. `/btw` alone opens an empty chat
 - The question goes to the same model (same thinking level) with a fork of the transcript as
   last sent to the model, incl. the in-flight assistant message: its still-running tool call
   gets a synthetic `(still running — no result yet)` result. A hidden framing note tells the
-  model it cannot use tools here. Tools stay declared but `toolChoice: "none"`, so the
-  request reuses the session's prompt cache.
+  model it cannot use tools here. The request has the session's own shape (tools declared,
+  no `toolChoice`), so it reuses the session's prompt cache — `toolChoice: "none"` would
+  invalidate Anthropic's cached messages and makes a model asked to run something write
+  fake tool-call text in an endless loop.
 - The real session is never touched: no steer, no follow-up, nothing appended, nothing saved,
   never in `/tree`. Ephemeral: the exchange lives only while the chat is open — `Esc` ends
   it, and the next `/btw` / `b` starts empty. Every new question re-forks from the live
   transcript, so “and now?” sees the progress since the last one.
 - The chat is full-screen and unmistakable: a warning-colored `BTW · SIDE CHAT` banner, a `┃`
   gutter on every line. `Enter` sends, `Shift+Enter` newline, `PgUp`/`PgDn`/wheel scroll,
-  `Esc` closes — and aborts an answer still streaming (that exchange is lost). Tool calls the
-  model tries anyway are dropped; errored answers are shown but left out of later context.
+  `Esc` closes — and aborts an answer still streaming (that exchange is lost). A tool call
+  the model makes anyway ends its answer and is never run: it shows (and is replayed) as
+  `⛔ not run (btw has no tools): <tool> <args>`. Errored answers are shown but left out of
+  later context.
 - Needs at least one model request in the session (else: “nothing to fork yet”).
 
 ### Agent dashboard (`pi-dash` daemon)

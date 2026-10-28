@@ -24,13 +24,21 @@ export type BtwAgentMessage = Parameters<typeof convertToLlm>[0][number];
  * without a result is still running — not failed.
  */
 export const BTW_PREAMBLE =
-	"[btw — side question from the user, asked while your work continues in the background. This is a forked side chat: you cannot use tools here, answer in text only. Your main run never sees this exchange. A tool call shown without a result is still running.]";
+	"[btw — side question from the user, asked while your work continues in the background. This is a forked side chat: you cannot use tools here, answer in text only — if asked to run something, say you can't from this side chat, and never write tool calls out as text. Your main run never sees this exchange. A tool call shown without a result is still running.]";
 
 /** Synthetic result for a tool call of the fork's last assistant message that has none yet. */
 export const PENDING_RESULT_TEXT = "(still running — no result yet)";
 
-/** Shown (and replayed) for an answer that consisted of tool calls only. */
-export const TOOL_ONLY_TEXT = "(the model tried to call a tool — btw has no tools)";
+/** Stands in for a tool call of a btw answer (shown AND replayed): btw never runs it. */
+export const NOT_RUN_PREFIX = "⛔ not run (btw has no tools):";
+const NOT_RUN_ARGS_MAX = 160;
+
+/** `⛔ not run (btw has no tools): bash {"command":"ls"}`, args clipped. */
+export function notRunText(name: string, args: unknown): string {
+	const json = JSON.stringify(args ?? {}) ?? "{}";
+	const clipped = json.length > NOT_RUN_ARGS_MAX ? `${json.slice(0, NOT_RUN_ARGS_MAX - 1)}…` : json;
+	return `${NOT_RUN_PREFIX} ${name} ${clipped}`;
+}
 
 /** The fork source: the transcript of one model request plus what finished after it. */
 export interface BtwFork {
@@ -136,21 +144,20 @@ function pendingResult(call: { id: string; name: string }, timestamp: number): T
 }
 
 /**
- * An answer as btw shows and replays it: tool calls stripped (btw declares the
- * tools but sends toolChoice "none"; a call slipping through can never run), and
- * TOOL_ONLY_TEXT when nothing else remains. Errored/aborted answers keep their
- * (possibly empty) content: AssistantMessageComponent shows their errorMessage.
+ * An answer as btw shows and replays it: every tool call becomes a NOT_RUN text
+ * line. btw declares the session's tools (prompt cache) and the model may still
+ * call one — that ends its turn normally (stopReason "toolUse"), and btw never
+ * runs it; replaying the note tells the model so. Errored/aborted answers drop
+ * their calls: AssistantMessageComponent shows their errorMessage instead.
  */
 export function displayAnswer(answer: AssistantMessage): AssistantMessage {
-	const content = answer.content.filter((block) => block.type !== "toolCall");
-	if (content.length === answer.content.length) return answer;
-	const kept = content.some((block) => block.type === "text" && block.text.trim() !== "");
+	if (!answer.content.some((block) => block.type === "toolCall")) return answer;
 	const failed = answer.stopReason === "error" || answer.stopReason === "aborted";
-	return {
-		...answer,
-		content: kept || failed ? content : [...content, { type: "text", text: TOOL_ONLY_TEXT }],
-		stopReason: answer.stopReason === "toolUse" ? "stop" : answer.stopReason,
-	};
+	const content = answer.content.flatMap((block) => {
+		if (block.type !== "toolCall") return [block];
+		return failed ? [] : [{ type: "text" as const, text: notRunText(block.name, block.arguments) }];
+	});
+	return { ...answer, content, stopReason: answer.stopReason === "toolUse" ? "stop" : answer.stopReason };
 }
 
 /** A btw question as the model sees it: BTW_PREAMBLE, blank line, question. */

@@ -125,16 +125,19 @@ export class BtwThread {
 		try {
 			const req = request();
 			const messages = buildBtwMessages(req.fork, this.turns, flight.question);
-			// Tools stay DECLARED (the fork's system message carries them) and are only
-			// disabled via toolChoice "none". WHY: Anthropic's prompt-cache prefix is
-			// tools → system → messages, so dropping the tools is a full cache miss on a
-			// long transcript — and Anthropic rejects a history holding tool_use blocks
-			// when no tools are declared at all.
+			// Same request shape as the session's own (tools declared, NO toolChoice), so
+			// the fork prefix hits the prompt cache. WHY not drop the tools: Anthropic's
+			// cache prefix is tools → system → messages (full miss), and it rejects a
+			// history holding tool_use blocks with no tools declared. WHY not toolChoice
+			// "none": a changed tool_choice invalidates Anthropic's cached messages, and
+			// a model asked to run something then writes fake tool-call markup as TEXT,
+			// which never ends its turn (seen live: an endless "calling" loop). With the
+			// default, a call ends the turn normally; btw never executes it
+			// (displayAnswer, lib/btw-context.ts) and the preamble says tools are off.
 			const stream = req.registry.streamSimple(
 				req.model,
 				{ messages },
 				{
-					toolChoice: "none",
 					reasoning: req.thinkingLevel === "off" ? undefined : req.thinkingLevel,
 					sessionId: req.sessionId,
 					signal: flight.controller.signal,
