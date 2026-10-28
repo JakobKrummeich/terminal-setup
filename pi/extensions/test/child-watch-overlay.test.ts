@@ -8,7 +8,9 @@
  *     never stuck) and the tail's `context k` = the last visible line's;
  *   - picker rows carry `⇄N` right after `kind#id` and fit the width;
  *   - picker ↔ view switching: enter/1-9/F2 in the picker, ←/→/F2 in the view,
- *     esc back to the child's row — or closing when there is nothing to go back to.
+ *     esc back to the child's row — or closing when there is nothing to go back to;
+ *   - view → btw mode (BTW_KEY): the child's side chat in place, asking through
+ *     ctx.modelRegistry with the child's model/session id; esc back to the view.
  *
  * Every test disposes the overlay (its 1s ticker would otherwise keep the
  * process alive) and clears liveChildren. process.stdout.write is captured
@@ -30,7 +32,11 @@ import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { ChildView } from "../lib/child-view.ts";
 import { liveChildren } from "../lib/child-session.ts";
 import type { ChildRecord } from "../lib/child-types.ts";
-import { openChildPicker, openChildView, pickerRow, resetWatchCursor } from "../lib/child-watch.ts";
+import { openChildPicker, openChildView, resetWatchCursor } from "../lib/child-watch.ts";
+import { BTW_KEY, pickerRow } from "../lib/watch-viewport.ts";
+import { BTW_BANNER, BTW_PLACEHOLDER } from "../lib/btw-chat.ts";
+import { trackChildBtw } from "../lib/btw-child.ts";
+import { assistantMessage, fakeRegistry, finish, flush } from "./btw-fakes.ts";
 
 initTheme(undefined, false);
 
@@ -85,11 +91,15 @@ function makeRecord(id: string, entries: unknown[], extra: Partial<ChildRecord> 
 	const session = {
 		getContextUsage: () => ({ tokens: 1500, contextWindow: 200_000, percent: 0.75 }),
 		getSessionStats: () => ({ cost: 0.25 }),
-		sessionManager: { getEntries: () => [] },
+		sessionManager: { getEntries: () => [], getSessionId: () => `child-sid-${id}` },
+		settingsManager: { getBlockImages: () => false, getThinkingBudgets: () => undefined, getTransport: () => "auto" },
+		// For trackChildBtw (F2 btw mode): the agent's transform chain + event feed.
+		agent: { transformContext: undefined as unknown },
+		subscribe: () => () => {},
 		messages: [],
 		sessionName: `agent#${id}`,
 		thinkingLevel: "off",
-		model: undefined,
+		model: { id: `model-${id}` },
 		dispose() {},
 	};
 	const view = new ChildView({ getToolDefinition: () => undefined } as never, "/tmp");
@@ -124,7 +134,11 @@ const theme = {
 	fg: (_color: string, text: string) => text,
 	bg: (_color: string, text: string) => text,
 	bold: (text: string) => text,
+	inverse: (text: string) => text,
 };
+
+/** ctx.modelRegistry of the fake ctx: the footer's isUsingOAuth plus btw's streamSimple. */
+const registry = Object.assign(fakeRegistry(), { isUsingOAuth: () => false });
 
 /** Open the overlay (view when `initial` is set, else the picker) on a fake TUI. */
 function openOverlay(initial: ChildRecord | undefined, rows = ROWS): Overlay {
@@ -140,7 +154,7 @@ function openOverlay(initial: ChildRecord | undefined, rows = ROWS): Overlay {
 	const tui = { mode: "regular", terminal: { rows, columns: WIDTH }, requestRender() {} };
 	const ctx = {
 		cwd: CWD,
-		modelRegistry: { isUsingOAuth: () => false },
+		modelRegistry: registry,
 		ui: {
 			custom(factory: (...args: unknown[]) => Component) {
 				component = factory(tui, theme, {}, () => closed++);
@@ -184,6 +198,33 @@ function withOverlay(initial: ChildRecord | undefined, body: (overlay: Overlay) 
 		liveChildren.clear();
 	}
 	assert.ok(writes.some((w) => w.includes("\x1b[?1000h")), "mouse mode was enabled (and captured)");
+}
+
+/** Run `fn` with process.stdout.write muted (the overlay's mouse-mode escapes). */
+function muted<T>(fn: () => T): T {
+	const originalWrite = process.stdout.write;
+	process.stdout.write = (() => true) as typeof process.stdout.write;
+	try {
+		return fn();
+	} finally {
+		process.stdout.write = originalWrite;
+	}
+}
+
+/**
+ * withOverlay for async bodies. stdout is muted only around open and dispose (the
+ * only writes): muting it across an await would swallow the test runner's own
+ * report lines, which go to the same stdout.
+ */
+async function withOverlayAsync(initial: ChildRecord, body: (overlay: Overlay) => Promise<void>): Promise<void> {
+	let overlay: Overlay | undefined;
+	try {
+		overlay = muted(() => openOverlay(initial));
+		await body(overlay);
+	} finally {
+		muted(() => overlay?.dispose());
+		liveChildren.clear();
+	}
 }
 
 /** Layout of a view frame: 2 header lines, VIEWPORT body lines, blank, hint, footer. */
@@ -398,4 +439,43 @@ test("esc closes instead of returning to the picker: view-opened, or ≤1 child 
 		assert.equal(overlay.closed(), 1, "a one-row picker is pointless: esc closes");
 	});
 	resetWatchCursor();
+});
+
+test("view → btw mode: the child's side chat in place, asks with the child's model; esc returns to the view, b reopens empty", async () => {
+	const record = makeRecord("w1", [userEntry("TASK"), ...filler("A", 3)]);
+	const btw = trackChildBtw(record.session);
+	btw.snapshot.onRequest([{ role: "user", content: [{ type: "text", text: "TASK" }], timestamp: 1 }] as never);
+	registry.calls.length = 0;
+	try {
+		await withOverlayAsync(record, async (overlay) => {
+			const view = overlay.render();
+			assert.match(parts(view).hint, new RegExp(` · ${BTW_KEY} btw`), "view hint names the btw key");
+
+			let frame = overlay.press(BTW_KEY);
+			assert.equal(frame[0], BTW_BANNER.padEnd(WIDTH, " "), "btw chat replaces the view");
+			assert.equal(frame[1], "┃ forked from agent#w1 · model-w1 · tools off · esc close");
+			assert.equal(frame.length, ROWS);
+
+			for (const ch of "status?") overlay.press(ch);
+			overlay.press(ENTER);
+			assert.equal(registry.calls.length, 1, "Enter asks through ctx.modelRegistry");
+			const call = registry.calls[0]!;
+			assert.equal(call.model, record.session.model, "the child's model");
+			assert.equal(call.options.sessionId, "child-sid-w1", "the child's session id");
+			assert.equal(call.options.toolChoice, undefined, "same request shape as the session: no toolChoice (cache)");
+			finish(call, assistantMessage("on it"));
+			await flush();
+			assert.ok(overlay.render().some((line) => line.includes("on it")));
+
+			frame = overlay.press(ESC);
+			assert.equal(frame[0], "■ agent#w1 · desc w1 · 3 turns · finished", "esc: back to the child view");
+			assert.equal(overlay.closed(), 0, "the overlay stays open");
+			// Ephemeral: closing ends the exchange — b opens a fresh, empty chat.
+			frame = overlay.press(BTW_KEY);
+			assert.ok(!frame.some((line) => line.includes("on it")), "the previous exchange is gone");
+			assert.ok(frame.some((line) => line.includes(BTW_PLACEHOLDER.slice(0, 30))), "fresh chat placeholder");
+		});
+	} finally {
+		registry.calls.length = 0;
+	}
 });

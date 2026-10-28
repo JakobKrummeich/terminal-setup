@@ -16,6 +16,7 @@ process.env.PI_OFFLINE = "1";
 
 import type { ChildRecord } from "../lib/child-types.ts";
 import {
+	BTW_KEY,
 	EXPAND_KEY,
 	WATCH_KEY,
 	WatchViewport,
@@ -175,13 +176,13 @@ test("watchHeaderLines: finished header + handoff line", () => {
 	assert.deepEqual(watchHeaderLines(record(), "", 1), ["■ agent#x1 · desc · 3 turns · finished", "  ⇄ no handoffs · 1m05s"]);
 });
 
-test("watchHintLine: paused first, handoff key only with handoffs, agents part only with a position", () => {
-	const base = `esc back · wheel/↑↓/pgup/pgdn scroll · end follow · ${EXPAND_KEY} expand`;
+test("watchHintLine: paused first, handoff key only with handoffs, btw key, agents part only with a position", () => {
+	const base = `esc back · wheel/↑↓/pgup/pgdn scroll · end follow · ${EXPAND_KEY} expand · ${BTW_KEY} btw`;
 	assert.equal(watchHintLine(true, 0, ""), base);
 	assert.equal(watchHintLine(false, 0, ""), `paused · ${base}`);
 	assert.equal(
 		watchHintLine(true, 2, " (1/2)"),
-		`esc back · wheel/↑↓/pgup/pgdn scroll · shift+↑↓ handoff · end follow · ${EXPAND_KEY} expand · ←/→ agents · ${WATCH_KEY} next (1/2)`,
+		`esc back · wheel/↑↓/pgup/pgdn scroll · shift+↑↓ handoff · end follow · ${EXPAND_KEY} expand · ${BTW_KEY} btw · ←/→ agents · ${WATCH_KEY} next (1/2)`,
 	);
 });
 

@@ -33,7 +33,8 @@ import {
 } from "../explore.ts";
 import { liveChildren, resetChildState, runChildTool } from "../lib/child-session.ts";
 import type { ChildRecord } from "../lib/child-types.ts";
-import { movePickerSelection, nextChild, prevChild, resetWatchCursor, watchTarget } from "../lib/child-watch.ts";
+import { nextChild, prevChild, resetWatchCursor, watchTarget } from "../lib/child-watch.ts";
+import { movePickerSelection } from "../lib/watch-viewport.ts";
 import type * as ChildSessionModule from "../lib/child-session.ts";
 import type * as ChildWatchModule from "../lib/child-watch.ts";
 import { sleep } from "./harness.ts";

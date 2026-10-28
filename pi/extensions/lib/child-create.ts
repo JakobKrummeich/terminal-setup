@@ -12,6 +12,7 @@ import {
 	SettingsManager,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { trackChildBtw } from "./btw-child.ts";
 import { type ChildSessionInfo, runInChildSession } from "./child-context.ts";
 import type { ChildModel, ChildThinkingLevel, RunChildOptions } from "./child-types.ts";
 
@@ -152,6 +153,8 @@ export async function createChildSession(
 	});
 	notifyLoadErrors(ctx, options.kind, extensionsResult?.errors);
 	await runInChildSession(info, () => session.bindExtensions({}));
+	// After bindExtensions: the btw fork source (F2 `b`) wraps the finished transform chain.
+	trackChildBtw(session);
 	return session;
 }
 

@@ -1,11 +1,19 @@
 // The F2 watch's terminal mode switches — alternate screen (enterAltScreenWatch),
 // with the internal pi-tui render-state API it drives, and SGR mouse wheel
-// reporting (enterWatchMouse). Used by lib/child-watch.ts.
+// reporting (enterWatchMouse) — plus the full-screen overlay geometry both
+// full-screen overlays share. Used by lib/child-watch.ts (F2) and lib/btw-chat.ts
+// (/btw).
+import type { OverlayOptions } from "@earendil-works/pi-tui";
 
 const ALT_SCREEN_ON = "\u001b[?1049h";
 const ALT_SCREEN_OFF = "\u001b[?1049l";
 const MOUSE_ON = "\u001b[?1000h\u001b[?1006h";
 const MOUSE_OFF = "\u001b[?1006l\u001b[?1000l";
+
+/** ui.custom overlayOptions covering the whole terminal (F2 watch, /btw chat). */
+export function fullScreenOverlay(): OverlayOptions {
+	return { anchor: "top-left", row: 0, col: 0, width: "100%", maxHeight: "100%", margin: 0 };
+}
 
 /**
  * The slice of TuiMainScreen the watch view needs to move rendering onto the
