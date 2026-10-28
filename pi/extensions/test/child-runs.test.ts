@@ -12,7 +12,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { runsFilePath } from "../lib/agent-runs.ts";
-import { collectMeta, formatDuration, metaLine, type RunMeta, writeProgressEvent } from "../lib/child-runs.ts";
+import {
+	collectMeta,
+	formatDuration,
+	metaLine,
+	type RunMeta,
+	statusLine,
+	writeProgressEvent,
+} from "../lib/child-runs.ts";
 import type { ChildRecord } from "../lib/child-types.ts";
 import { CONTEXT_CAP_TOOL_NAME } from "../lib/env.ts";
 
@@ -101,6 +108,26 @@ test("collectMeta: resets = pi compactions + context_handoff calls; unknown usag
 	assert.equal(meta.contextPercent, null);
 	assert.equal(meta.contextWindow, 0);
 	assert.equal(meta.costUsd, 0.25);
+});
+
+// child-retry.test.ts only sees a short one-line "Request timed out."; the
+// first-line cut and the 80-char cap exist for multi-line JSON provider errors.
+test("statusLine: retry beats the running tool; its error is cut to one line of at most 80 chars", () => {
+	const record = fakeRecord({}, { turns: 2 });
+	assert.equal(statusLine(record), "agent#c1 · desc · turn 3 · thinking");
+	record.currentTool = "bash";
+	assert.equal(statusLine(record), "agent#c1 · desc · turn 3 · running bash");
+
+	record.retry = { attempt: 2, maxAttempts: 3, errorMessage: '503 {\n  "error": "overloaded"\n}' };
+	assert.equal(statusLine(record), "agent#c1 · desc · turn 3 · retrying 2/3 after: 503 {");
+
+	record.retry = { attempt: 1, maxAttempts: 3, errorMessage: "x".repeat(80) };
+	assert.ok(statusLine(record).endsWith(`after: ${"x".repeat(80)}`), "exactly 80 chars stay uncut");
+	record.retry = { attempt: 1, maxAttempts: 3, errorMessage: "y".repeat(81) };
+	assert.ok(statusLine(record).endsWith(`after: ${"y".repeat(79)}\u2026`), "81 chars → 79 + ellipsis = 80");
+
+	record.retry = undefined;
+	assert.equal(statusLine(record), "agent#c1 · desc · turn 3 · running bash", "retry end restores the activity");
 });
 
 test("writeProgressEvent: at most one row per child per 2s; tool only when one is running", () => {
