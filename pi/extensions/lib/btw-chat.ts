@@ -25,7 +25,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { enterAltScreenWatch, enterWatchMouse } from "./alt-screen.ts";
 import { displayAnswer } from "./btw-context.ts";
-import type { BtwInFlight, BtwSource, BtwThread } from "./btw-thread.ts";
+import { type BtwInFlight, type BtwSource, BtwThread } from "./btw-thread.ts";
 import { sgrWheelDelta, WatchViewport } from "./watch-viewport.ts";
 
 export const BTW_BANNER = " BTW · SIDE CHAT — the agent does NOT see this · not saved ";
@@ -33,6 +33,14 @@ export const BTW_HINT = "enter send · shift+enter newline · pgup/pgdn scroll �
 export const BTW_PLACEHOLDER = 'Ask what the agent is doing — e.g. "what are you working on right now?"';
 export const BTW_ANSWERING = "… answering";
 const GUTTER_WIDTH = 2; // "┃ "
+/**
+ * OSC 133 shell-integration zone marks. pi's UserMessageComponent opens its lines
+ * with them, and pi-tui strips them only at the START of a line. Behind the gutter
+ * they would sit mid-line, where a terminal such as WezTerm treats `133;A` as
+ * "fresh line" and breaks the row: every row below shifts down, the editor is cut
+ * off and the differential renderer leaves stale rows (a ghost `… answering`).
+ */
+const OSC133 = /\x1b\]133;[^\x07\x1b]*(?:\x07|\x1b\\)/g;
 /** The banner/gutter/border color — one token, so all btw chrome reads as one thing. */
 const BTW_COLOR = "warning";
 
@@ -54,7 +62,11 @@ export function btwInfoLine(source: Pick<BtwSource, "label" | "modelId">): strin
 export class BtwChat implements Component, Focusable {
 	private readonly tui: TUI;
 	private readonly theme: BtwTheme;
-	private readonly thread: BtwThread;
+	/**
+	 * Ephemeral by design: one thread per open chat, never kept after close — a btw
+	 * exchange is a quick status check, so reopening always starts empty.
+	 */
+	readonly thread = new BtwThread();
 	private readonly source: BtwSource;
 	private readonly onClose: () => void;
 	private readonly editor: Editor;
@@ -71,14 +83,12 @@ export class BtwChat implements Component, Focusable {
 	constructor(
 		tui: TUI,
 		theme: BtwTheme,
-		thread: BtwThread,
 		source: BtwSource,
 		onClose: () => void,
 		options: BtwChatOptions,
 	) {
 		this.tui = tui;
 		this.theme = theme;
-		this.thread = thread;
 		this.source = source;
 		this.onClose = onClose;
 		this.editor = new Editor(tui, {
@@ -86,7 +96,7 @@ export class BtwChat implements Component, Focusable {
 			selectList: getSelectListTheme(),
 		});
 		this.editor.onSubmit = (text) => this.submit(text);
-		this.unsubscribe = thread.subscribe(() => this.sync());
+		this.unsubscribe = this.thread.subscribe(() => this.sync());
 		if (options.terminalModes) {
 			// Same order as the F2 WatchOverlay: mouse first, alt screen second; dispose
 			// exits them in reverse (alt screen before the mouse reset).
@@ -169,7 +179,7 @@ export class BtwChat implements Component, Focusable {
 	}
 
 	private gutter(line: string): string {
-		return `${this.theme.fg(BTW_COLOR, "┃")} ${line}`;
+		return `${this.theme.fg(BTW_COLOR, "┃")} ${line.replace(OSC133, "")}`;
 	}
 
 	/** Thread changed: rebuild on a new turn/flight, else stream into the live answer. */

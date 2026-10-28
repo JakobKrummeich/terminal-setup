@@ -34,7 +34,7 @@ import { liveChildren } from "../lib/child-session.ts";
 import type { ChildRecord } from "../lib/child-types.ts";
 import { openChildPicker, openChildView, resetWatchCursor } from "../lib/child-watch.ts";
 import { BTW_KEY, pickerRow } from "../lib/watch-viewport.ts";
-import { BTW_BANNER } from "../lib/btw-chat.ts";
+import { BTW_BANNER, BTW_PLACEHOLDER } from "../lib/btw-chat.ts";
 import { trackChildBtw } from "../lib/btw-child.ts";
 import { assistantMessage, fakeRegistry, finish, flush } from "./btw-fakes.ts";
 
@@ -440,7 +440,7 @@ test("esc closes instead of returning to the picker: view-opened, or ≤1 child 
 	resetWatchCursor();
 });
 
-test("view → btw mode: the child's side chat in place, asks with the child's model; esc returns to the view", async () => {
+test("view → btw mode: the child's side chat in place, asks with the child's model; esc returns to the view, b reopens empty", async () => {
 	const record = makeRecord("w1", [userEntry("TASK"), ...filler("A", 3)]);
 	const btw = trackChildBtw(record.session);
 	btw.snapshot.onRequest([{ role: "user", content: [{ type: "text", text: "TASK" }], timestamp: 1 }] as never);
@@ -469,8 +469,10 @@ test("view → btw mode: the child's side chat in place, asks with the child's m
 			frame = overlay.press(ESC);
 			assert.equal(frame[0], "■ agent#w1 · desc w1 · 3 turns · finished", "esc: back to the child view");
 			assert.equal(overlay.closed(), 0, "the overlay stays open");
-			assert.equal(btw.thread.turns.length, 1, "the thread survives (reopen with b)");
-			assert.ok(overlay.press(BTW_KEY).some((line) => line.includes("on it")), "b reopens the kept thread");
+			// Ephemeral: closing ends the exchange — b opens a fresh, empty chat.
+			frame = overlay.press(BTW_KEY);
+			assert.ok(!frame.some((line) => line.includes("on it")), "the previous exchange is gone");
+			assert.ok(frame.some((line) => line.includes(BTW_PLACEHOLDER.slice(0, 30))), "fresh chat placeholder");
 		});
 	} finally {
 		registry.calls.length = 0;

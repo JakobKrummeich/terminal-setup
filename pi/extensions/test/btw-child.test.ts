@@ -22,6 +22,7 @@ import { getModel } from "@earendil-works/pi-ai/compat";
 import { type ExtensionContext, initTheme, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { BTW_PREAMBLE, buildBtwMessages } from "../lib/btw-context.ts";
 import { childBtw, childBtwSource } from "../lib/btw-child.ts";
+import { BtwThread } from "../lib/btw-thread.ts";
 import { liveChildren, runChildTool } from "../lib/child-session.ts";
 import { assistantMessage, fakeRegistry, finish } from "./btw-fakes.ts";
 import { type ResponseStep, type ScriptedStep, sleep, textStep, toolStep } from "./harness.ts";
@@ -99,6 +100,7 @@ test("child snapshot = the child's model context exactly (forced contract incl.)
 
 		const record = [...liveChildren.values()][0]!;
 		const btw = childBtw(record.session)!;
+		const thread = new BtwThread();
 		const messages = json(buildBtwMessages(btw.snapshot.fork()!, [], "how did it go?"));
 		const last = calls[1]!;
 		assert.deepEqual(messages.slice(0, last.length), last);
@@ -108,14 +110,14 @@ test("child snapshot = the child's model context exactly (forced contract incl.)
 
 		// The F2 source asks with the child's model and session id.
 		const registry = fakeRegistry();
-		const asked = btw.thread.ask("q", () => childBtwSource(registry, record, btw.snapshot).request());
+		const asked = thread.ask("q", () => childBtwSource(registry, record, btw.snapshot).request());
 		const call = registry.calls[0]!;
 		assert.equal(call.model, record.session.model);
 		assert.equal(call.options.sessionId, record.session.sessionManager.getSessionId());
 		assert.equal(call.options.toolChoice, "none");
 		finish(call, assistantMessage("fine"));
 		await asked;
-		assert.equal(btw.thread.turns.length, 1);
+		assert.equal(thread.turns.length, 1);
 	} finally {
 		for (const record of liveChildren.values()) record.session.dispose();
 		liveChildren.clear();

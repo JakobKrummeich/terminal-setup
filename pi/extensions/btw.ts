@@ -8,14 +8,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { fullScreenOverlay } from "./lib/alt-screen.ts";
 import { BtwChat } from "./lib/btw-chat.ts";
 import { ForkSnapshot } from "./lib/btw-context.ts";
-import { type BtwSource, BtwThread, btwRequest, NOTHING_TO_FORK } from "./lib/btw-thread.ts";
+import { type BtwSource, btwRequest, NOTHING_TO_FORK } from "./lib/btw-thread.ts";
 import { inChildSession } from "./lib/child-context.ts";
-
-/** One session's btw state: replaced wholesale on session_start. */
-interface MainBtw {
-	snapshot: ForkSnapshot;
-	thread: BtwThread;
-}
 
 function mainSource(ctx: ExtensionContext, snapshot: ForkSnapshot): BtwSource {
 	return {
@@ -41,10 +35,11 @@ function mainSource(ctx: ExtensionContext, snapshot: ForkSnapshot): BtwSource {
  * redraw; idle, it parks pi's input loop, which cannot receive input anyway while
  * the overlay holds focus. Same pattern as the F2 shortcut and pi's own selectors.
  */
-async function openBtwOverlay(ctx: ExtensionContext, btw: MainBtw, question: string): Promise<void> {
+async function openBtwOverlay(ctx: ExtensionContext, snapshot: ForkSnapshot, question: string): Promise<void> {
 	await ctx.ui.custom<void>(
 		(tui, theme, _keybindings, done) => {
-			const chat = new BtwChat(tui, theme, btw.thread, mainSource(ctx, btw.snapshot), () => done(), {
+			// A fresh, ephemeral thread per open (BtwChat owns it): closing ends the chat.
+			const chat = new BtwChat(tui, theme, mainSource(ctx, snapshot), () => done(), {
 				terminalModes: true,
 			});
 			chat.submit(question);
@@ -59,33 +54,31 @@ export default function (pi: ExtensionAPI) {
 	// a child's own btw lives in the F2 view (its snapshot: lib/btw-child.ts).
 	if (inChildSession()) return;
 
-	let btw: MainBtw = { snapshot: new ForkSnapshot(), thread: new BtwThread() };
+	let snapshot = new ForkSnapshot();
 
-	// New / resumed / forked session: the old fork source and thread are meaningless.
+	// New / resumed / forked session: the old fork source is meaningless.
 	pi.on("session_start", () => {
-		btw.thread.abort();
-		btw = { snapshot: new ForkSnapshot(), thread: new BtwThread() };
+		snapshot = new ForkSnapshot();
 	});
-	pi.on("session_shutdown", () => btw.thread.abort());
 
 	// Observe only (returns undefined). getSystemPrompt() is read NOW: during the run it
 	// is the forced prompt pi projects in after these handlers; pi clears that at run end.
 	pi.on("context_with_system", (event, ctx) => {
-		btw.snapshot.onRequest(event.messages, ctx.getSystemPrompt());
+		snapshot.onRequest(event.messages, ctx.getSystemPrompt());
 	});
 	pi.on("message_end", (event) => {
-		btw.snapshot.onMessageEnd(event.message);
+		snapshot.onMessageEnd(event.message);
 	});
 
 	pi.registerCommand("btw", {
 		description: "Side chat with the agent while it works (forked, tools off, never saved)",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
-			if (!btw.snapshot.fork()) {
+			if (!snapshot.fork()) {
 				ctx.ui.notify(NOTHING_TO_FORK, "warning");
 				return;
 			}
-			await openBtwOverlay(ctx, btw, args.trim());
+			await openBtwOverlay(ctx, snapshot, args.trim());
 		},
 	});
 }

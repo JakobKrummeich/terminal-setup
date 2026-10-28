@@ -13,7 +13,7 @@ import { initTheme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { BTW_ANSWERING, BTW_BANNER, BTW_HINT, BTW_PLACEHOLDER, BtwChat } from "../lib/btw-chat.ts";
 import { type BtwAgentMessage, ForkSnapshot } from "../lib/btw-context.ts";
-import { type BtwSource, BtwThread, btwRequest } from "../lib/btw-thread.ts";
+import { type BtwSource, btwRequest } from "../lib/btw-thread.ts";
 import { assistantMessage, fakeRegistry, finish, flush, streamPartial } from "./btw-fakes.ts";
 
 initTheme(undefined, false);
@@ -37,7 +37,6 @@ function setup(options: { mode?: string } = {}) {
 	const registry = fakeRegistry();
 	const snapshot = new ForkSnapshot();
 	snapshot.onRequest([{ role: "user", content: [{ type: "text", text: "task" }], timestamp: 1 }] as BtwAgentMessage[]);
-	const thread = new BtwThread();
 	const source: BtwSource = {
 		label: "main session",
 		modelId: () => "m-1",
@@ -52,7 +51,8 @@ function setup(options: { mode?: string } = {}) {
 	};
 	const tui = { mode: options.mode, terminal: { rows: ROWS, columns: WIDTH }, requestRender() {} } as any;
 	let closed = 0;
-	const chat = new BtwChat(tui, theme, thread, source, () => closed++, { terminalModes: options.mode !== undefined });
+	const chat = new BtwChat(tui, theme, source, () => closed++, { terminalModes: options.mode !== undefined });
+	const thread = chat.thread;
 	const type = (text: string) => {
 		for (const ch of text) chat.handleInput(ch);
 	};
@@ -120,6 +120,34 @@ test("Esc while streaming: aborts (turn lost) and closes", async () => {
 	assert.equal(thread.answering, false);
 	await flush();
 	assert.deepEqual(thread.turns, [], "the in-flight turn is dropped");
+});
+
+test("OSC 133 zone marks never reach the terminal mid-line (behind the gutter)", async () => {
+	// Regression: pi's UserMessageComponent opens its lines with OSC 133 marks that
+	// pi-tui strips only at the START of a line. Behind the gutter WezTerm read
+	// `133;A` as "fresh line", broke the row and shifted the whole chat down.
+	const { registry, type, frame } = setup();
+	type("tell me a joke");
+	type(ENTER);
+	finish(registry.calls[0]!, assistantMessage("No."));
+	await flush();
+	const raw = frame();
+	assert.ok(plain(raw).some((l) => l.includes("tell me a joke")), "precondition: user message rendered");
+	for (const [i, line] of raw.entries()) assert.ok(!line.includes("\x1b]133;"), `line ${i} carries no OSC 133 mark`);
+	assert.equal(raw.length, ROWS);
+});
+
+test("each chat owns a fresh thread: a new chat starts empty", async () => {
+	const first = setup();
+	first.type("q");
+	first.type(ENTER);
+	finish(first.registry.calls[0]!, assistantMessage("answered"));
+	await flush();
+	assert.equal(first.thread.turns.length, 1);
+	first.chat.dispose();
+	const second = setup();
+	assert.notEqual(second.thread, first.thread);
+	assert.ok(plain(second.frame()).some((l) => l.includes(BTW_PLACEHOLDER.slice(0, 30))), "empty again");
 });
 
 test("pgup scrolls the transcript; wheel reports never reach the editor", async () => {

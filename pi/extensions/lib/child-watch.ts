@@ -341,7 +341,7 @@ class WatchOverlay {
 		if (!entry) return;
 		const source = childBtwSource(this.registry, record, entry.snapshot);
 		// terminalModes false: this overlay already holds the alt screen + wheel reporting.
-		const chat = new BtwChat(this.tui, this.theme, entry.thread, source, () => this.closeBtw(), {
+		const chat = new BtwChat(this.tui, this.theme, source, () => this.closeBtw(), {
 			terminalModes: false,
 		});
 		chat.focused = this.focusState;

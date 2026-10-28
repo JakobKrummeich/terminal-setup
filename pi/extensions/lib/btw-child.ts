@@ -1,21 +1,20 @@
-// btw side chat for child sessions (Agent/Explore): the fork snapshot + thread of
-// each child, captured exactly at the child's agent (trackChildBtw, called by
+// btw side chat for child sessions (Agent/Explore): the fork snapshot of each
+// child (the chat's thread is ephemeral, owned by BtwChat), captured exactly at the child's agent (trackChildBtw, called by
 // lib/child-create.ts), and the BtwSource the F2 watch's btw mode asks through.
 import type { AgentSession, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { ForkSnapshot } from "./btw-context.ts";
-import { BtwThread, type BtwSource, btwRequest } from "./btw-thread.ts";
+import { type BtwSource, btwRequest } from "./btw-thread.ts";
 import type { ChildRecord } from "./child-types.ts";
 import { sharedState } from "./shared-state.ts";
 
 export interface ChildBtw {
 	snapshot: ForkSnapshot;
-	thread: BtwThread;
 }
 
 // On globalThis (lib/shared-state.ts): child-create.ts's copy of this module
 // writes, child-watch.ts's copy reads — separate jiti module copies.
 // Bump N whenever ChildBtw's shape changes (see sharedState()).
-const STATE_KEY = Symbol.for("terminal-setup.btw-child.v1");
+const STATE_KEY = Symbol.for("terminal-setup.btw-child.v2");
 const childBtws = sharedState<WeakMap<object, ChildBtw>>(STATE_KEY, () => new WeakMap());
 
 /**
@@ -28,7 +27,7 @@ const childBtws = sharedState<WeakMap<object, ChildBtw>>(STATE_KEY, () => new We
  * installers in its constructor), so wrapping once after bindExtensions holds.
  */
 export function trackChildBtw(session: AgentSession): ChildBtw {
-	const entry: ChildBtw = { snapshot: new ForkSnapshot(), thread: new BtwThread() };
+	const entry: ChildBtw = { snapshot: new ForkSnapshot() };
 	const agent = session.agent;
 	const previous = agent.transformContext;
 	agent.transformContext = async (messages, signal) => {

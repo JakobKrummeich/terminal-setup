@@ -240,8 +240,8 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | `lib/watch-viewport.ts` | the F2 view's pure chrome: `WatchViewport` scroll state, header/hint/position text, handoff-jump math, SGR wheel decoding, picker row text + selection math, `WATCH_KEY`/`EXPAND_KEY`/`BTW_KEY` |
 | `lib/btw-context.ts` | btw, pure half: `ForkSnapshot` (the request as last sent + messages finished since), `buildBtwMessages` (fork → forced-prompt projection → synthetic “still running” results → prior turns → framed question), `BTW_PREAMBLE` |
 | `lib/btw-thread.ts` | `BtwThread`: one side chat's turns + the answer in flight, streamed via `ctx.modelRegistry.streamSimple` with `toolChoice: "none"` (tools stay declared for the prompt cache); abort drops the turn |
-| `lib/btw-chat.ts` | `BtwChat`: the side chat's full-screen UI (warning banner, `┃` gutter, editor) for `/btw` and F2 → `b` |
-| `lib/btw-child.ts` | a child's btw state (`trackChildBtw` wraps its `agent.transformContext` — exact capture — in a `sharedState` WeakMap) and its `BtwSource` |
+| `lib/btw-chat.ts` | `BtwChat`: the side chat's full-screen UI (warning banner, `┃` gutter, editor) for `/btw` and F2 → `b`; owns a fresh `BtwThread` per open (ephemeral); strips OSC 133 marks behind the gutter (mid-line they break rows in WezTerm) |
+| `lib/btw-child.ts` | a child's btw fork snapshot (`trackChildBtw` wraps its `agent.transformContext` — exact capture — in a `sharedState` WeakMap) and its `BtwSource` |
 | `lib/alt-screen.ts` | F2 watch terminal modes, both main-screen (`tuiMode: "regular"`) only: `enterAltScreenWatch` moves the overlay onto the terminal's alternate screen via pi-tui's internal render-state API (re-verify after `pi update`); `enterWatchMouse` turns on SGR wheel reporting — never under fullscreen pi, whose own mouse tracking the reset would wipe; `fullScreenOverlay` geometry (shared with `/btw`) |
 | `lib/child-view.ts` | `ChildView`: one child's transcript as the F2 watch view renders it (live events and replay of a reopened child), with a `⇄ handoff i/N` divider before each context-cap swap marker |
 | `lib/child-view-divider.ts` | that divider: `handoffDividerText` (`── ⇄ handoff 2/3 · at 162k tokens · soft cap ──…`, per-trigger labels) and the `HandoffDivider` component `ChildView` anchors handoff jumps on |
@@ -268,7 +268,7 @@ If colors look degraded (8-color, wrong bg) inside a container:
 ### Side chat (`btw.ts`)
 
 `/btw what are you working on?` asks the agent a side question while it is busy (e.g. stuck
-in a long tool call) — without disturbing it. `/btw` alone reopens the chat; in the F2 view,
+in a long tool call) — without disturbing it. `/btw` alone opens an empty chat; in the F2 view,
 `b` does the same for a child (agent or explorer).
 
 - The question goes to the same model (same thinking level) with a fork of the transcript as
@@ -277,9 +277,9 @@ in a long tool call) — without disturbing it. `/btw` alone reopens the chat; i
   model it cannot use tools here. Tools stay declared but `toolChoice: "none"`, so the
   request reuses the session's prompt cache.
 - The real session is never touched: no steer, no follow-up, nothing appended, nothing saved,
-  never in `/tree`. One thread per session (and per child), in memory only, reset on a
-  new/resumed/forked session. Every new question re-forks from the live transcript, so
-  “and now?” sees the progress since the last one.
+  never in `/tree`. Ephemeral: the exchange lives only while the chat is open — `Esc` ends
+  it, and the next `/btw` / `b` starts empty. Every new question re-forks from the live
+  transcript, so “and now?” sees the progress since the last one.
 - The chat is full-screen and unmistakable: a warning-colored `BTW · SIDE CHAT` banner, a `┃`
   gutter on every line. `Enter` sends, `Shift+Enter` newline, `PgUp`/`PgDn`/wheel scroll,
   `Esc` closes — and aborts an answer still streaming (that exchange is lost). Tool calls the
