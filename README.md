@@ -238,7 +238,7 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | `lib/child-watch.ts` | the F2 watch overlay: child picker, per-child view with its own footer, the child's btw side chat (`b`, mode "btw"), watch cursor (`watchTarget`/`nextChild`/`prevChild`) |
 | `lib/git-branch.ts` | `gitBranch`: the F2 child footer's branch, found like pi's own footer (nearest `.git` at or above cwd; relative `gitdir:` pointers resolved against the `.git` file's dir) |
 | `lib/watch-viewport.ts` | the F2 view's pure chrome: `WatchViewport` scroll state, header/hint/position text, handoff-jump math, SGR wheel decoding, picker row text + selection math, `WATCH_KEY`/`EXPAND_KEY`/`BTW_KEY` |
-| `lib/btw-context.ts` | btw, pure half: `ForkSnapshot` (the request as last sent + messages finished since), `buildBtwMessages` (fork → forced-prompt projection → synthetic “still running” results → prior turns → framed question), `BTW_PREAMBLE` |
+| `lib/btw-context.ts` | btw, pure half: `ForkSnapshot` (the request as last sent + messages finished since), `buildBtwMessages` (fork → `images.blockImages` filter → forced-prompt projection → synthetic “still running” results → prior turns → framed question), `BTW_PREAMBLE` |
 | `lib/btw-thread.ts` | `BtwThread`: one side chat's turns + the answer in flight, streamed via `ctx.modelRegistry.streamSimple` in the session's own request shape (tools declared, no `toolChoice` — prompt cache); abort drops the turn |
 | `lib/btw-chat.ts` | `BtwChat`: the side chat's full-screen UI (warning banner, `┃` gutter, editor) for `/btw` and F2 → `b`; owns a fresh `BtwThread` per open (ephemeral); strips OSC 133 marks behind the gutter (mid-line they break rows in WezTerm) |
 | `lib/btw-child.ts` | a child's btw fork snapshot (`trackChildBtw` wraps its `agent.transformContext` — exact capture — in a `sharedState` WeakMap) and its `BtwSource` |
@@ -275,7 +275,8 @@ in a long tool call) — without disturbing it. `/btw` alone opens an empty chat
   last sent to the model, incl. the in-flight assistant message: its still-running tool call
   gets a synthetic `(still running — no result yet)` result. A hidden framing note tells the
   model it cannot use tools here. The request has the session's own shape (tools declared,
-  no `toolChoice`), so it reuses the session's prompt cache — `toolChoice: "none"` would
+  no `toolChoice`; the session's `images.blockImages`, `thinkingBudgets` and `transport`
+  settings applied), so it reuses the session's prompt cache — `toolChoice: "none"` would
   invalidate Anthropic's cached messages and makes a model asked to run something write
   fake tool-call text in an endless loop.
 - The real session is never touched: no steer, no follow-up, nothing appended, nothing saved,
@@ -346,7 +347,7 @@ nesting at one layer (structural, not a counter — nothing to configure).
   place and pi forwards wheel reports to it.
 - **`b`** in a child's view opens that child's **btw side chat** in place (override the key
   with `PI_SUBAGENT_BTW_KEY`; `Esc` returns to the view) — same chat as `/btw` (“Side chat”
-  below), forked from the child's own transcript, model and session. The child's tool calls
+  above), forked from the child's own transcript, model and session. The child's tool calls
   are unaffected.
 - Child sessions are persisted (named `agent#<id>`), so a finished run can be reopened from
   the session picker and audited.
