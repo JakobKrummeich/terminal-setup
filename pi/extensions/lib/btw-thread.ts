@@ -2,7 +2,7 @@
 // answer in flight, streamed by a direct LLM call — never through the session's
 // agent, so the real session is never touched (no steer, no follow-up, nothing
 // appended or persisted). Messages: lib/btw-context.ts; UI: lib/btw-chat.ts.
-import type { Api, AssistantMessage, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Model, ModelThinkingLevel, ThinkingBudgets, Transport } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { type BtwFork, type BtwTurn, buildBtwMessages } from "./btw-context.ts";
 
@@ -23,6 +23,9 @@ export interface BtwRequest {
 	sessionId: string;
 	/** The forked session's `images.blockImages` setting (buildBtwMessages). */
 	blockImages: boolean;
+	/** The forked session's `thinkingBudgets` / `transport` settings, passed as the session passes them. */
+	thinkingBudgets?: ThinkingBudgets;
+	transport?: Transport;
 	fork: BtwFork;
 }
 
@@ -142,6 +145,8 @@ export class BtwThread {
 				{
 					reasoning: req.thinkingLevel === "off" ? undefined : req.thinkingLevel,
 					sessionId: req.sessionId,
+					...(req.thinkingBudgets && { thinkingBudgets: req.thinkingBudgets }),
+					...(req.transport && { transport: req.transport }),
 					signal: flight.controller.signal,
 				},
 			);

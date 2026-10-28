@@ -1,7 +1,8 @@
 /**
  * BtwThread (lib/btw-thread.ts): one direct LLM request per question.
  *   - the request: the fork's model, no toolChoice (session shape), reasoning from the
- *     thinking level (none when "off"), the session id, the abort signal;
+ *     thinking level (none when "off"), the session id, the session's thinkingBudgets /
+ *     transport settings (omitted when unset), the abort signal;
  *   - streaming partials are visible as inFlight.partial;
  *   - abort() drops the in-flight turn (also when the provider answers anyway);
  *   - an errored answer is kept as a turn but left out of the next context;
@@ -11,14 +12,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { type BtwAgentMessage, BTW_PREAMBLE, ForkSnapshot } from "../lib/btw-context.ts";
-import { BtwThread, btwRequest, NOTHING_TO_FORK } from "../lib/btw-thread.ts";
+import { type BtwRequest, BtwThread, btwRequest, NOTHING_TO_FORK } from "../lib/btw-thread.ts";
 import { assistantMessage, fail, fakeRegistry, finish, flush, streamPartial } from "./btw-fakes.ts";
 
 const MODEL = { id: "m-1", provider: "anthropic", api: "anthropic-messages" } as any;
 const user = (text: string) => ({ role: "user", content: [{ type: "text", text }], timestamp: 1 }) as BtwAgentMessage;
 const lastText = (messages: any[]) => messages.at(-1).content[0].text as string;
 
-function setup(thinkingLevel: "off" | "high" = "off") {
+function setup(thinkingLevel: "off" | "high" = "off", settings: Pick<BtwRequest, "thinkingBudgets" | "transport"> = {}) {
 	const registry = fakeRegistry();
 	const snapshot = new ForkSnapshot();
 	snapshot.onRequest([user("task")]);
@@ -26,7 +27,7 @@ function setup(thinkingLevel: "off" | "high" = "off") {
 	let changes = 0;
 	thread.subscribe(() => changes++);
 	const request = () =>
-		btwRequest({ registry, model: MODEL, thinkingLevel, sessionId: "sess-42", blockImages: false, fork: snapshot.fork() });
+		btwRequest({ registry, model: MODEL, thinkingLevel, sessionId: "sess-42", blockImages: false, ...settings, fork: snapshot.fork() });
 	return { registry, snapshot, thread, request, changes: () => changes };
 }
 
@@ -41,6 +42,7 @@ test("request: fork model, no toolChoice, no reasoning when off, session id, sig
 	assert.equal(call!.options.toolChoice, undefined, "same request shape as the session: no toolChoice (cache)");
 	assert.equal(call!.options.reasoning, undefined);
 	assert.equal(call!.options.sessionId, "sess-42");
+	assert.ok(!("thinkingBudgets" in call!.options) && !("transport" in call!.options), "unset settings omitted");
 	assert.ok(call!.options.signal instanceof AbortSignal);
 	assert.equal(lastText(call!.context.messages), `${BTW_PREAMBLE}\n\nwhat now?`);
 
@@ -66,6 +68,16 @@ test("reasoning = thinking level when not off", async () => {
 	const { registry, thread, request } = setup("high");
 	const asked = thread.ask("q", request);
 	assert.equal(registry.calls[0]!.options.reasoning, "high");
+	finish(registry.calls[0]!, assistantMessage("a"));
+	await asked;
+});
+
+test("the session's thinkingBudgets and transport settings are passed as the session passes them", async () => {
+	const thinkingBudgets = { high: 12_345 };
+	const { registry, thread, request } = setup("high", { thinkingBudgets, transport: "sse" });
+	const asked = thread.ask("q", request);
+	assert.deepEqual(registry.calls[0]!.options.thinkingBudgets, thinkingBudgets);
+	assert.equal(registry.calls[0]!.options.transport, "sse");
 	finish(registry.calls[0]!, assistantMessage("a"));
 	await asked;
 });

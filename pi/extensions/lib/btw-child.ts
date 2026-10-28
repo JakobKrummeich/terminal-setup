@@ -64,6 +64,8 @@ export function childBtwSource(
 				thinkingLevel: session.thinkingLevel,
 				sessionId: session.sessionManager.getSessionId(),
 				blockImages: session.settingsManager.getBlockImages(),
+				thinkingBudgets: session.settingsManager.getThinkingBudgets(),
+				transport: session.settingsManager.getTransport(),
 				fork: snapshot.fork(),
 			}),
 	};

@@ -44,6 +44,7 @@ async function runBtwWhileToolRuns(extensionPaths: string[]) {
 	const ctx = {
 		hasUI: true,
 		cwd: t.session.sessionManager.getCwd(),
+		isProjectTrusted: () => true,
 		model: t.session.model,
 		thinkingLevel: "off",
 		modelRegistry: registry,
@@ -112,6 +113,8 @@ for (const [label, extensionPaths] of [
 		assert.equal(btwCall.options.toolChoice, undefined, "same request shape as the session: no toolChoice (cache)");
 		assert.equal(btwCall.options.reasoning, undefined, "thinking off");
 		assert.equal(btwCall.options.sessionId, t.session.sessionManager.getSessionId());
+		assert.equal(btwCall.options.transport, t.session.agent.transport, "the session's transport");
+		assert.equal(btwCall.options.thinkingBudgets, t.session.agent.thinkingBudgets, "the session's thinking budgets");
 		assert.equal(btwCall.model, t.session.model);
 
 		// The real session never saw the side chat.

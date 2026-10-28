@@ -12,6 +12,8 @@ import { type BtwSource, btwRequest, NOTHING_TO_FORK } from "./lib/btw-thread.ts
 import { inChildSession } from "./lib/child-context.ts";
 
 function mainSource(ctx: ExtensionContext, snapshot: ForkSnapshot): BtwSource {
+	// The extension API exposes no settings; read them like pi does (cwd + agent dir + trust).
+	const settings = SettingsManager.create(ctx.cwd, getAgentDir(), { projectTrusted: ctx.isProjectTrusted() });
 	return {
 		label: "main session",
 		modelId: () => ctx.model?.id,
@@ -21,8 +23,9 @@ function mainSource(ctx: ExtensionContext, snapshot: ForkSnapshot): BtwSource {
 				model: ctx.model,
 				thinkingLevel: ctx.thinkingLevel ?? "off",
 				sessionId: ctx.sessionManager.getSessionId(),
-				// The extension API exposes no settings; read them like pi does (cwd + agent dir).
-				blockImages: SettingsManager.create(ctx.cwd, getAgentDir()).getBlockImages(),
+				blockImages: settings.getBlockImages(),
+				thinkingBudgets: settings.getThinkingBudgets(),
+				transport: settings.getTransport(),
 				fork: snapshot.fork(),
 			}),
 	};
