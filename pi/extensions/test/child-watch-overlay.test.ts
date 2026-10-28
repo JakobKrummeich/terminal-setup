@@ -92,6 +92,7 @@ function makeRecord(id: string, entries: unknown[], extra: Partial<ChildRecord> 
 		getContextUsage: () => ({ tokens: 1500, contextWindow: 200_000, percent: 0.75 }),
 		getSessionStats: () => ({ cost: 0.25 }),
 		sessionManager: { getEntries: () => [], getSessionId: () => `child-sid-${id}` },
+		settingsManager: { getBlockImages: () => false },
 		// For trackChildBtw (F2 btw mode): the agent's transform chain + event feed.
 		agent: { transformContext: undefined as unknown },
 		subscribe: () => () => {},

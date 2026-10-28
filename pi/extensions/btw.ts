@@ -1,10 +1,10 @@
 // /btw — side chat with the main session while it works. Forks the transcript as
 // last sent to the model (incl. the in-flight assistant message with its still-
-// running tool call), appends the question, and calls the LLM directly with tools
-// disabled. The real session is never touched: no steer, no follow-up, nothing
+// running tool call), appends the question, and calls the LLM directly in the
+// session's own request shape — tools stay declared, but btw never runs a call. The real session is never touched: no steer, no follow-up, nothing
 // appended, not persisted, never in /tree. Children: F2 view key `b`
 // (lib/child-watch.ts, lib/btw-child.ts).
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { fullScreenOverlay } from "./lib/alt-screen.ts";
 import { BtwChat } from "./lib/btw-chat.ts";
 import { ForkSnapshot } from "./lib/btw-context.ts";
@@ -21,6 +21,8 @@ function mainSource(ctx: ExtensionContext, snapshot: ForkSnapshot): BtwSource {
 				model: ctx.model,
 				thinkingLevel: ctx.thinkingLevel ?? "off",
 				sessionId: ctx.sessionManager.getSessionId(),
+				// The extension API exposes no settings; read them like pi does (cwd + agent dir).
+				blockImages: SettingsManager.create(ctx.cwd, getAgentDir()).getBlockImages(),
 				fork: snapshot.fork(),
 			}),
 	};

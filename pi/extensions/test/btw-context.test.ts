@@ -5,7 +5,8 @@
  *     turns excluded;
  *   - the forced-prompt projection (pi applies it after context_with_system):
  *     only when the captured prompt differs, keeping the head's toolsAdded;
- *   - ForkSnapshot: undefined before the first request, onRequest resets "since".
+ *   - ForkSnapshot: undefined before the first request, onRequest resets "since";
+ *   - images.blockImages: images become pi's placeholder only when the setting is on.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -13,6 +14,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import {
 	BTW_PREAMBLE,
 	type BtwAgentMessage,
+	blockImagesIn,
 	buildBtwMessages,
 	displayAnswer,
 	ForkSnapshot,
@@ -172,4 +174,25 @@ test("ForkSnapshot: undefined before the first request; onRequest resets the sin
 	forked = snapshot.fork()!;
 	assert.equal(forked.messages.length, 2, "since-list cleared by the new request");
 	assert.equal(forked.systemPrompt, undefined);
+});
+
+test("blockImages: user/toolResult images become pi's placeholder (deduped), only when the setting is on", () => {
+	const image = { type: "image", data: "AAAA", mimeType: "image/png" } as const;
+	const shot = {
+		role: "user",
+		content: [{ type: "text", text: "look" }, image, image],
+		timestamp: 10,
+	} as Message;
+	const read = { ...(result("r1") as object), content: [image] } as Message;
+	const fork = { messages: [shot, assistantMessage([call("r1")], "toolUse"), read] as BtwAgentMessage[] };
+
+	const kept = buildBtwMessages(fork, [], "q");
+	assert.equal((kept[0]!.content as Array<{ type: string }>).filter((b) => b.type === "image").length, 2, "off: images sent");
+
+	const blocked = buildBtwMessages(fork, [], "q", true);
+	const texts = (m: Message) => (m.content as Array<{ type: string; text?: string }>).map((b) => b.text ?? `<${b.type}>`);
+	assert.deepEqual(texts(blocked[0]!), ["look", "Image reading is disabled."], "placeholders deduped");
+	assert.deepEqual(texts(blocked[2]!), ["Image reading is disabled."]);
+	const plain = [user("no images")];
+	assert.equal(blockImagesIn(plain)[0], plain[0], "image-free messages untouched");
 });

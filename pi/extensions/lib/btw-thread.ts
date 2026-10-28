@@ -21,6 +21,8 @@ export interface BtwRequest {
 	thinkingLevel: ModelThinkingLevel;
 	/** The forked session's id: OpenAI's prompt_cache_key → a cache hit on the fork prefix. */
 	sessionId: string;
+	/** The forked session's `images.blockImages` setting (buildBtwMessages). */
+	blockImages: boolean;
 	fork: BtwFork;
 }
 
@@ -124,7 +126,7 @@ export class BtwThread {
 	private async stream(flight: Flight, request: () => BtwRequest): Promise<AssistantMessage> {
 		try {
 			const req = request();
-			const messages = buildBtwMessages(req.fork, this.turns, flight.question);
+			const messages = buildBtwMessages(req.fork, this.turns, flight.question, req.blockImages);
 			// Same request shape as the session's own (tools declared, NO toolChoice), so
 			// the fork prefix hits the prompt cache. WHY not drop the tools: Anthropic's
 			// cache prefix is tools → system → messages (full miss), and it rejects a

@@ -46,6 +46,7 @@ function setup(options: { mode?: string } = {}) {
 				model: { id: "m-1" } as any,
 				thinkingLevel: "off",
 				sessionId: "s",
+				blockImages: false,
 				fork: snapshot.fork(),
 			}),
 	};

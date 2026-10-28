@@ -63,6 +63,7 @@ export function childBtwSource(
 				model: session.model,
 				thinkingLevel: session.thinkingLevel,
 				sessionId: session.sessionManager.getSessionId(),
+				blockImages: session.settingsManager.getBlockImages(),
 				fork: snapshot.fork(),
 			}),
 	};

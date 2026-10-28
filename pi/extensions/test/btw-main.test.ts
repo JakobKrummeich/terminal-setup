@@ -43,6 +43,7 @@ async function runBtwWhileToolRuns(extensionPaths: string[]) {
 	const opened: { component?: any } = {};
 	const ctx = {
 		hasUI: true,
+		cwd: t.session.sessionManager.getCwd(),
 		model: t.session.model,
 		thinkingLevel: "off",
 		modelRegistry: registry,

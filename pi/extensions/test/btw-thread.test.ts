@@ -26,7 +26,7 @@ function setup(thinkingLevel: "off" | "high" = "off") {
 	let changes = 0;
 	thread.subscribe(() => changes++);
 	const request = () =>
-		btwRequest({ registry, model: MODEL, thinkingLevel, sessionId: "sess-42", fork: snapshot.fork() });
+		btwRequest({ registry, model: MODEL, thinkingLevel, sessionId: "sess-42", blockImages: false, fork: snapshot.fork() });
 	return { registry, snapshot, thread, request, changes: () => changes };
 }
 
@@ -118,14 +118,14 @@ test("nothing to fork / no model: an errored turn, no request", async () => {
 	const registry = fakeRegistry();
 	const thread = new BtwThread();
 	await thread.ask("q", () =>
-		btwRequest({ registry, model: MODEL, thinkingLevel: "off", sessionId: "s", fork: new ForkSnapshot().fork() }),
+		btwRequest({ registry, model: MODEL, thinkingLevel: "off", sessionId: "s", blockImages: false, fork: new ForkSnapshot().fork() }),
 	);
 	assert.equal(registry.calls.length, 0);
 	assert.equal(thread.turns[0]!.answer.stopReason, "error");
 	assert.equal(thread.turns[0]!.answer.errorMessage, NOTHING_TO_FORK);
 
 	await thread.ask("q", () =>
-		btwRequest({ registry, model: undefined, thinkingLevel: "off", sessionId: "s", fork: { messages: [] } }),
+		btwRequest({ registry, model: undefined, thinkingLevel: "off", sessionId: "s", blockImages: false, fork: { messages: [] } }),
 	);
 	assert.match(thread.turns[1]!.answer.errorMessage ?? "", /no model/);
 });

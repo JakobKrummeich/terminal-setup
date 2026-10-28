@@ -172,12 +172,43 @@ function replayTurns(turns: readonly BtwTurn[]): Message[] {
 		.flatMap((turn) => [btwUserMessage(turn.question, turn.answer.timestamp), displayAnswer(turn.answer)]);
 }
 
+const IMAGES_DISABLED = "Image reading is disabled.";
+
+/**
+ * pi's `images.blockImages` filter, replicated: the session converts with sdk.js's
+ * convertToLlmWithBlockImages (not exported), which swaps every user/toolResult
+ * image for IMAGES_DISABLED and dedupes consecutive placeholders. Without it a
+ * btw request would send images the user's setting keeps from the provider.
+ */
+export function blockImagesIn(messages: Message[]): Message[] {
+	return messages.map((message) => {
+		if (message.role !== "user" && message.role !== "toolResult") return message;
+		if (!Array.isArray(message.content) || !message.content.some((block) => block.type === "image")) return message;
+		const content = message.content
+			.map((block) => (block.type === "image" ? { type: "text" as const, text: IMAGES_DISABLED } : block))
+			.filter((block, i, all) => !(i > 0 && isImagesDisabled(block) && isImagesDisabled(all[i - 1]!)));
+		return { ...message, content } as Message;
+	});
+}
+
+function isImagesDisabled(block: { type: string; text?: string }): boolean {
+	return block.type === "text" && block.text === IMAGES_DISABLED;
+}
+
 /**
  * The full message list of one btw request: [fork, as the model saw it] →
  * [prior btw turns] → [new question]. Re-built per question from the LIVE
  * snapshot, so a follow-up sees the session's progress since the last one.
+ * `blockImages`: the forked session's `images.blockImages` setting, read per request
+ * (pi reads it per request too, so a mid-session change applies).
  */
-export function buildBtwMessages(fork: BtwFork, priorTurns: readonly BtwTurn[], question: string): Message[] {
-	const transcript = projectForcedPrompt(convertToLlm(fork.messages), fork.systemPrompt);
+export function buildBtwMessages(
+	fork: BtwFork,
+	priorTurns: readonly BtwTurn[],
+	question: string,
+	blockImages = false,
+): Message[] {
+	const converted = convertToLlm(fork.messages);
+	const transcript = projectForcedPrompt(blockImages ? blockImagesIn(converted) : converted, fork.systemPrompt);
 	return [...withPendingResults(transcript), ...replayTurns(priorTurns), btwUserMessage(question)];
 }
