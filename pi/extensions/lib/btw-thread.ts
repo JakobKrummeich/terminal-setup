@@ -78,6 +78,17 @@ function failedAnswer(error: unknown): AssistantMessage {
 	};
 }
 
+/** The streamSimple options for `req`, as the session passes them (undefined settings omitted). */
+function streamOptions(req: BtwRequest, signal: AbortSignal) {
+	return {
+		reasoning: req.thinkingLevel === "off" ? undefined : req.thinkingLevel,
+		sessionId: req.sessionId,
+		...(req.thinkingBudgets && { thinkingBudgets: req.thinkingBudgets }),
+		...(req.transport && { transport: req.transport }),
+		signal,
+	};
+}
+
 /**
  * One side-chat thread (main session, or one child). In memory only. One request
  * at a time: ask() while answering is ignored. abort() drops the in-flight turn
@@ -142,13 +153,7 @@ export class BtwThread {
 			const stream = req.registry.streamSimple(
 				req.model,
 				{ messages },
-				{
-					reasoning: req.thinkingLevel === "off" ? undefined : req.thinkingLevel,
-					sessionId: req.sessionId,
-					...(req.thinkingBudgets && { thinkingBudgets: req.thinkingBudgets }),
-					...(req.transport && { transport: req.transport }),
-					signal: flight.controller.signal,
-				},
+				streamOptions(req, flight.controller.signal),
 			);
 			for await (const event of stream) {
 				if (this.flight !== flight || !("partial" in event)) continue;
