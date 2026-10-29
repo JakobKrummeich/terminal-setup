@@ -8,7 +8,8 @@ import {
 	resetChildState,
 	runChildTool,
 } from "./lib/child-session.ts";
-import { openChildPicker, openChildView, resetWatchCursor, watchTarget } from "./lib/child-watch.ts";
+import { openChildPicker, openChildView } from "./lib/child-watch.ts";
+import { resetWatchCursor, watchTarget } from "./lib/child-watch-cursor.ts";
 import { childCallSummary, registerCompactCallRenderer } from "./lib/tool-call-render.ts";
 import { WATCH_KEY } from "./lib/watch-viewport.ts";
 

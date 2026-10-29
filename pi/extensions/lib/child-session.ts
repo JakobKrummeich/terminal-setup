@@ -54,7 +54,7 @@ interface SharedState extends ChildRegistry {
 // v7: ChildView gained handoffCount/handoffAnchors (read by the watch overlay);
 // ChildRecord gained the optional runStartedAt (readers treat undefined as "not running").
 // v8: the child-session ALS (childSessionStore) moved to lib/child-context.ts and the F2
-// watchCursor to lib/child-watch.ts, each under its own key.
+// watchCursor to lib/child-watch.ts (since: lib/child-watch-cursor.ts), each under its own key.
 // (Still v8 after the child-busy/child-reopen/child-types split: the object's shape
 // is unchanged, only its interfaces moved. Still v8 after ChildRecord gained the
 // optional `retry`: readers treat undefined as "not retrying".)

@@ -235,7 +235,8 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | `lib/child-runs.ts` | a child run's `agent-runs.jsonl` spawn/progress/finish rows and its meta/status text (`collectMeta`, `metaLine`, `statusLine`) |
 | `lib/child-busy.ts` | the busy-group semaphore (one Agent at a time, N explorers), incl. the wind-down of a still-settling child |
 | `lib/child-context.ts` | `inChildSession()` / `childSessionInfo()`: the AsyncLocalStorage scope a child's extensions load and bind in — split out so child-guarded extensions (`wsstate.ts`, `timer.ts`, …) don't import all of `lib/child-session.ts` |
-| `lib/child-watch.ts` | the F2 watch overlay: child picker, per-child view with its own footer, the child's btw side chat (`b`, mode "btw"), watch cursor (`watchTarget`/`nextChild`/`prevChild`) |
+| `lib/child-watch.ts` | the F2 watch overlay: child picker, per-child view with its own footer, the child's btw side chat (`b`, mode "btw") |
+| `lib/child-watch-cursor.ts` | the F2 watch cursor: which child F2 opens next (`watchTarget`) and in-view cycling (`nextChild`/`prevChild`), shared across module copies |
 | `lib/git-branch.ts` | `gitBranch`: the F2 child footer's branch, found like pi's own footer (nearest `.git` at or above cwd; relative `gitdir:` pointers resolved against the `.git` file's dir) |
 | `lib/watch-viewport.ts` | the F2 view's pure chrome: `WatchViewport` scroll state, header/hint/position text, handoff-jump math, SGR wheel decoding, picker row text + selection math, `WATCH_KEY`/`EXPAND_KEY`/`BTW_KEY` |
 | `lib/btw-context.ts` | btw, pure half: `ForkSnapshot` (the request as last sent + messages finished since), `buildBtwMessages` (fork → `images.blockImages` filter → forced-prompt projection → synthetic “still running” results → prior turns → framed question), `BTW_PREAMBLE` |
