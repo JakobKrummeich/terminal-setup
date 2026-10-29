@@ -3,11 +3,12 @@
 // child's own footer, rendered on the terminal's alternate screen. Reads the child
 // registry (liveChildren) owned by lib/child-session.ts; child-session never calls
 // back into this file. View mode's BTW_KEY swaps in the child's btw side chat
-// (lib/btw-chat.ts) as a third mode.
+// (lib/btw-chat.ts) as a third mode. Which child F2 shows next: lib/child-watch-cursor.ts.
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type KeyId, matchesKey, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import { liveChildren } from "./child-session.ts";
 import type { ChildRecord } from "./child-types.ts";
+import { nextChild, prevChild, setWatchCursor, watchCursorIndex } from "./child-watch-cursor.ts";
 import { enterAltScreenWatch, enterWatchMouse, fullScreenOverlay } from "./alt-screen.ts";
 import { BtwChat } from "./btw-chat.ts";
 import { childBtw, childBtwSource } from "./btw-child.ts";
@@ -15,7 +16,6 @@ import { CONTEXT_CAP_STATUS_KEY, resolveTriggers } from "./env.ts";
 import { formatCapStatus } from "./format.ts";
 import { renderFooterLines } from "./footer.ts";
 import { gitBranch } from "./git-branch.ts";
-import { sharedState } from "./shared-state.ts";
 import {
 	BTW_KEY,
 	EXPAND_KEY,
@@ -28,24 +28,6 @@ import {
 	watchHintLine,
 	watchPositionLabel,
 } from "./watch-viewport.ts";
-
-// On globalThis like child-session's state (see lib/shared-state.ts): the cursor must
-// survive the module re-import pi does on every session bind (jiti, moduleCache: false).
-interface WatchState {
-	/** F2 watch cursor: id of the last watched child, advanced per watchTarget() call. */
-	watchCursor: string | undefined;
-}
-// Bump N whenever WatchState's shape changes (see sharedState()).
-const STATE_KEY = Symbol.for("terminal-setup.child-watch.v1");
-const state = sharedState<WatchState>(STATE_KEY, () => ({ watchCursor: undefined }));
-
-/**
- * Session teardown for the watch: forget the cursor. subagent.ts calls it next to
- * resetChildState() (which drops the children the cursor points into).
- */
-export function resetWatchCursor(): void {
-	state.watchCursor = undefined;
-}
 
 /**
  * An ordered key table: the first entry whose key matches wins. Order is the
@@ -126,10 +108,7 @@ class WatchOverlay {
 		this.fromPicker = initial === undefined;
 		this.mode = this.fromPicker ? "picker" : "view";
 		// Open the picker on the last-watched child, not row 0 (fresh cursor → first row).
-		this.selected = Math.max(
-			0,
-			[...liveChildren.values()].findIndex((r) => r.id === state.watchCursor),
-		);
+		this.selected = Math.max(0, watchCursorIndex());
 		this.record = initial;
 		this.record?.view.setRenderer(() => tui.requestRender());
 		// Resolved once per view open: childFooterData runs in render() on every frame,
@@ -195,7 +174,7 @@ class WatchOverlay {
 
 	private enterView(target: ChildRecord) {
 		// Keep the outer F2 shortcut cycling from wherever the picker jumped to.
-		state.watchCursor = target.id;
+		setWatchCursor(target.id);
 		this.mode = "view";
 		this.switchTo(target);
 		this.tui.requestRender();
@@ -371,49 +350,4 @@ async function watchOverlay(ctx: ExtensionContext, initial: ChildRecord | undefi
 		overlay: true,
 		overlayOptions: fullScreenOverlay,
 	});
-}
-
-/**
- * Pick the child the F2 watch should open. Repeated presses cycle through ALL
- * children — running and finished — in spawn order, wrapping. When the cursor is
- * unset (or its child was evicted), start at the first running child if any, else
- * the most recent child.
- */
-export function watchTarget(): ChildRecord | undefined {
-	const all = [...liveChildren.values()];
-	if (all.length === 0) return undefined;
-	// Id-based cursor: children starting or finishing between presses shift indices,
-	// so an index cursor could skip an entry.
-	const last = all.findIndex((r) => r.id === state.watchCursor);
-	// `all` is non-empty (checked above), so every index taken modulo its length exists.
-	const target = last >= 0 ? all[(last + 1) % all.length]! : (all.find((r) => r.running) ?? all.at(-1)!);
-	state.watchCursor = target.id;
-	return target;
-}
-
-/**
- * Child after `currentId` in spawn order (wrapping; first child if the id is
- * gone). Moves the F2 cursor so the outer shortcut stays in step with in-view
- * cycling.
- */
-export function nextChild(currentId: string): ChildRecord | undefined {
-	const all = [...liveChildren.values()];
-	if (all.length === 0) return undefined;
-	// Non-empty (checked above) + modulo length: the index always exists.
-	const target = all[(all.findIndex((r) => r.id === currentId) + 1) % all.length]!;
-	state.watchCursor = target.id;
-	return target;
-}
-
-/**
- * Child before `currentId` in spawn order (wrapping; last child if the id is
- * gone). Moves the F2 cursor like nextChild so outer cycling stays in step.
- */
-export function prevChild(currentId: string): ChildRecord | undefined {
-	const all = [...liveChildren.values()];
-	if (all.length === 0) return undefined;
-	const idx = all.findIndex((r) => r.id === currentId);
-	const target = idx < 0 ? all.at(-1)! : all[(idx - 1 + all.length) % all.length]!;
-	state.watchCursor = target.id;
-	return target;
 }

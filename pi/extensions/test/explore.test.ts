@@ -33,10 +33,10 @@ import {
 } from "../explore.ts";
 import { liveChildren, resetChildState, runChildTool } from "../lib/child-session.ts";
 import type { ChildRecord } from "../lib/child-types.ts";
-import { nextChild, prevChild, resetWatchCursor, watchTarget } from "../lib/child-watch.ts";
+import { nextChild, prevChild, resetWatchCursor, watchTarget } from "../lib/child-watch-cursor.ts";
 import { movePickerSelection } from "../lib/watch-viewport.ts";
 import type * as ChildSessionModule from "../lib/child-session.ts";
-import type * as ChildWatchModule from "../lib/child-watch.ts";
+import type * as ChildWatchCursorModule from "../lib/child-watch-cursor.ts";
 import { sleep } from "./harness.ts";
 import { at } from "./assert-helpers.ts";
 
@@ -494,7 +494,7 @@ test("child-session state is shared across module copies (jiti moduleCache: fals
 	assert.equal(isBusyError(viaCopy2), true, "copy2 must see copy1's explorer latch");
 	// The record lands in liveChildren only after the child session is created — the
 	// latch is synchronous, the record is not — so poll briefly instead of racing it.
-	const watchCopy2 = (await import("../lib/child-watch.ts?copy2" as string)) as typeof ChildWatchModule;
+	const watchCopy2 = (await import("../lib/child-watch-cursor.ts?copy2" as string)) as typeof ChildWatchCursorModule;
 	let target: ReturnType<typeof watchCopy2.watchTarget>;
 	for (let i = 0; i < 100 && !(target = watchCopy2.watchTarget())?.running; i++) await sleep(20);
 	assert.ok(target?.running, "copy2's watch must find copy1's running child");

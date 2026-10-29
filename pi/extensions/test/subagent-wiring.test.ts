@@ -20,7 +20,7 @@ import * as subagentModule from "../subagent.ts";
 import { AGENT_TOOL, liveChildren } from "../lib/child-session.ts";
 import type { ChildRecord } from "../lib/child-types.ts";
 import { ChildView } from "../lib/child-view.ts";
-import { watchTarget } from "../lib/child-watch.ts";
+import { watchTarget } from "../lib/child-watch-cursor.ts";
 
 initTheme(undefined, false); // ChildView renders with pi's theme
 
