@@ -1,13 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { childSessionInfo, inChildSession } from "./lib/child-context.ts";
-import {
-	AGENT_TOOL,
-	liveChildren,
-	renderChildResult,
-	resetChildState,
-	runChildTool,
-} from "./lib/child-session.ts";
+import { renderChildResult } from "./lib/child-result.ts";
+import { AGENT_TOOL, liveChildren, resetChildState, runChildTool } from "./lib/child-session.ts";
 import { openChildPicker, openChildView } from "./lib/child-watch.ts";
 import { resetWatchCursor, watchTarget } from "./lib/child-watch-cursor.ts";
 import { childCallSummary, registerCompactCallRenderer } from "./lib/tool-call-render.ts";

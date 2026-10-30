@@ -230,6 +230,7 @@ If colors look degraded (8-color, wrong bg) inside a container:
 | `lib/child-types.ts` | type-only: `ChildRecord`, `ChildSource`, `ChildRegistry`, `RunChildOptions`, … — shared by the child-session modules without import cycles |
 | `lib/child-create.ts` | `createChildSession`: a child's `AgentSession`, fresh or reopened from its file — parent's model runtime, `PI_CHILD_EXTENSIONS` loader, child-context scope, btw fork tracking (`trackChildBtw`) |
 | `lib/child-reopen.ts` | eviction of finished children beyond the cap and reopening an evicted / pre-restart child from its session file (`resume_id`) |
+| `lib/child-result.ts` | what a child-session call hands the parent: `textResult` (the tool-result shape), `childRunResult` (final text or `child_failed`, plus the `resume_id` trailer) and `renderChildResult`, the shared Agent/Explore `renderResult()` |
 | `lib/child-outcome.ts` | how a child run ended for the parent's tool result: final text, an unrecovered provider error (`failureText`), retry count, and the F2 retry lines |
 | `lib/abort-grace.ts` | `settleWithinAbortGrace`: bounds how long a caller abort waits for the child's run (`ABORT_GRACE_MS`) |
 | `lib/child-runs.ts` | a child run's `agent-runs.jsonl` spawn/progress/finish rows and its meta/status text (`collectMeta`, `metaLine`, `statusLine`) |
