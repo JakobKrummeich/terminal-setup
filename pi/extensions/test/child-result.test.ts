@@ -12,11 +12,15 @@
  * Children are fake records driven through the resume_id path (as in
  * subagent-wiring.test.ts): the fake session's prompt() emits the scripted
  * message_end events to whoever subscribed, so no model is needed.
+ *
+ * Also renderChildResult (lib/child-result.ts), the shared Agent/Explore renderResult().
  */
 
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
+import { renderChildResult } from "../lib/child-result.ts";
 import { liveChildren, runChildTool } from "../lib/child-session.ts";
 import type { ChildRecord } from "../lib/child-types.ts";
 
@@ -83,4 +87,35 @@ test("a run without any assistant text says so, and still names the resume id", 
 	addChild("c1", [assistant({ type: "toolCall", name: "ls" }), { role: "user", content: [text("not the child's")] }]);
 	assert.equal(await resultText("c1"), `(agent produced no text output)${TRAILER}`);
 	liveChildren.clear();
+});
+
+// renderChildResult: the Agent/Explore renderResult(). Fake theme tags each color.
+const theme = { fg: (color: string, value: string) => `<${color}>${value}` } as Parameters<typeof renderChildResult>[1];
+const rendered = (component: Text) => component.render(200).map((line) => line.trimEnd());
+
+test("renderChildResult: a run's meta line (toolTitle) heads the result text (toolOutput)", () => {
+	const details = {
+		id: "c1",
+		kind: "agent",
+		turns: 2,
+		contextTokens: null,
+		contextWindow: 0,
+		contextPercent: null,
+		resets: 1,
+		costUsd: 0.5,
+		durationMs: 0,
+	};
+	const component = renderChildResult({ content: [text("done")], details }, theme, {});
+	const [summary, body] = rendered(component);
+	assert.ok(summary?.startsWith("<toolTitle>agent#c1 \u00b7 2 turns \u00b7 ctx ? \u00b7 1 resets \u00b7 $0.500"), summary);
+	assert.equal(body, "<toolOutput>done");
+});
+
+test("renderChildResult: error details without a run (child_busy) render the text alone, into the last component", () => {
+	const last = new Text("stale", 0, 0);
+	const component = renderChildResult({ content: [text("busy")], details: { error: "child_busy" } }, theme, {
+		lastComponent: last,
+	});
+	assert.equal(component, last, "reuses the previous component");
+	assert.deepEqual(rendered(component), ["<toolOutput>busy"]);
 });

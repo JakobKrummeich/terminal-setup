@@ -2,34 +2,24 @@
 // registry (liveChildren) and busy-group semaphore, and runChildTool — resolve a
 // child (spawn, or resume a live/evicted one), run one prompt on it, report back.
 // Session construction lives in lib/child-create.ts, eviction/reopen in
-// lib/child-reopen.ts, agent-runs rows and meta text in lib/child-runs.ts.
+// lib/child-reopen.ts, agent-runs rows and meta text in lib/child-runs.ts, the
+// tool-result shape and renderResult() in lib/child-result.ts.
 //
 // Not an extension: pi's loader only scans top-level *.ts in the extensions dir
 // (core/package-manager.js collectAutoExtensionEntries), so files under lib/ are
 // never loaded as extensions and need no default export.
 import { randomUUID } from "node:crypto";
-import type { TextContent } from "@earendil-works/pi-ai";
-import type { AgentSession, AgentSessionEvent, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import type { AgentSession, AgentSessionEvent, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { RunStatus } from "./agent-runs.ts";
 import { ABORT_GRACE_MS, settleWithinAbortGrace } from "./abort-grace.ts";
 import { type BusyGroup, busyGroup, releaseSlot, tryAcquireSlot } from "./child-busy.ts";
 import { createChildSession } from "./child-create.ts";
-import { failureText, isFailedAttempt, newRunOutcome, type RunOutcome, trackOutcome } from "./child-outcome.ts";
+import { isFailedAttempt, newRunOutcome, type RunOutcome, trackOutcome } from "./child-outcome.ts";
 import { evictFinishedChildren, freshHint, reopenEvictedChild } from "./child-reopen.ts";
-import {
-	collectMeta,
-	metaLine,
-	type RunMeta,
-	rootSidFor,
-	statusLine,
-	writeFinishEvent,
-	writeProgressEvent,
-	writeSpawnEvent,
-} from "./child-runs.ts";
+import { childRunResult, textResult } from "./child-result.ts";
+import { rootSidFor, statusLine, writeFinishEvent, writeProgressEvent, writeSpawnEvent } from "./child-runs.ts";
 import type { ChildRecord, ChildRegistry, ChildToolParams, RunChildOptions } from "./child-types.ts";
 import { ChildView } from "./child-view.ts";
-import { messageText } from "./message-text.ts";
 import { sharedState } from "./shared-state.ts";
 import { waitForSessionQuiet } from "./session-quiet.ts";
 
@@ -127,14 +117,6 @@ function labelFromPrompt(prompt: string): string {
 	const firstLine = prompt.split("\n").find((line) => line.trim()) ?? "agent task";
 	const words = firstLine.trim().split(/\s+/).slice(0, 5).join(" ");
 	return words.length > 48 ? `${words.slice(0, 47)}\u2026` : words;
-}
-
-export function textResult(text: string, details: Record<string, unknown>, isError = false) {
-	return {
-		content: [{ type: "text" as const, text }] as TextContent[],
-		details,
-		...(isError && { isError: true }),
-	};
 }
 
 /** Shared execute() body for child-session tools. */
@@ -351,28 +333,4 @@ function startRun(record: ChildRecord, onUpdate: ChildUpdate): ReturnType<typeof
 
 function runStatus(signal: AbortSignal | undefined, failed: boolean): RunStatus {
 	return signal?.aborted ? "cancelled" : failed ? "error" : "done";
-}
-
-function childRunResult(record: ChildRecord, kind: string, outcome: RunOutcome, signal: AbortSignal | undefined) {
-	const trailer = `\n\n---\n${kind} id: ${record.id} (pass as resume_id to continue)`;
-	const details = { ...collectMeta(record), aborted: signal?.aborted === true };
-	if (outcome.error !== undefined && !details.aborted) {
-		return textResult(`${failureText(kind, outcome.error, outcome)}${trailer}`, { ...details, error: "child_failed" }, true);
-	}
-	return textResult(`${outcome.text || `(${kind} produced no text output)`}${trailer}`, details);
-}
-
-/** Shared renderResult() for child-session tools. */
-export function renderChildResult(
-	result: { content?: Array<{ type?: string; text?: string }>; details?: unknown },
-	theme: Pick<Theme, "fg">,
-	context: { lastComponent?: unknown },
-) {
-	const text = messageText(result.content);
-	const meta = result.details as RunMeta | undefined;
-	const summary = meta?.kind ? theme.fg("toolTitle", metaLine(meta)) : "";
-	const body = theme.fg("toolOutput", text);
-	const component = (context.lastComponent as Text) ?? new Text("", 0, 0);
-	component.setText([summary, body].filter(Boolean).join("\n"));
-	return component;
 }
