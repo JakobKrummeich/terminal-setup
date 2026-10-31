@@ -204,4 +204,30 @@ unset -f chmod
 [[ "$output" != *"INSTALLED:"* ]] || fail "RTK reported an installation after chmod failure"
 [ ! -e "$FIXTURE/chmod-failure/.pi/agent/bin/rtk" ] || fail "RTK link was created after chmod failure"
 
+# ── bad archive behind a matching hash → fail closed, no temp files left ──
+# The hash only proves the bytes are the pinned ones; a bump that pins a
+# renamed binary (rtk-oss) or a non-tarball asset must still install nothing.
+run_bad_archive() { # <case> <archive>
+    local home="$FIXTURE/$1" tmp="$FIXTURE/$1-tmp" saved_archive="$RTK_ARCHIVE" saved_sha="$FIXTURE_SHA256"
+    mkdir -p "$tmp"
+    RTK_ARCHIVE="$2"
+    FIXTURE_SHA256="$(sha256sum "$2" | cut -d' ' -f1)"
+    output="$(TMPDIR="$tmp" run_install "$home" 2>/dev/null)"
+    RTK_ARCHIVE="$saved_archive" FIXTURE_SHA256="$saved_sha"
+    [[ "$output" != *"INSTALLED:"* ]] || fail "RTK reported an installation after $1"
+    assert_not_installed "$home" "$1"
+    [ -z "$(ls -A "$tmp")" ] || fail "$1 left temp files behind: $(ls -A "$tmp")"
+}
+
+mkdir -p "$FIXTURE/renamed"
+cp "$FIXTURE/archive/rtk" "$FIXTURE/renamed/rtk-oss"
+cp "$FIXTURE/archive/LICENSE" "$FIXTURE/renamed/LICENSE"
+tar -czf "$FIXTURE/no-binary.tar.gz" -C "$FIXTURE/renamed" LICENSE rtk-oss
+run_bad_archive no-binary "$FIXTURE/no-binary.tar.gz"
+[[ "$output" == *"WARN: rtk release asset contains no rtk binary"* ]] || fail "expected no-binary warning, got: $output"
+
+echo "not a tarball" > "$FIXTURE/corrupt.tar.gz"
+run_bad_archive corrupt-archive "$FIXTURE/corrupt.tar.gz"
+[[ "$output" == *"WARN: could not extract rtk release asset"* ]] || fail "expected extract warning, got: $output"
+
 echo "PASS: pinned RTK download, SHA-256 verification and installation"
