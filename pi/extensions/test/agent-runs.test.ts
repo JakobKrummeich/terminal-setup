@@ -429,6 +429,25 @@ test("runChildTool writes spawn/progress/finish rows; a child-spawned child thre
 	}
 });
 
+test("runChildTool without a description: record and spawn row carry the prompt-derived label", async () => {
+	try {
+		const ctx = await makeCtx("main-label");
+		const result = await runChildTool(
+			{ prompt: "\n  Map every caller of parseConfig in lib\nthen report" },
+			AGENT_OPTIONS,
+			undefined,
+			undefined,
+			ctx,
+		);
+		const record = liveChildren.get((result.details as { id: string }).id)!;
+		assert.equal(record.description, "Map every caller of parseConfig");
+		const spawn = readRuns(SESSION_DIR).find((e): e is RunSpawn => e.event === "spawn" && e.sid === record.sid);
+		assert.equal(spawn?.description, "Map every caller of parseConfig", "persisted for dashboard + reopen");
+	} finally {
+		disposeChildren();
+	}
+});
+
 // runChildRecord's `finally` is the only place a run is wound down. A miss there
 // leaves running=true (every later resume rejected as child_running, record
 // exempt from eviction) or a finish row claiming "done" for a failed run.
