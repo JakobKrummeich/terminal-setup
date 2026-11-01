@@ -113,7 +113,13 @@ function trackChildActivity(record: ChildRecord, event: AgentSessionEvent, pushS
 	}
 }
 
-function labelFromPrompt(prompt: string): string {
+/**
+ * A child's description when the caller passed none (`description` is optional on
+ * Agent and Explore): the first five words of the first non-blank prompt line,
+ * capped at 48 chars. Persisted in the spawn row, so it is also what the dashboard
+ * and a post-restart reopen show. Exported for tests.
+ */
+export function labelFromPrompt(prompt: string): string {
 	const firstLine = prompt.split("\n").find((line) => line.trim()) ?? "agent task";
 	const words = firstLine.trim().split(/\s+/).slice(0, 5).join(" ");
 	return words.length > 48 ? `${words.slice(0, 47)}\u2026` : words;
