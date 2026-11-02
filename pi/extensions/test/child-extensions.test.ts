@@ -193,6 +193,29 @@ test("PI_CHILD_EXTENSIONS set: the child loads exactly those extensions, discove
 	assert.ok(!tools.includes(MARKER_DISCOVERED), "auto-discovery must be off — this is the sandbox escape");
 });
 
+test("PI_CHILD_EXTENSIONS listing a missing path: spawn fails closed — no child, no LLM call, slot freed", async () => {
+	// A stale path (podman-hands moved) must not load the rest as a partial set: the
+	// child would fall back to pi's builtin tools and act on the HOST. Empty segments
+	// (`::`, trailing `:`) are separators, not missing paths — the message names only
+	// the real one.
+	const missing = path.join(tmpdir(), "pi-childext-gone", "podman-hands.ts");
+	process.env.PI_CHILD_EXTENSIONS = `${explicitExtension}::${missing}:`;
+	const calls: ChildCall[] = [];
+	try {
+		const ctx = await makeCtx(calls);
+		await assert.rejects(runChildTool({ prompt: "p" }, CHILD_OPTIONS, undefined, undefined, ctx), {
+			message: `PI_CHILD_EXTENSIONS lists paths that do not exist: ${missing}`,
+		});
+	} finally {
+		delete process.env.PI_CHILD_EXTENSIONS;
+	}
+	assert.equal(calls.length, 0, "no child LLM call ran");
+	assert.equal(liveChildren.size, 0, "no child record registered");
+	// Same busy group: a slot leaked by the failed spawn would answer child_busy here.
+	const { tools } = await spawnChild();
+	assert.ok(tools.includes(MARKER_DISCOVERED), `next spawn did not run: ${tools.join(", ")}`);
+});
+
 test("PI_CHILD_EXTENSIONS unset: the child keeps auto-discovering <agentDir>/extensions", async () => {
 	delete process.env.PI_CHILD_EXTENSIONS;
 	const { tools } = await spawnChild();
