@@ -23,11 +23,12 @@ BAD="$(printf '0%.0s' {1..64})"
 # A PATH holding only the named tools (plus what verify_sha256 itself needs), so
 # `command -v` sees exactly the platform being simulated.
 tool_path() { # <dir> <tool>... → prints dir
-    local dir="$FIXTURE/$1" tool
+    local dir="$FIXTURE/$1" tool real
     shift
     mkdir -p "$dir"
     for tool in mktemp rm "$@"; do
-        ln -sf "$(command -v "$tool")" "$dir/$tool"
+        real="$(command -v "$tool")" || fail "$tool not installed; cannot simulate the $(basename "$dir") platform"
+        ln -sf "$real" "$dir/$tool"
     done
     printf '%s' "$dir"
 }
@@ -61,13 +62,9 @@ expect_reject "sha256sum mismatch" "$linux" "$BAD"
 expect_reject "empty expected hash" "$linux" ""
 
 # ── shasum only (macOS) ────────────────────────────────────────────
-if command -v shasum >/dev/null; then
-    macos="$(tool_path macos shasum)"
-    expect_pass "shasum match" "$macos" "$GOOD"
-    expect_reject "shasum mismatch" "$macos" "$BAD"
-else
-    echo "SKIP: shasum not installed; macOS fallback branch not exercised"
-fi
+macos="$(tool_path macos shasum)"
+expect_pass "shasum match" "$macos" "$GOOD"
+expect_reject "shasum mismatch" "$macos" "$BAD"
 
 # ── neither tool → fail closed, never "verified" ───────────────────
 none="$(tool_path none)"
