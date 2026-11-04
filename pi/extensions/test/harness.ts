@@ -92,6 +92,33 @@ export interface TestSessionOptions {
 	 * prepareCompaction finds nothing to summarize in these small sessions.
 	 */
 	compaction?: { enabled?: boolean; reserveTokens?: number; keepRecentTokens?: number };
+	/**
+	 * Session model as `[provider, modelId]` from pi's catalog (default
+	 * anthropic/claude-sonnet-4-5: no native mid-conversation tool changes).
+	 */
+	model?: [provider: string, modelId: string];
+	/**
+	 * Called with every LLM request exactly as the agent loop hands it to the
+	 * provider (model + normalized context, system messages included) before the
+	 * scripted response is produced. Payload tests feed it to pi-ai's real
+	 * provider `stream` with an `onPayload` probe.
+	 */
+	onLlmCall?: (model: any, context: any, options: any) => void | Promise<void>;
+	/**
+	 * Bind interactive command actions (re-emits session_start): `waitForIdle`
+	 * really waits, and `newSession` runs its `withSession` callback against a
+	 * recorder instead of replacing the session — see `seeds`. Also records every
+	 * `ctx.ui.notify` in `notices`. Without it, pi's defaults make both no-ops.
+	 */
+	commands?: boolean;
+}
+
+/** A message a command's `newSession({ withSession })` seeded the successor with. */
+export interface SeededMessage {
+	customType: string;
+	content: unknown;
+	display: boolean;
+	triggerTurn: boolean | undefined;
 }
 
 export interface QueueSnapshot {
@@ -114,6 +141,10 @@ export interface TestSession {
 	queueSnapshots: QueueSnapshot[];
 	/** Timestamps of turn boundaries. */
 	turnEnds: number[];
+	/** newSession seeds (only with `commands: true`). */
+	seeds: SeededMessage[];
+	/** ctx.ui.notify calls (only with `commands: true`). */
+	notices: { message: string; level: string | undefined }[];
 	/** Milliseconds since the session was created. */
 	now(): number;
 	dispose(): void;
@@ -127,9 +158,10 @@ export async function createTestSession(options: TestSessionOptions): Promise<Te
 		authPath: path.join(dir, "auth.json"),
 		modelsPath: path.join(dir, "models.json"),
 	});
-	modelRuntime.setRuntimeApiKey("anthropic", "test-key-not-used");
-	const model = getModel("anthropic", "claude-sonnet-4-5");
-	if (!model) throw new Error("test model not found");
+	const [provider, modelId] = options.model ?? ["anthropic", "claude-sonnet-4-5"];
+	modelRuntime.setRuntimeApiKey(provider, "test-key-not-used");
+	const model = getModel(provider as any, modelId as any);
+	if (!model) throw new Error(`test model not found: ${provider}/${modelId}`);
 
 	const resourceLoader = new DefaultResourceLoader({
 		cwd: dir,
@@ -161,13 +193,17 @@ export async function createTestSession(options: TestSessionOptions): Promise<Te
 	});
 
 	if (options.mode !== undefined) await session.bindExtensions({ mode: options.mode });
+	const seeds: SeededMessage[] = [];
+	const notices: { message: string; level: string | undefined }[] = [];
+	if (options.commands) await bindCommands(session, seeds, notices);
 
 	const startedAt = Date.now();
 	const now = () => Date.now() - startedAt;
 
 	let step = 0;
 	const llmDelayMs = options.llmDelayMs ?? 50;
-	session.agent.streamFunction = ((m: any) => {
+	session.agent.streamFunction = ((m: any, context: any, streamOptions: any) => {
+		void options.onLlmCall?.(m, context, streamOptions);
 		const peek = options.script[step];
 		if (peek?.kind === "error") {
 			// Throw synchronously from the stream function: pi awaits the call, so
@@ -241,9 +277,58 @@ export async function createTestSession(options: TestSessionOptions): Promise<Te
 		deliveredUserMessages,
 		queueSnapshots,
 		turnEnds,
+		seeds,
+		notices,
 		now,
 		dispose: () => session.dispose(),
 	};
+}
+
+async function bindCommands(
+	session: any,
+	seeds: SeededMessage[],
+	notices: { message: string; level: string | undefined }[],
+): Promise<void> {
+	const recorder = {
+		sendMessage: async (message: any, opts?: { triggerTurn?: boolean }) => {
+			seeds.push({
+				customType: message.customType,
+				content: message.content,
+				display: message.display,
+				triggerTurn: opts?.triggerTurn,
+			});
+		},
+	};
+	await session.bindExtensions({
+		// Spread copies the runner's no-op UI (theme getter included) and overrides notify only.
+		uiContext: {
+			...session.extensionRunner.uiContext,
+			notify: (message: string, level?: string) => void notices.push({ message, level }),
+		},
+		commandContextActions: {
+			waitForIdle: () => session.waitForIdle(),
+			newSession: async (opts?: { withSession?: (ctx: unknown) => Promise<void> }) => {
+				await opts?.withSession?.(recorder);
+				return { cancelled: false };
+			},
+			fork: async () => ({ cancelled: false }),
+			navigateTree: async () => ({ cancelled: false }),
+			switchSession: async () => ({ cancelled: false }),
+			reload: async () => {},
+		},
+	});
+}
+
+/**
+ * Text of every handoff demand/reminder committed to the session, in order —
+ * context-cap delivers them as custom-message boundary entries (customType
+ * "handoff-demand", lib/message-types.ts), so they never show up in
+ * `deliveredUserMessages`.
+ */
+export function demandTexts(t: Pick<TestSession, "session">): string[] {
+	return (t.session.messages as Array<{ role: string; customType?: string; content?: unknown }>)
+		.filter((m) => m.role === "custom" && m.customType === "handoff-demand")
+		.map((m) => String(m.content));
 }
 
 export function sleep(ms: number): Promise<void> {
