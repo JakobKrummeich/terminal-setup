@@ -14,11 +14,11 @@
  *    mid-flake, with the handoff still perfectly reachable.
  *
  * Also covered: a cycle whose context shrank under it (swap/compaction raced an
- * error, or the steer was dropped) must reset instead of demanding a handoff
- * from a fresh window — and once it has reset, the already-delivered warning
- * must be SCRUBBED from the LLM-visible context (the structural replacement for
- * the old "if this looks stale, ignore it" clause: the model never reads a
- * warning that no longer applies, so no clause is needed).
+ * error) must reset instead of demanding a handoff from a fresh window.
+ * Demands are boundary entries now, so none can be delivered late; the one the
+ * model already read stays in its history (only demands behind a swap marker are
+ * scrubbed — a marker-less view is never rewritten), and a handoff call answering
+ * it after the reset is refused harmlessly.
  */
 
 // Must be set before createTestSession loads the extension (env is read at module load).
@@ -31,7 +31,7 @@ import * as path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { withoutInitialSystemMessage } from "@earendil-works/pi-ai";
-import { abortedStep, createTestSession, errorStep, textStep, toolStep, type TestSession } from "./harness.ts";
+import { abortedStep, createTestSession, demandTexts, errorStep, textStep, toolStep, type TestSession } from "./harness.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";
 import { at } from "./assert-helpers.ts";
@@ -52,8 +52,9 @@ function swapMarkers(t: TestSession): SwapMarker[] {
 	);
 }
 
+/** Demand/reminder entries committed to the session whose text contains `needle`. */
 function delivered(t: TestSession, needle: string): string[] {
-	return t.deliveredUserMessages.map((m) => m.text).filter((text) => text.includes(needle));
+	return demandTexts(t).filter((text) => text.includes(needle));
 }
 
 interface CapturedContext {
@@ -111,7 +112,7 @@ test("errored turns don't burn reminder retries; the cycle survives a flaky patc
 		tools: ["timer", "context_handoff"],
 		llmDelayMs: 20,
 		script: [
-			// Tokens 10 >= soft 5, toolUse -> steer requesting a handoff.
+			// Tokens 10 >= soft 5, toolUse -> demand entry at this turn_end.
 			toolStep("s1", "timer", { action: "cancel" }, 10),
 			// Two network deaths in a row. Old code: turn_end x2 -> retries 2/2 ->
 			// phase "exhausted", both reminders queued although the agent saw nothing.
@@ -161,7 +162,7 @@ test("an aborted turn is skipped the same way: no retry burn, no spurious swap",
 		llmDelayMs: 20,
 		script: [
 			toolStep("s1", "timer", { action: "cancel" }, 10),
-			// User hits ESC while the steered turn's call is in flight.
+			// User hits ESC while the demanded turn's call is in flight.
 			abortedStep(),
 			// Resumed later: a real turn without a handoff -> reminder 1/2, not 2/2.
 			textStep("resumed, still working", 10),
@@ -201,13 +202,13 @@ test("a network error during a hard-cap cycle must not fire the no-file backstop
 		tools: ["timer", "context_handoff"],
 		llmDelayMs: 20,
 		script: [
-			// One-jump crossing: 60 >= hard 50 -> emergency steer (641e53c behavior).
+			// One-jump crossing: 60 >= hard 50 -> emergency demand (641e53c behavior).
 			toolStep("t1", "timer", { action: "cancel" }, 60),
-			// The steered turn's LLM call dies. Old code: errored message_end reads the
+			// The demanded turn's LLM call dies. Old code: errored message_end reads the
 			// stale 60-token usage, stopReason "error" skips the grace gate -> hardCap
 			// -> hard-no-file wipe, although the handoff was still reachable.
 			errorStep(),
-			// Network back: the agent answers the (already delivered) emergency steer.
+			// Network back: the agent answers the (already delivered) emergency demand.
 			toolStep("h1", "context_handoff", { markdown: "## Current Task\nAlmost lost." }, 60),
 			textStep("post-swap report", 2),
 		],
@@ -241,13 +242,15 @@ test("a cycle stranded in a fresh window resets instead of demanding a handoff",
 		tools: ["timer", "context_handoff"],
 		llmDelayMs: 20,
 		script: [
-			// Steer at 10 tokens (phase leaves idle).
+			// Demand at 10 tokens (phase leaves idle).
 			toolStep("s1", "timer", { action: "cancel" }, 10),
 			// Context reports 2 tokens: far below soft 5 — the window shrank under the
-			// cycle (models compaction / a raced swap / a dropped steer + fresh start).
-			// Old code: turn_end verification fires reminder 1/2, then 2/2, then
-			// "exhausted" — handoff demands aimed at a fresh window.
+			// cycle (models compaction / a raced swap + fresh start). Old code: turn_end
+			// verification fires reminder 1/2, then 2/2, then "exhausted" — handoff
+			// demands aimed at a fresh window.
 			textStep("recovered in a small context", 2),
+			// The model still answers the demand it read: refused, nothing swaps.
+			toolStep("h1", "context_handoff", { markdown: "## Current Task\nunasked" }, 2),
 			textStep("still small, still no handoff needed", 2),
 		],
 	});
@@ -260,37 +263,20 @@ test("a cycle stranded in a fresh window resets instead of demanding a handoff",
 
 		assert.equal(t.session.isIdle, true);
 
-		const steers = delivered(t, "CONTEXT LIMIT WARNING");
-		assert.equal(steers.length, 1, "the original steer was delivered");
+		const demands = delivered(t, "CONTEXT LIMIT WARNING");
+		assert.equal(demands.length, 1, "the original demand was delivered");
 		assert.ok(
-			!at(steers, 0).includes("this warning is stale"),
-			"no self-invalidation clause — staleness is handled structurally by the scrub",
+			!at(demands, 0).includes("this warning is stale"),
+			"no self-invalidation clause — a demand can no longer arrive late",
 		);
-
-		// Structural guarantee: while the cycle was armed the model saw the warning
-		// (call 2); after the shrink reset it, the SAME session message is scrubbed
-		// from the LLM view (call 3) — stale demands are invisible, not disclaimed.
-		assert.equal(contexts.length, 3, "three LLM calls");
-		assert.ok(
-			contextText(at(contexts, 1)).includes("CONTEXT LIMIT WARNING"),
-			"the armed cycle's warning reaches the model",
-		);
-		assert.ok(
-			!contextText(at(contexts, 2)).includes("[context-cap]"),
-			"after the reset the stranded warning must be scrubbed from the LLM view",
-		);
-		assert.ok(
-			(t.session.messages as { role: string; content?: unknown }[]).some(
-				(m) => m.role === "user" && JSON.stringify(m.content ?? "").includes("CONTEXT LIMIT WARNING"),
-			),
-			"the warning stays in the session file for forensics",
-		);
+		assert.ok(contextText(at(contexts, 1)).includes("CONTEXT LIMIT WARNING"), "the armed cycle's demand reaches the model");
 
 		assert.equal(
 			delivered(t, "No handoff was recorded").length,
 			0,
 			"no reminders may target a fresh window",
 		);
+		assert.match(at(toolResultTexts(t), 1), /^Refused: no handoff was requested/, "the reset cycle takes no document");
 		assert.equal(swapMarkers(t).length, 0, "no swap");
 		assert.equal(
 			fs.readdirSync(contextCapDir()).filter((n) => n.startsWith(`${sessionId}-`)).length,

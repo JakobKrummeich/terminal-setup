@@ -20,7 +20,7 @@ import * as path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { getCurrentTools, withoutInitialSystemMessage } from "@earendil-works/pi-ai";
-import { createTestSession, textStep, toolStep, type TestSession } from "./harness.ts";
+import { createTestSession, demandTexts, textStep, toolStep, type TestSession } from "./harness.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";
 import { at } from "./assert-helpers.ts";
@@ -149,10 +149,10 @@ test("v1 + no tail: agent instructions, tool spec and post-swap context are unch
 			`the context_handoff parameter description must be the v1 golden, got: ${toolSpec.slice(0, 400)}`,
 		);
 
-		// Consumer 2: the agent-facing instructions (CONTENT_SPEC inside the steer).
-		const steer = t.deliveredUserMessages.map((m) => m.text).find((text) => text.includes("CONTEXT LIMIT WARNING"));
-		assert.ok(steer, "the soft cap must steer");
-		assert.ok(steer.includes(V1_CONTENT_SPEC), `steer must carry the v1 spec verbatim, got:\n${steer}`);
+		// Consumer 2: the agent-facing instructions (CONTENT_SPEC inside the demand).
+		const steer = demandTexts(t).find((text) => text.includes("CONTEXT LIMIT WARNING"));
+		assert.ok(steer, "the soft cap must demand a handoff");
+		assert.ok(steer.includes(V1_CONTENT_SPEC), `the demand must carry the v1 spec verbatim, got:\n${steer}`);
 		assert.ok(steer.includes("soft cap 5, hard cap 50"), "trigger numbers still come from the env overrides");
 
 		// The swap itself: the model sees the handoff and NOTHING else.

@@ -1,8 +1,8 @@
 /**
  * context-cap, the LLM view: what the model sees of the session's messages —
- * the `context` handler's pure half (context-cap.ts). Stale cap warnings are
- * scrubbed (the rules are on that handler), then everything before the latest
- * swap marker is cut except the recency tail (CONTEXT_CAP_TAIL_TOKENS).
+ * the `context` handler's pure half (context-cap.ts). Everything before the
+ * latest swap marker is cut except the recency tail (CONTEXT_CAP_TAIL_TOKENS),
+ * and handoff demands inside that tail are scrubbed.
  *
  * Pure and pi-free: no session, no env, no module-level state (AGENTS.md — lib
  * files are re-imported per extension). Table-tested in
@@ -10,34 +10,35 @@
  * test/context-cap-decisions.test.ts.
  */
 
-import { SWAP_MARKER_TYPE } from "./message-types.ts";
+import { HANDOFF_DEMAND_TYPE, SWAP_MARKER_TYPE } from "./message-types.ts";
 
 // ---------------------------------------------------------------------------
 // Cap warnings (the scrub key)
 // ---------------------------------------------------------------------------
 
-// pi's steering/followUp queues can deliver a cap message arbitrarily late — a
-// network-errored run strands it until the next prompt, which may be a fresh
-// post-swap window where the demand is nonsense.
-// Every cap warning/reminder carries this prefix. It is the scrub key: the
-// `context` handler removes messages carrying it from the LLM view once their
-// demand no longer applies (see isCapWarning below), so no message in
-// lib/context-cap-messages.ts needs a "if this looks stale, ignore it" clause —
-// a stale one is never seen at all.
+// Every cap demand/reminder text starts with this prefix (lib/context-cap-messages.ts);
+// /handoff texts don't. It also identifies the warnings of sessions written before
+// demands became boundary entries: those were user messages, delivered through
+// pi's steer/followUp queues.
 export const WARNING_PREFIX = "[context-cap]";
 
 /**
- * A cap warning/reminder as it appears in the message array: a user message
- * whose text starts with WARNING_PREFIX. Only the four messages of
- * lib/context-cap-messages.ts match — swap-marker content (HANDOFF_PREAMBLE…)
- * and handoff bodies never carry the prefix.
+ * A handoff demand/reminder as it appears in the message array: a custom
+ * message of customType HANDOFF_DEMAND_TYPE (cap and /handoff alike), or a
+ * legacy cap warning — a user message whose text starts with WARNING_PREFIX.
+ * Swap-marker content (HANDOFF_PREAMBLE…) and handoff bodies match neither.
  */
 export function isCapWarning(message: unknown): boolean {
-	const m = (message ?? {}) as { role?: string; content?: unknown };
-	if (m.role !== "user") return false;
-	if (typeof m.content === "string") return m.content.startsWith(WARNING_PREFIX);
-	if (!Array.isArray(m.content)) return false;
-	const first = (m.content.find((c) => (c as { type?: string })?.type === "text") ?? {}) as { text?: string };
+	const m = (message ?? {}) as { role?: string; customType?: string; content?: unknown };
+	if (m.role === "custom") return m.customType === HANDOFF_DEMAND_TYPE;
+	return m.role === "user" && isLegacyWarningText(m.content);
+}
+
+/** A pre-boundary-entry cap warning: the user message's first text part starts with WARNING_PREFIX. */
+function isLegacyWarningText(content: unknown): boolean {
+	if (typeof content === "string") return content.startsWith(WARNING_PREFIX);
+	if (!Array.isArray(content)) return false;
+	const first = (content.find((c) => (c as { type?: string })?.type === "text") ?? {}) as { text?: string };
 	return typeof first.text === "string" && first.text.startsWith(WARNING_PREFIX);
 }
 
@@ -202,32 +203,33 @@ function lastSwapMarkerIndex(messages: readonly unknown[]): number {
 }
 
 /**
- * What the model sees of the session's messages: stale cap warnings scrubbed
- * (the rules are on the `context` handler in context-cap.ts), then everything
- * before the latest swap marker cut except the recency tail. `changed` = the
- * result differs from `original` (the handler then returns a replacement array).
- * Pure.
+ * What the model sees of the session's messages: everything before the latest
+ * swap marker cut except the recency tail, and the demands of swapped-away
+ * cycles scrubbed from that tail (the rules are on the `context` handler in
+ * context-cap.ts). `changed` = the result differs from `original` (the handler
+ * then returns a replacement array). Pure.
+ *
+ * Without a marker the view is never changed: demands are boundary entries that
+ * can never arrive late, so a window's own demands always stand, and an
+ * unchanged view keeps pi's in-conversation system messages where they are.
  */
-export function llmView<T>(
-	original: readonly T[],
-	cycleArmed: boolean,
-	tailTokens: number,
-): { messages: readonly T[]; changed: boolean } {
+export function llmView<T>(original: readonly T[], tailTokens: number): { messages: readonly T[]; changed: boolean } {
 	const markerIndex = lastSwapMarkerIndex(original);
-	// One pass: scrub, and note where the marker lands in the scrubbed array. The
-	// marker survives the scrub by construction (custom role, never a cap warning).
+	if (markerIndex < 0) return { messages: original, changed: false };
+	// One pass: scrub demands behind the marker (only reachable via the tail
+	// lever), and note where the marker lands in the scrubbed array.
 	const kept: T[] = [];
 	let marker = -1;
 	original.forEach((m, i) => {
 		if (i === markerIndex) marker = kept.length;
-		if (!isCapWarning(m) || (cycleArmed && i > markerIndex)) kept.push(m);
+		if (i >= markerIndex || !isCapWarning(m)) kept.push(m);
 	});
 	// Recency tail: keep whole turns in front of the marker when the lever is
 	// on. tailTokens = 0 ⇒ start === marker ⇒ the pre-lever slice.
 	// The marker (and any post-swap turns) stay last: the handoff is the last
 	// thing the model reads. Deterministic in the prefix, so later calls in the
 	// same window cut at the same place and the prompt prefix stays cacheable.
-	const start = marker >= 0 ? selectContextTail(kept, marker, tailTokens).start : 0;
+	const start = selectContextTail(kept, marker, tailTokens).start;
 	const messages = start > 0 ? kept.slice(start) : kept;
 	return { messages, changed: start > 0 || kept.length !== original.length };
 }

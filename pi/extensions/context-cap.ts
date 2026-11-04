@@ -1,11 +1,28 @@
 /**
  * context-cap — token-cap + graceful handoff via context-scrub (session ≠ context).
  *
- * Always on. Coexists with /handoff (manual). Mechanism:
- *  - soft cap (≤260k, model-aware — see "triggers" below): steer the agent mid-tool-use to call the `context_handoff`
- *    tool ("Current Task" section first — the next context sees ONLY this text)
- *  - silent-stop fallback: turn ends without tool calls above soft cap → followUp
- *  - turn-end verification on both paths: no handoff → bounded followUp reminders
+ * Always on. Owns BOTH handoff triggers — the token caps and the /handoff command
+ * (lib/context-cap-manual.ts) — as ONE cycle (lib/context-cap-decide.ts CycleState:
+ * origin, ending, phase, doc). A second trigger never opens a second cycle or
+ * sends a second demand; it at most changes the ending or moves the pending
+ * demand forward. Two independent machines used to race here: a cap demand
+ * landing on a /handoff reply seeded the new session with post-swap chatter, and
+ * a /handoff queued behind a cap steer was answered from the scrubbed window.
+ * Mechanism:
+ *  - soft cap (≤260k, model-aware — see "triggers" below): demand, mid-tool-use,
+ *    that the agent call the `context_handoff` tool ("Current Task" section first —
+ *    the next context sees ONLY this text)
+ *  - silent-stop fallback: turn ends without tool calls above soft cap → demand
+ *  - /handoff: demand at once when idle, else once the run settles; ends in a NEW
+ *    session seeded with the document (no swap, no auto-continue)
+ *  - delivery: every demand and reminder is a custom-message boundary entry
+ *    (customType HANDOFF_DEMAND_TYPE, lib/context-cap-demand.ts) committed at
+ *    turn_end / agent_before_settle with `continue: true` — never through pi's
+ *    steer/followUp queues (ESC restored them into the editor, they drained
+ *    after a swap into the fresh window, and a cleared /handoff prompt left the
+ *    command waiting forever). The tool refuses until a demand entry is in
+ *    context, so a call in the very message that crossed the cap is not taken.
+ *  - turn-end verification on every path: no handoff → bounded reminder entries
  *  - swap = context-scrub: a persistent custom-message marker entry
  *    (customType SWAP_MARKER_TYPE = "context-cap-swap", content = preamble + handoff body, details =
  *    forensic metadata) is appended to the session, and a "context" event handler
@@ -41,8 +58,8 @@
  *  - one-jump crossing: a single message can cross BOTH caps (a grep of a
  *    sourcemap returned ~340k tokens — observed live 2026-08-11, child explorer
  *    wiped with no handoff ever requested). If that message ends in tool calls,
- *    another turn is guaranteed — same guarantee the soft steer rides — so the
- *    agent gets ONE emergency steer to write the handoff before the backstop wipes.
+ *    another turn is guaranteed — same guarantee the soft demand rides — so the
+ *    agent gets ONE emergency demand to write the handoff before the backstop wipes.
  *  - network-error hygiene (observed live on flaky networks): errored/aborted
  *    messages and turns are synthesized by pi's failure path, never agent
  *    decisions — both handlers skip them. Old behavior: errored turn_ends burned
@@ -50,18 +67,12 @@
  *    reminder, stale reminders queued for later delivery), an errored
  *    message_end during a hard cycle bypassed the grace gate and fired the
  *    no-file backstop wipe mid-flake, and a reminder queued into an aborted run
- *    un-aborted it via pi's queued-message rescue. Additionally: a cycle whose
- *    window shrank far below the soft trigger (swap/compaction raced an error;
- *    ESC silently drops extension-queued steers) resets instead of demanding a
- *    handoff from a fresh window. Stale WARNINGS are handled structurally, not
- *    by instruction: pi's queues can deliver a cap message arbitrarily late, so
- *    the `context` handler scrubs every "[context-cap]" user message the model
- *    must not act on — any one behind the latest swap marker (its cycle is
- *    over; only reachable via the recency-tail lever) and, when no cycle is
- *    armed, the stranded ones too. A warning landing in a fresh post-swap
- *    window is thus invisible on the very first call (swap = marker + reset),
- *    and one stranded by a shrink is hidden from the call after the reset on.
- *    The session file keeps them all for forensics.
+ *    un-aborted it via pi's queued-message rescue. Additionally: a cap cycle whose
+ *    window shrank far below the soft trigger (swap/compaction raced an error)
+ *    resets instead of demanding a handoff from a fresh window. Demands are
+ *    boundary entries, so none can arrive late; the `context` handler still
+ *    scrubs every demand behind the latest swap marker (its cycle is over; only
+ *    reachable via the recency-tail lever). The session file keeps them all.
  *  - pi's threshold auto-compaction stays naturally quiet: it keys off provider-
  *    reported usage, which post-swap reflects only the scrubbed context. It can
  *    still fire when a single message overshoots everything (contextWindow -
@@ -119,10 +130,12 @@
  * gather input, call them and run the chosen action's side effects. One
  * CapSession (lib/context-cap-session.ts) carries the per-instance state and is
  * passed explicitly to the effect modules:
- *   lib/context-cap-view.ts      LLM view: warning scrub + tail cut (pure)
- *   lib/context-cap-messages.ts  the agent-facing cap warnings
+ *   lib/context-cap-view.ts      LLM view: demand scrub + tail cut (pure)
+ *   lib/context-cap-messages.ts  the agent-facing texts, one row per origin
+ *   lib/context-cap-demand.ts    demands/reminders as boundary entries
+ *   lib/context-cap-manual.ts    the /handoff command and its settle handlers
  *   lib/context-cap-tool.ts      the context_handoff tool
- *   lib/context-cap-swap.ts      stage / commit the swap marker
+ *   lib/context-cap-swap.ts      end a cycle: swap marker or new-session hand-over
  *   lib/context-cap-hard.ts      hard-cap backstop + machine-drafted handoff
  *   lib/context-cap-compact.ts   session_before_compact hook
  *   lib/context-cap-files.ts     handoff files + frontmatter
@@ -131,9 +144,12 @@
  * Config: the levers above; CONTEXT_CAP_COMPACT_HANDOFF=0 disables the pi-compaction hook (default on).
  * Live-verified (compaction-hijack predecessor + this design's API surface) 2026-07-08.
  * Full soft-cap cycle (steer → handoff write → swap) live-tested with lowered caps 2026-07-09.
+ * Unified with /handoff (boundary-entry demands, one cycle) 2026-11; harness-tested only.
  */
 
 import type {
+	AgentBeforeSettleEvent,
+	BoundaryResult,
 	ContextEvent,
 	ContextEventResult,
 	ExtensionAPI,
@@ -151,8 +167,9 @@ import {
 	type MessageEndAction,
 	type TurnEndAction,
 } from "./lib/context-cap-decide.ts";
+import { commitDemand, commitReminder } from "./lib/context-cap-demand.ts";
 import { hardCap } from "./lib/context-cap-hard.ts";
-import { hardSteerMessage, reminderMessage, silentStopMessage, steerMessage } from "./lib/context-cap-messages.ts";
+import { onBeforeSettle, onSettled, onShutdown, runHandoffCommand } from "./lib/context-cap-manual.ts";
 import {
 	type CapSession,
 	capsFrom,
@@ -161,31 +178,41 @@ import {
 	resetCycle,
 	updateStatus,
 } from "./lib/context-cap-session.ts";
-import { commitStagedSwap, stageSwap } from "./lib/context-cap-swap.ts";
+import { commitStagedSwap, docSummary, handOver, stageSwap } from "./lib/context-cap-swap.ts";
 import { registerHandoffTool } from "./lib/context-cap-tool.ts";
 import { llmView } from "./lib/context-cap-view.ts";
 import { CONTEXT_CAP_TAIL_TOKENS, type ResolvedTriggers } from "./lib/env.ts";
 import { formatTokenCount } from "./lib/format.ts";
 
 // Child done-detection needs nothing from this extension: every handoff
-// continuation — the steered swap marker, followUp reminders, the post-swap turns —
-// is drained inside the same `_runAgentPrompt` loop, so a caller awaiting
-// `session.prompt()` (lib/child-session.ts) already sees the whole cycle.
-// Regression-tested in test/context-cap.test.ts.
+// continuation — demand and reminder entries, the swap marker, the post-swap
+// turns — rides a boundary `continue` inside the same `_runAgentPrompt` loop, so
+// a caller awaiting `session.prompt()` (lib/child-session.ts) already sees the
+// whole cycle. Regression-tested in test/context-cap.test.ts.
 
 // ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
 
 // Registration order is pi's dispatch order among this extension's handlers —
-// keep it: tool, context, session_start, message_end, turn_end, session_before_compact.
+// keep it: tool, command, context, session_start, message_end, turn_end,
+// agent_before_settle, agent_settled, session_shutdown, session_before_compact.
 export default function contextCapExtension(pi: ExtensionAPI) {
 	const s = createCapSession(pi);
 	registerHandoffTool(pi, s);
+	pi.registerCommand("handoff", {
+		description: "Have the agent write a handoff document and start a new session with it",
+		handler: (_args, ctx) => runHandoffCommand(s, ctx),
+	});
 	pi.on("context", (event) => onContext(s, event));
 	pi.on("session_start", (_event, ctx) => onSessionStart(s, ctx));
 	pi.on("message_end", (event, ctx) => onMessageEnd(s, event, ctx));
 	pi.on("turn_end", (event, ctx) => onTurnEnd(s, event, ctx));
+	pi.on("agent_before_settle", (event: AgentBeforeSettleEvent, ctx): BoundaryResult | undefined =>
+		onBeforeSettle(s, ctx, event),
+	);
+	pi.on("agent_settled", (event, ctx) => onSettled(s, ctx, event.aborted));
+	pi.on("session_shutdown", () => onShutdown(s));
 	pi.on("session_before_compact", (event, ctx) => compactAsHandoff(event, ctx));
 }
 
@@ -194,26 +221,16 @@ export default function contextCapExtension(pi: ExtensionAPI) {
 // Slice the LLM context at the latest swap marker: the first post-swap call
 // sees ONLY the handoff (converted to a user message by pi), later calls see
 // handoff + post-swap turns. The session file always keeps full history.
-//
-// This handler runs before EVERY LLM call — the last gate between the session
-// and the model — which makes it the place where stale cap warnings become
-// structurally invisible (they stay in the session file for forensics):
-//  1. Warnings behind the latest marker belong to a swapped-away cycle —
-//     only reachable via the recency-tail lever — and are always scrubbed.
-//  2. With no cycle armed, ANY warning is a stranded delivery (pi's queues
-//     can deliver steers arbitrarily late, e.g. after an errored run; a committed
-//     swap and the shrink guard in message_end reset the cycle): scrubbed. The
-//     clause-bearing case — a warning landing in a fresh post-swap window —
-//     is covered structurally: post-swap means marker present and phase
-//     reset, so the warning is invisible on the very first call.
-//     While a cycle IS armed, its post-marker warnings stand.
+// Demands behind the marker belong to a swapped-away cycle — only reachable via
+// the recency-tail lever — and are scrubbed (lib/context-cap-view.ts). Without a
+// marker the view is returned untouched, so pi keeps its own message array.
 // No token-estimate freshness check here, deliberately: the estimator only
 // sees the message array while provider-reported usage also counts the system
 // prompt and tools — comparing the two mis-fires (observed as a spurious
 // mid-cycle reset in the model-switch test). Shrink detection stays in
 // message_end, where real usage is authoritative.
 function onContext(s: CapSession, event: ContextEvent): ContextEventResult | undefined {
-	const { messages, changed } = llmView(event.messages, s.cycle.phase !== "idle", CONTEXT_CAP_TAIL_TOKENS);
+	const { messages, changed } = llmView(event.messages, CONTEXT_CAP_TAIL_TOKENS);
 	// Cache what the model actually sees — the machine writer hands off the
 	// live context, not the full session history behind the last marker.
 	s.lastContextMessages = messages;
@@ -247,7 +264,12 @@ async function onMessageEnd(s: CapSession, event: MessageEndEvent, ctx: Extensio
 	return applyMessageEnd(s, ctx, action, capsNow, event.message);
 }
 
-/** Side effects of a decideMessageEnd action (lib/context-cap-decide.ts has the WHY of each). */
+/**
+ * Side effects of a decideMessageEnd action (lib/context-cap-decide.ts has the
+ * WHY of each). A demand is only decided here: its entry is committed at this
+ * turn's turn_end — where pi used to drain steers, so the agent's leeway is the
+ * same — and the tool refuses until then.
+ */
 function applyMessageEnd(
 	s: CapSession,
 	ctx: ExtensionContext,
@@ -261,26 +283,18 @@ function applyMessageEnd(
 			updateStatus(s, ctx, action.tokens, capsNow);
 			ctx.ui.notify("context-cap: context shrank mid-cycle — stale handoff cycle reset", "info");
 			return undefined;
-		case "steer-hard-jump":
-			openCycle(s, ctx, action.tokens, capsNow, "steered");
-			s.pi.sendUserMessage(hardSteerMessage(action.tokens, capsNow), { deliverAs: "steer" });
-			ctx.ui.notify(
-				`context-cap: hard cap (${formatTokenCount(action.tokens)}) crossed in one jump — emergency handoff requested`,
-				"warning",
-			);
+		case "demand":
+			openCycle(s, ctx, action.tokens, capsNow, action.origin);
+			ctx.ui.notify(demandNotice(action.origin, action.tokens), action.origin === "soft" ? "info" : "warning");
+			return undefined;
+		case "advance-demand":
+			s.cycle.demandAt = "turn_end";
 			return undefined;
 		case "hard-grace":
 			s.cycle.hardGraceUsed = true;
 			return undefined;
 		case "hard-cap":
 			return hardCap(s, ctx, action.tokens, capsNow, message);
-		case "steer-soft":
-			openCycle(s, ctx, action.tokens, capsNow, "steered");
-			// stopReason "toolUse" ⇒ run is streaming, so steer is the live path;
-			// deliverAs is ignored when idle (plain prompt), making one call safe for both.
-			s.pi.sendUserMessage(steerMessage(action.tokens, capsNow), { deliverAs: "steer" });
-			ctx.ui.notify(`context-cap: soft cap (${formatTokenCount(action.tokens)}) — handoff requested`, "info");
-			return undefined;
 		default: {
 			// "skip" / "none": nothing to do. Typed so that a new action kind fails to
 			// compile here instead of silently doing nothing.
@@ -288,6 +302,12 @@ function applyMessageEnd(
 			return undefined;
 		}
 	}
+}
+
+function demandNotice(origin: "soft" | "hard-jump", tokens: number): string {
+	return origin === "soft"
+		? `context-cap: soft cap (${formatTokenCount(tokens)}) — handoff requested`
+		: `context-cap: hard cap (${formatTokenCount(tokens)}) crossed in one jump — emergency handoff requested`;
 }
 
 function onTurnEnd(s: CapSession, event: TurnEndEvent, ctx: ExtensionContext): TurnEndEventResult | undefined {
@@ -310,7 +330,7 @@ function onTurnEnd(s: CapSession, event: TurnEndEvent, ctx: ExtensionContext): T
 	}
 }
 
-/** turn_end past the gate: verification of an in-flight cycle, else the silent-stop fallback. */
+/** turn_end past the gate: demand delivery, verification of an in-flight cycle, else the silent-stop fallback. */
 function evaluateTurnEnd(s: CapSession, ctx: ExtensionContext, event: TurnEndEvent): TurnEndEventResult | undefined {
 	const usage = ctx.getContextUsage();
 	const tokens = usage?.tokens;
@@ -318,23 +338,21 @@ function evaluateTurnEnd(s: CapSession, ctx: ExtensionContext, event: TurnEndEve
 	const capsNow = capsFrom(s, ctx, usage);
 	const action = decideTurnEnd(s.cycle, { tokens, hasToolCalls: event.toolResults.length > 0, caps: capsNow });
 	switch (action.kind) {
-		case "swap-soft":
-			stageSwap(s, ctx, { filePath: action.path, stale: false, trigger: "soft", author: "agent" }, event.message);
-			return commitStagedSwap(s, ctx, event);
+		case "commit-demand":
+			return commitDemand(s, ctx, event);
+		case "collect":
+			return collect(s, ctx, event, action.path);
 		case "remind":
-			s.cycle.retries = action.attempt;
-			sendFollowUp(s, reminderMessage(action.attempt));
-			return continueBoundary(event);
+			return commitReminder(s, event, action.attempt);
 		case "exhaust":
 			s.cycle.phase = "exhausted";
 			updateStatus(s, ctx, tokens, capsNow);
 			ctx.ui.notify("context-cap: handoff never recorded — waiting for hard cap backstop", "warning");
 			return undefined;
 		case "silent-stop":
-			openCycle(s, ctx, action.tokens, capsNow, "prompted");
-			sendFollowUp(s, silentStopMessage(action.tokens, capsNow));
+			openCycle(s, ctx, action.tokens, capsNow, "silent");
 			ctx.ui.notify(`context-cap: soft cap (${formatTokenCount(action.tokens)}) — last-turn handoff requested`, "info");
-			return continueBoundary(event);
+			return commitDemand(s, ctx, event);
 		default: {
 			// "keep-waiting" / "none": nothing to do (typed like applyMessageEnd's default).
 			const _noEffect: Extract<TurnEndAction, { kind: "keep-waiting" | "none" }> = action;
@@ -343,12 +361,14 @@ function evaluateTurnEnd(s: CapSession, ctx: ExtensionContext, event: TurnEndEve
 	}
 }
 
-// deliverAs is ignored when idle (agent-session.js: isStreaming ? streamingBehavior
-// : undefined), so one followUp call is safe whether or not the run is streaming.
-function sendFollowUp(s: CapSession, text: string): void {
-	s.pi.sendUserMessage(text, { deliverAs: "followUp" });
-}
-
-function continueBoundary(event: TurnEndEvent): TurnEndEventResult {
-	return { entries: [...event.entries], continue: true };
+/** The tool recorded this cycle's document: end the cycle by its ending. */
+function collect(s: CapSession, ctx: ExtensionContext, event: TurnEndEvent, filePath: string): TurnEndEventResult | undefined {
+	const doc = s.cycle.doc;
+	if (!doc) return undefined; // decideTurnEnd collects only with a document
+	if (s.cycle.ending === "new-session") {
+		handOver(s, ctx, docSummary(doc));
+		return undefined;
+	}
+	stageSwap(s, ctx, { doc, filePath, stale: false, trigger: "soft", author: doc.author }, event.message);
+	return commitStagedSwap(s, ctx, event);
 }

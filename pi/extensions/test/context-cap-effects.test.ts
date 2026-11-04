@@ -1,11 +1,13 @@
 /**
  * context-cap side effects, in order: every footer status, notification (text +
- * level) and injected message (text + delivery) each state-machine path emits,
- * captured by binding the extension to a recording stub pi/ctx and driving its
- * handlers directly. The expected logs were recorded from the handlers as they
- * were BEFORE the decision logic moved to lib/context-cap-decide.ts — they pin
- * that the extraction kept the effect order, not just the decisions (those are
- * table-tested in context-cap-decisions.test.ts).
+ * level) and boundary entry (demand/reminder text, swap marker) each
+ * state-machine path emits, captured by binding the extension to a recording
+ * stub pi/ctx and driving its handlers directly. The logs were first recorded
+ * before the decision logic moved to lib/context-cap-decide.ts and re-recorded
+ * when demands moved from pi's steer/followUp queues to boundary entries (the
+ * statuses, notifications and markers stayed; each "send" line became an
+ * "entry demand" line at the following turn_end). The decisions themselves are
+ * table-tested in context-cap-decisions.test.ts.
  */
 
 // Must be set before the extension is imported (env is read at module load).
@@ -18,6 +20,7 @@ import * as path from "node:path";
 import test from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { contextCapDir } from "../lib/agent-dir.ts";
+import { HANDOFF_DEMAND_TYPE, SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 import { at } from "./assert-helpers.ts";
 
 type Handler = (event: any, ctx: ExtensionContext) => unknown | Promise<unknown>;
@@ -30,7 +33,10 @@ type ExecuteTool = (
 ) => Promise<{ isError?: boolean; content: { text: string }[] }>;
 
 interface Driver {
-	/** Ordered effect log: "status <s>", "notify <level> <text>", "send <deliverAs> <first line>". */
+	/**
+	 * Ordered effect log: "status <s>", "notify <level> <text>", "entry demand <first line>"
+	 * (a demand/reminder boundary entry), "send <first line>" (pi.sendMessage), "boundary …".
+	 */
 	log: string[];
 	messageEnd(stopReason: "toolUse" | "stop" | "error" | "aborted", totalTokens: number | undefined): Promise<unknown>;
 	turnEnd(toolResults: number, outcome?: string): Promise<unknown>;
@@ -56,8 +62,8 @@ async function bind(): Promise<Driver> {
 			execute = tool.execute;
 		},
 		registerToolRenderer: () => undefined,
-		sendUserMessage: (text: string, opts?: { deliverAs?: string }) =>
-			void log.push(`send ${opts?.deliverAs} ${text.split("\n")[0]}`),
+		registerCommand: () => undefined,
+		sendMessage: (message: { content: string }) => void log.push(`send ${message.content.split("\n")[0]}`),
 	};
 	extension(pi);
 	const abort = new AbortController();
@@ -86,14 +92,8 @@ async function bind(): Promise<Driver> {
 				context: {},
 				continue: false,
 			};
-			const result = (await handlers.get("turn_end")!(event, ctx)) as
-				| { entries: { customType?: string; details?: { trigger?: string; stale?: boolean; author?: string | null } }[]; continue: boolean }
-				| undefined;
-			if (result) {
-				const marker = result.entries.find((e) => e.customType);
-				const swap = marker ? ` marker=${marker.details?.trigger}/${marker.details?.author}/stale=${marker.details?.stale}` : "";
-				log.push(`boundary continue=${result.continue}${swap}`);
-			}
+			const result = (await handlers.get("turn_end")!(event, ctx)) as BoundaryLog | undefined;
+			if (result) logBoundary(log, result);
 			return result;
 		},
 		async handoff(markdown) {
@@ -133,6 +133,24 @@ async function bind(): Promise<Driver> {
 	return driver;
 }
 
+type BoundaryLog = {
+	entries: {
+		customType?: string;
+		content?: string;
+		details?: { trigger?: string; stale?: boolean; author?: string | null };
+	}[];
+	continue: boolean;
+};
+
+function logBoundary(log: string[], result: BoundaryLog): void {
+	for (const e of result.entries) {
+		if (e.customType === HANDOFF_DEMAND_TYPE) log.push(`entry demand ${e.content?.split("\n")[0]}`);
+	}
+	const marker = result.entries.find((e) => e.customType === SWAP_MARKER_TYPE);
+	const swap = marker ? ` marker=${marker.details?.trigger}/${marker.details?.author}/stale=${marker.details?.stale}` : "";
+	log.push(`boundary continue=${result.continue}${swap}`);
+}
+
 function cleanup(d: Driver) {
 	try {
 		for (const name of fs.readdirSync(contextCapDir())) {
@@ -153,18 +171,20 @@ async function scenario(run: (d: Driver) => Promise<void>): Promise<string[]> {
 	}
 }
 
-/** Recorded from the pre-extraction handlers (see the header). */
+/** Recorded from the handlers (see the header). */
 const EXPECTED: Record<string, string[]> = {
 	softToMachine: [
 		"status 10/5",
 		"status 10/5 ⚠ handoff",
-		"send steer [context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at 10 tokens (soft cap 5, hard cap 50).",
 		"notify info context-cap: soft cap (10) — handoff requested",
 		"status 10/5 ⚠ handoff",
-		"send followUp [context-cap] No handoff was recorded — the `context_handoff` tool was not called.",
+		"entry demand [context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at 10 tokens (soft cap 5, hard cap 50).",
 		"boundary continue=true",
 		"status 10/5 ⚠ handoff",
-		"send followUp [context-cap] No handoff was recorded — the `context_handoff` tool was not called.",
+		"entry demand [context-cap] No handoff was recorded — the `context_handoff` tool was not called.",
+		"boundary continue=true",
+		"status 10/5 ⚠ handoff",
+		"entry demand [context-cap] No handoff was recorded — the `context_handoff` tool was not called.",
 		"boundary continue=true",
 		"status 10/5 ⚠ handoff",
 		"status 10/5 ⚠ awaiting hard cap",
@@ -180,8 +200,10 @@ const EXPECTED: Record<string, string[]> = {
 	jumpToNoFile: [
 		"status 60/5",
 		"status 60/5 ⚠ handoff",
-		"send steer [context-cap] ⚠️ CONTEXT LIMIT EMERGENCY: your context jumped to 60 tokens, past the hard cap 50. Do NOT start any new work. Call the `context_handoff` tool. Its `markdown` argument (plain markdown, NO YAML frontmatter, ~60 lines total):",
 		"notify warning context-cap: hard cap (60) crossed in one jump — emergency handoff requested",
+		"status 60/5 ⚠ handoff",
+		"entry demand [context-cap] ⚠️ CONTEXT LIMIT EMERGENCY: your context jumped to 60 tokens, past the hard cap 50. Do NOT start any new work. Call the `context_handoff` tool. Its `markdown` argument (plain markdown, NO YAML frontmatter, ~60 lines total):",
+		"boundary continue=true",
 		"status 60/5 ⚠ handoff",
 		"status 60/5 ⚠ handoff",
 		"notify warning context-cap: hard cap (60) — forcing handoff",
@@ -196,15 +218,19 @@ const EXPECTED: Record<string, string[]> = {
 	agentHandoff: [
 		"status 10/5",
 		"status 10/5 ⚠ handoff",
-		"send steer [context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at 10 tokens (soft cap 5, hard cap 50).",
 		"notify info context-cap: soft cap (10) — handoff requested",
+		"status 10/5 ⚠ handoff",
+		"entry demand [context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at 10 tokens (soft cap 5, hard cap 50).",
+		"boundary continue=true",
 		"status swapped/5",
 		"notify info context-cap: context swapped (soft, 10 tokens)",
 		"boundary continue=true marker=soft/agent/stale=false",
 		"status 20/5",
 		"status 20/5 ⚠ handoff",
-		"send steer [context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at 20 tokens (soft cap 5, hard cap 50).",
 		"notify info context-cap: soft cap (20) — handoff requested",
+		"status 20/5 ⚠ handoff",
+		"entry demand [context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at 20 tokens (soft cap 5, hard cap 50).",
+		"boundary continue=true",
 		"status 60/5 ⚠ handoff",
 		"notify warning context-cap: hard cap (60) — forcing handoff",
 		"status swapped/5",
@@ -214,8 +240,9 @@ const EXPECTED: Record<string, string[]> = {
 	silentStopStale: [
 		"status 10/5",
 		"status 10/5 ⚠ handoff",
-		"send followUp [context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at 10 tokens (soft cap 5, hard cap 50). This is your last turn before handoff.",
 		"notify info context-cap: soft cap (10) — last-turn handoff requested",
+		"status 10/5 ⚠ handoff",
+		"entry demand [context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at 10 tokens (soft cap 5, hard cap 50). This is your last turn before handoff.",
 		"boundary continue=true",
 		"status swapped/5",
 		"notify info context-cap: context swapped (soft, 10 tokens)",
@@ -234,7 +261,6 @@ const EXPECTED: Record<string, string[]> = {
 		"status 10/5",
 		"status 10/5",
 		"status 10/5 ⚠ handoff",
-		"send steer [context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at 10 tokens (soft cap 5, hard cap 50).",
 		"notify info context-cap: soft cap (10) — handoff requested",
 		"status ?/5 ⚠ handoff",
 		"status 2/5 ⚠ handoff",
@@ -250,11 +276,11 @@ const EXPECTED: Record<string, string[]> = {
 	],
 };
 
-test("effects: soft steer → reminders → exhausted → hard cap, machine-written handoff", async () => {
+test("effects: soft demand → reminders → exhausted → hard cap, machine-written handoff", async () => {
 	const log = await scenario(async (d) => {
 		d.usage.tokens = 10;
-		await d.messageEnd("toolUse", 10); // soft steer
-		await d.turnEnd(1); // tools ran: keep waiting
+		await d.messageEnd("toolUse", 10); // soft demand decided
+		await d.turnEnd(1); // demand committed
 		await d.messageEnd("stop", 10);
 		await d.turnEnd(0); // reminder 1
 		await d.messageEnd("stop", 10);
@@ -268,14 +294,14 @@ test("effects: soft steer → reminders → exhausted → hard cap, machine-writ
 	assert.deepEqual(log, EXPECTED.softToMachine);
 });
 
-test("effects: one-jump emergency steer → grace → backstop with no file", async () => {
+test("effects: one-jump emergency demand → grace → backstop with no file", async () => {
 	const log = await scenario(async (d) => {
 		d.usage.tokens = 60;
 		d.writer = "fail";
-		await d.messageEnd("toolUse", 60); // one-jump steer
-		await d.turnEnd(1);
+		await d.messageEnd("toolUse", 60); // one-jump demand decided
+		await d.turnEnd(1); // demand committed
 		await d.messageEnd("toolUse", 60); // grace
-		await d.turnEnd(1);
+		await d.turnEnd(1); // tools ran: keep waiting
 		await d.messageEnd("toolUse", 60); // grace used → backstop; writer fails; no file
 		await d.turnEnd(1); // commit hard-no-file
 	});
@@ -287,12 +313,13 @@ test("effects: agent handoff at the hard cap swaps the fresh file", async () => 
 	let reply1 = "";
 	const log = await scenario(async (d) => {
 		d.usage.tokens = 10;
-		await d.messageEnd("toolUse", 10); // soft steer
+		await d.messageEnd("toolUse", 10); // soft crossing: demand decided
+		await d.turnEnd(1); // demand committed
 		reply0 = await d.handoff("## Current Task\nAgent draft.");
 		await d.turnEnd(1); // handoff written → soft swap
 		d.usage.tokens = 20;
 		await d.messageEnd("toolUse", 20); // new cycle
-		await d.turnEnd(1);
+		await d.turnEnd(1); // demand committed
 		reply1 = await d.handoff("## Current Task\nSecond.");
 		d.usage.tokens = 60;
 		await d.messageEnd("stop", 60); // hard, handoff written → fresh file, no LLM call
@@ -310,7 +337,7 @@ test("effects: refused tool outside a cycle → silent stop → soft swap → ha
 		refused = await d.handoff("## Current Task\nUnasked."); // refused: no cycle
 		d.usage.tokens = 10;
 		await d.messageEnd("stop", 10); // soft crossed without tools: nothing yet
-		await d.turnEnd(0); // silent stop prompt
+		await d.turnEnd(0); // silent stop: demand entry
 		await d.handoff("## Current Task\nWritten after prompt.");
 		await d.turnEnd(0); // soft swap (seq 1)
 		d.writer = "fail";
@@ -327,7 +354,7 @@ test("effects: skips, shrink reset, abort while drafting", async () => {
 		d.usage.tokens = 10;
 		await d.messageEnd("error", 99); // errored: status only, from getContextUsage (10), not the message's usage
 		await d.messageEnd("aborted", 0); // ESC-aborted: zeroed usage must not flash the footer to 0
-		await d.messageEnd("toolUse", undefined); // falls back to getContextUsage (10) → soft steer
+		await d.messageEnd("toolUse", undefined); // falls back to getContextUsage (10) → soft demand
 		d.usage.tokens = null;
 		await d.messageEnd("toolUse", undefined); // unknown usage: status only
 		await d.messageEnd("stop", 2); // shrank below soft/2 → reset
@@ -349,7 +376,8 @@ test("effects: a failed handoff write is reported to the agent and never counted
 	let reply = "";
 	const log = await scenario(async (d) => {
 		d.usage.tokens = 10;
-		await d.messageEnd("toolUse", 10); // soft steer: cycle armed for <sid>-1.md
+		await d.messageEnd("toolUse", 10); // soft crossing: cycle armed for <sid>-1.md
+		await d.turnEnd(1); // demand committed
 		// A directory at the expected path: writeFileSync fails with EISDIR.
 		const blocked = path.join(contextCapDir(), `${d.sessionId}-1.md`);
 		fs.mkdirSync(blocked);
@@ -359,37 +387,33 @@ test("effects: a failed handoff write is reported to the agent and never counted
 			fs.rmdirSync(blocked);
 		}
 		await d.messageEnd("stop", 10);
-		await d.turnEnd(0); // handoffWritten still false → reminder, not a swap
+		await d.turnEnd(0); // no document recorded → reminder, not a swap
 	});
 	assert.equal(reply, "error: Handoff write failed");
 	assert.deepEqual(log, [
 		"status 10/5",
 		"status 10/5 ⚠ handoff",
-		"send steer [context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at 10 tokens (soft cap 5, hard cap 50).",
 		"notify info context-cap: soft cap (10) — handoff requested",
 		"status 10/5 ⚠ handoff",
-		"send followUp [context-cap] No handoff was recorded — the `context_handoff` tool was not called.",
+		"entry demand [context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at 10 tokens (soft cap 5, hard cap 50).",
+		"boundary continue=true",
+		"status 10/5 ⚠ handoff",
+		"entry demand [context-cap] No handoff was recorded — the `context_handoff` tool was not called.",
 		"boundary continue=true",
 	]);
 });
 
-test("effects: a handoff file gone before the swap resets the cycle — no marker, error shown, next check re-arms", async () => {
+test("effects: the swap carries the recorded document — a handoff file deleted before the swap changes nothing", async () => {
 	const log = await scenario(async (d) => {
 		d.usage.tokens = 10;
-		await d.messageEnd("toolUse", 10); // soft steer
+		await d.messageEnd("toolUse", 10); // soft crossing
+		await d.turnEnd(1); // demand committed
 		assert.match(await d.handoff("## Current Task\nWritten, then lost."), /^ok: /);
 		fs.rmSync(path.join(contextCapDir(), `${d.sessionId}-1.md`)); // deleted under us
-		await d.turnEnd(0); // soft swap cannot read the file → reset, no boundary
-		await d.messageEnd("toolUse", 10); // idle again: a fresh cycle is armed
+		const result = (await d.turnEnd(0)) as BoundaryLog;
+		const marker = result.entries.find((e) => e.customType === SWAP_MARKER_TYPE);
+		assert.match(marker?.content ?? "", /Written, then lost\./, "the successor text comes from the tool call");
 	});
-	assert.equal(log.length, 10, log.join("\n"));
-	assert.deepEqual(log.slice(0, 4), [
-		"status 10/5",
-		"status 10/5 ⚠ handoff",
-		"send steer [context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at 10 tokens (soft cap 5, hard cap 50).",
-		"notify info context-cap: soft cap (10) — handoff requested",
-	]);
-	assert.equal(at(log, 4), "status 10/5"); // phase idle: no "⚠ handoff" suffix
-	assert.match(at(log, 5), /^notify error context-cap: failed to read handoff file: ENOENT/);
-	assert.deepEqual(log.slice(6), log.slice(0, 4), "the reset cycle re-arms exactly like the first one");
+	assert.equal(at(log, -1), "boundary continue=true marker=soft/agent/stale=false");
+	assert.ok(!log.some((l) => l.startsWith("notify error")), log.join("\n"));
 });

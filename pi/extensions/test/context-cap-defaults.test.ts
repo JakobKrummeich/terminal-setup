@@ -151,7 +151,7 @@ test("the budget is respected and the cut lands on a turn boundary", () => {
 });
 
 test("a boundary that would orphan a tool result is skipped, not taken", () => {
-	// pi can inject a user message (a context-cap steer) between an assistant's
+	// pi can inject a user message (a user steer) between an assistant's
 	// tool call and its result. Cutting at that user message orphans the result.
 	const msgs = [
 		user("first"),

@@ -105,7 +105,7 @@ test("the swapped-in context is [recent turns …, handoff], pairing-safe and in
 			// Run 1 (the oversized old turn): stays below the soft cap.
 			toolStep("sA", "timer", { action: "cancel" }, 2),
 			textStep("old work done", 2),
-			// Run 2: 10 >= soft cap 5 with stopReason toolUse -> steer requesting a handoff.
+			// Run 2: 10 >= soft cap 5 with stopReason toolUse -> demand requesting a handoff.
 			toolStep("s1", "timer", { action: "cancel" }, 10),
 			toolStep("h1", "context_handoff", { markdown: HANDOFF_BODY }, 10),
 			textStep("continued after swap", 2),
@@ -138,10 +138,10 @@ test("the swapped-in context is [recent turns …, handoff], pairing-safe and in
 		assert.ok(!all.includes("OLD-PROMPT-SENTINEL"), "the oversized older turn must not fit the budget");
 		assert.equal(at(postSwap.messages, 0).role, "user", "the tail starts at a complete turn");
 		assert.ok(textOf(at(postSwap.messages, 0)).includes("NEW-TURN-SENTINEL"), "…here, the second run's prompt");
-		// Structural staleness guarantee: the steer that opened the cycle sits in
+		// Structural staleness guarantee: the demand that opened the cycle sits in
 		// the kept region of the session, but its cycle is over (marker behind it)
 		// — the scrub must keep it away from the model, clause or no clause.
-		assert.ok(!all.includes("CONTEXT LIMIT WARNING"), "a swapped-away cycle's steer must be scrubbed from the tail");
+		assert.ok(!all.includes("CONTEXT LIMIT WARNING"), "a swapped-away cycle's demand must be scrubbed from the tail");
 
 		// Forensics: the marker says the lever fired and how much it kept.
 		const marker = (t.session.messages as { role: string; customType?: string; details?: any }[]).find(

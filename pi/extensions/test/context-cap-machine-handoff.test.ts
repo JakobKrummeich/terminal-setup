@@ -273,7 +273,7 @@ function cleanup(t: TestSession, sessionId: string) {
 
 /**
  * Drives a session past the hard cap with no agent handoff ever written:
- * one-jump crossing (emergency steer) → ignored (grace turn) → ignored again,
+ * one-jump crossing (emergency demand) → ignored (grace turn) → ignored again,
  * which is where the backstop fires.
  */
 async function hardCapSession(): Promise<TestSession> {

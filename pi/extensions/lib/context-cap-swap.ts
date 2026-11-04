@@ -1,21 +1,28 @@
 /**
- * context-cap swap: staging the persistent swap marker (a custom-message entry,
- * customType SWAP_MARKER_TYPE, content = preamble + handoff body, details =
- * forensic metadata) and committing it as a boundary entry of the imminent
- * turn_end. The `context` handler then slices the LLM view at the latest marker
- * (lib/context-cap-view.ts llmView). Mechanism: header of context-cap.ts.
+ * context-cap, ending a cycle: the successor text (preamble + this cycle's
+ * document, built from `cycle.doc` — never re-read from the branch or the file),
+ * staged during message_end or turn_end and delivered at the imminent turn_end
+ * by the cycle's ending:
+ *  - "swap": the persistent swap marker (a custom-message entry, customType
+ *    SWAP_MARKER_TYPE, content = successor text + "Continue your work.", details
+ *    = forensic metadata), committed as a boundary entry. The `context` handler
+ *    then slices the LLM view at the latest marker (lib/context-cap-view.ts).
+ *  - "new-session": the successor text, without the suffix, goes to the waiting
+ *    /handoff command (lib/context-cap-manual.ts), which seeds a fresh session.
+ * Mechanism: header of context-cap.ts.
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionContext, TurnEndEvent, TurnEndEventResult } from "@earendil-works/pi-coding-agent";
 import { appendEvent } from "./agent-runs.ts";
-import type { HandoffAuthor, SwapDetails } from "./context-cap-decide.ts";
+import type { HandoffAuthor, RecordedDoc, StagedSwap, SwapDetails } from "./context-cap-decide.ts";
 import { fileSeq, stripFrontmatter } from "./context-cap-files.ts";
 import {
 	type CapSession,
 	resetCycle,
 	sessionId,
+	settleManual,
 	stampCaps,
 	tailKeptEstimate,
 	updateStatus,
@@ -36,16 +43,22 @@ const NO_FILE_SUMMARY =
 
 const CONTINUE_SUFFIX = "Continue your work.";
 
-function buildSummary(filePath: string, stale: boolean, author: HandoffAuthor): string {
-	const body = stripFrontmatter(fs.readFileSync(filePath, "utf8")).trim();
+function summaryOf(body: string, stale: boolean, author: HandoffAuthor): string {
 	const staleNote = stale ? `\n\n${STALE_NOTE}` : "";
 	const preamble = author === "machine" ? MACHINE_PREAMBLE : HANDOFF_PREAMBLE;
-	return `${preamble}\n\n${body}${staleNote}\n\n${CONTINUE_SUFFIX}`;
+	return `${preamble}\n\n${body}${staleNote}`;
 }
 
-/** What the marker should say, if the swap is possible. */
+/** The successor text of a recorded document, without any suffix (the new-session seed). */
+export function docSummary(doc: RecordedDoc): string {
+	return summaryOf(doc.body, false, doc.author);
+}
+
+/** What the successor should read, if the swap is possible. */
 interface SwapPlan {
-	/** The handoff document; undefined = none at all (hard-no-file). */
+	/** This cycle's document; when absent, `filePath` is an older (stale) file or undefined (no file). */
+	doc?: RecordedDoc;
+	/** Where the document lives on disk; undefined = none at all (hard-no-file). */
 	filePath: string | undefined;
 	stale: boolean;
 	trigger: SwapTrigger;
@@ -53,26 +66,29 @@ interface SwapPlan {
 }
 
 /**
- * Prepare a persistent marker for the imminent turn_end. The marker is committed
- * as a boundary entry of that turn_end (commitStagedSwap), not injected as a
- * steer: sending a message from inside the boundary loops.
+ * Prepare the successor text for the imminent turn_end. It is delivered as a
+ * boundary entry of that turn_end (commitStagedSwap), never injected as a
+ * message: sending a message from inside the boundary loops.
  */
 export function stageSwap(s: CapSession, ctx: ExtensionContext, plan: SwapPlan, sourceMessage: unknown): void {
-	const content = swapContent(s, ctx, plan);
-	if (content === undefined) return;
+	const summary = swapSummary(s, ctx, plan);
+	if (summary === undefined) return;
 	const swapCaps = stampCaps(s, ctx);
-	s.cycle.stagedSwap = { content, swapCaps, sourceMessage, details: swapDetails(s, ctx, plan, swapCaps) };
+	const details = swapDetails(s, ctx, plan, swapCaps);
+	s.cycle.stagedSwap = { summary, continueSuffix: plan.filePath !== undefined, swapCaps, sourceMessage, details };
 }
 
-/** Marker content; undefined after a failed file read (the cycle is then reset and the user told). */
-function swapContent(s: CapSession, ctx: ExtensionContext, plan: SwapPlan): string | undefined {
+/** Successor text; undefined after a failed stale-file read (the cycle is then reset and the user told). */
+function swapSummary(s: CapSession, ctx: ExtensionContext, plan: SwapPlan): string | undefined {
+	if (plan.doc) return summaryOf(plan.doc.body, plan.stale, plan.doc.author);
 	if (!plan.filePath) return NO_FILE_SUMMARY;
 	try {
-		return buildSummary(plan.filePath, plan.stale, plan.author);
+		return summaryOf(stripFrontmatter(fs.readFileSync(plan.filePath, "utf8")).trim(), plan.stale, plan.author);
 	} catch (e) {
-		resetCycle(s);
+		const reason = `failed to read handoff file: ${e instanceof Error ? e.message : e}`;
+		resetCycle(s, reason);
 		updateStatus(s, ctx, ctx.getContextUsage()?.tokens);
-		ctx.ui.notify(`context-cap: failed to read handoff file: ${e instanceof Error ? e.message : e}`, "error");
+		ctx.ui.notify(`context-cap: ${reason}`, "error");
 		return undefined;
 	}
 }
@@ -96,27 +112,44 @@ function swapDetails(s: CapSession, ctx: ExtensionContext, plan: SwapPlan, swapC
 	};
 }
 
-/** turn_end boundary: append the staged marker, reset the cycle and report the swap. */
+/** turn_end boundary: deliver the staged successor text by the cycle's ending. */
 export function commitStagedSwap(
 	s: CapSession,
 	ctx: ExtensionContext,
 	event: TurnEndEvent,
 ): TurnEndEventResult | undefined {
-	if (!s.cycle.stagedSwap) return undefined;
 	const swap = s.cycle.stagedSwap;
+	if (!swap) return undefined;
 	s.cycle.stagedSwap = null;
-	resetCycle(s);
+	if (s.cycle.ending === "new-session") {
+		handOver(s, ctx, swap.summary);
+		// A hard-cap hand-over can land on a turn whose tools ran, so the loop would
+		// call the model again in the over-cap window the user is leaving. Stop it.
+		if (event.toolResults.length > 0) ctx.abort();
+		return undefined;
+	}
+	return commitMarker(s, ctx, event, swap);
+}
 
+/**
+ * New-session ending: hand the successor text to the waiting /handoff command
+ * and close the cycle. No continuation: the run ends, and the command seeds the
+ * new session once pi is idle.
+ */
+export function handOver(s: CapSession, ctx: ExtensionContext, seed: string): void {
+	settleManual(s, { ok: true, seed });
+	resetCycle(s);
+	updateStatus(s, ctx, ctx.getContextUsage()?.tokens);
+	ctx.ui.notify("context-cap: handoff recorded — starting a new session from it", "info");
+}
+
+function commitMarker(s: CapSession, ctx: ExtensionContext, event: TurnEndEvent, swap: StagedSwap): TurnEndEventResult {
+	resetCycle(s);
+	const content = swap.continueSuffix ? `${swap.summary}\n\n${CONTINUE_SUFFIX}` : swap.summary;
 	const boundaryResult: TurnEndEventResult = {
 		entries: [
 			...event.entries,
-			{
-				type: "custom_message",
-				customType: SWAP_MARKER_TYPE,
-				content: swap.content,
-				display: true,
-				details: swap.details,
-			},
+			{ type: "custom_message", customType: SWAP_MARKER_TYPE, content, display: true, details: swap.details },
 		],
 		continue: true,
 	};

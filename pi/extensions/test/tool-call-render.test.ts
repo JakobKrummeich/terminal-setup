@@ -134,7 +134,7 @@ test("timer call row: action, seconds and name", () => {
 
 test("context_handoff call row: line count, never the handoff body", () => {
 	const stub = stubPi();
-	registerHandoffTool(stub.pi as never, createCapSession({ sendUserMessage: () => undefined }));
+	registerHandoffTool(stub.pi as never, createCapSession({ sendMessage: () => undefined }));
 	const render = renderCallOf(stub, CONTEXT_CAP_TOOL_NAME);
 	assert.equal(
 		render({ markdown: "## Current Task\nBODY-SENTINEL\n\n## Next\n- x\n" }),

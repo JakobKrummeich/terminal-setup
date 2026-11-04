@@ -31,7 +31,7 @@ import {
 	resolveTriggers,
 	type ResolvedTriggers,
 } from "../lib/env.ts";
-import { createTestSession, textStep, toolStep } from "./harness.ts";
+import { createTestSession, demandTexts, textStep, toolStep } from "./harness.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 import { at } from "./assert-helpers.ts";
 
@@ -185,7 +185,7 @@ test("degenerate window: cap disabled rather than armed at a nonsense threshold"
 
 test("soft >= hard is clamped to hard-1 and flagged", () => {
 	// Only-soft-set against a small window: the explicit 200k soft is above the
-	// dynamic 165_254 hard, which would mean the steer never gets a turn.
+	// dynamic 165_254 hard, which would mean the demand never gets a turn.
 	const caps = withEnv({ CONTEXT_CAP_SOFT: "200000" }, () => resolveTriggers(200_000));
 	assert.equal(caps.hard, 165_254);
 	assert.equal(caps.soft, 165_253, "soft pulled to hard-1");
@@ -262,7 +262,7 @@ const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..")
 /** Above the 200k-window soft cap (132_203), below its hard cap and below the old static 260k. */
 const TOKENS = 140_000;
 
-test("mid-session model switch moves the soft cap: no steer at 1M, steer at 200k", async () => {
+test("mid-session model switch moves the soft cap: no demand at 1M, demand at 200k", async () => {
 	const t = await createTestSession({
 		extensionPaths: [path.join(EXT_DIR, "context-cap.ts"), path.join(EXT_DIR, "timer.ts")],
 		tools: ["timer", "context_handoff"],
@@ -287,7 +287,7 @@ test("mid-session model switch moves the soft cap: no steer at 1M, steer at 200k
 
 		await t.session.prompt("first");
 		assert.equal(
-			t.deliveredUserMessages.filter((m) => m.text.includes("[context-cap]")).length,
+			demandTexts(t).length,
 			0,
 			"140k must not trip the 1M-window soft cap (260k)",
 		);
@@ -297,9 +297,9 @@ test("mid-session model switch moves the soft cap: no steer at 1M, steer at 200k
 		await t.session.setModel({ ...t.session.model, contextWindow: 200_000 });
 		await t.session.prompt("second");
 
-		const steers = t.deliveredUserMessages.filter((m) => m.text.includes("[context-cap]"));
-		assert.equal(steers.length, 1, `expected exactly one steer, got ${JSON.stringify(steers.map((s) => s.text))}`);
-		assert.match(at(steers, 0).text, /soft cap 132203, hard cap 165254/, "the steer must quote the dynamic pair");
+		const demands = demandTexts(t).filter((text) => text.includes("[context-cap]"));
+		assert.equal(demands.length, 1, `expected exactly one demand, got ${JSON.stringify(demands)}`);
+		assert.match(at(demands, 0), /soft cap 132203, hard cap 165254/, "the demand must quote the dynamic pair");
 
 		const marker = (
 			t.session.messages as Array<{ role: string; customType?: string; details?: Record<string, unknown> }>
