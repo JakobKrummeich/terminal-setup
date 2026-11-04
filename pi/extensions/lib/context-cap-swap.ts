@@ -9,6 +9,8 @@
  *    then slices the LLM view at the latest marker (lib/context-cap-view.ts).
  *  - "new-session": the successor text, without the suffix, goes to the waiting
  *    /handoff command (lib/context-cap-manual.ts), which seeds a fresh session.
+ *    Only this cycle's document seeds one: a hard-cap stale file or no-file note
+ *    fails the command, and the swap marker is committed instead.
  * Mechanism: header of context-cap.ts.
  */
 
@@ -43,6 +45,9 @@ const NO_FILE_SUMMARY =
 
 const CONTINUE_SUFFIX = "Continue your work.";
 
+/** Why a waiting /handoff fails when the hard cap left no document from this cycle. */
+export const NO_CYCLE_DOC = "hard cap hit and no handoff could be written";
+
 function summaryOf(body: string, stale: boolean, author: HandoffAuthor): string {
 	const staleNote = stale ? `\n\n${STALE_NOTE}` : "";
 	const preamble = author === "machine" ? MACHINE_PREAMBLE : HANDOFF_PREAMBLE;
@@ -75,7 +80,14 @@ export function stageSwap(s: CapSession, ctx: ExtensionContext, plan: SwapPlan, 
 	if (summary === undefined) return;
 	const swapCaps = stampCaps(s, ctx);
 	const details = swapDetails(s, ctx, plan, swapCaps);
-	s.cycle.stagedSwap = { summary, continueSuffix: plan.filePath !== undefined, swapCaps, sourceMessage, details };
+	s.cycle.stagedSwap = {
+		summary,
+		continueSuffix: plan.filePath !== undefined,
+		fromCycle: plan.doc !== undefined,
+		swapCaps,
+		sourceMessage,
+		details,
+	};
 }
 
 /** Successor text; undefined after a failed stale-file read (the cycle is then reset and the user told). */
@@ -122,13 +134,26 @@ export function commitStagedSwap(
 	if (!swap) return undefined;
 	s.cycle.stagedSwap = null;
 	if (s.cycle.ending === "new-session") {
-		handOver(s, ctx, swap.summary);
-		// A hard-cap hand-over can land on a turn whose tools ran, so the loop would
-		// call the model again in the over-cap window the user is leaving. Stop it.
-		if (event.toolResults.length > 0) ctx.abort();
-		return undefined;
+		if (swap.fromCycle) return handOverAtTurnEnd(s, ctx, event, swap.summary);
+		settleManual(s, { ok: false, reason: `${NO_CYCLE_DOC} — the context was swapped in place` });
 	}
 	return commitMarker(s, ctx, event, swap);
+}
+
+/**
+ * turn_end, new-session ending: hand over and stop the loop. Tools ran in this
+ * turn, and pi calls the model again unless every call of the batch terminates —
+ * that call would work on in the window the user is leaving, unseen by the seed.
+ */
+export function handOverAtTurnEnd(
+	s: CapSession,
+	ctx: ExtensionContext,
+	event: TurnEndEvent,
+	seed: string,
+): TurnEndEventResult | undefined {
+	handOver(s, ctx, seed);
+	if (event.toolResults.length > 0) ctx.abort();
+	return undefined;
 }
 
 /**

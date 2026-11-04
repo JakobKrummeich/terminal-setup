@@ -178,7 +178,7 @@ import {
 	resetCycle,
 	updateStatus,
 } from "./lib/context-cap-session.ts";
-import { commitStagedSwap, docSummary, handOver, stageSwap } from "./lib/context-cap-swap.ts";
+import { commitStagedSwap, docSummary, handOverAtTurnEnd, stageSwap } from "./lib/context-cap-swap.ts";
 import { registerHandoffTool } from "./lib/context-cap-tool.ts";
 import { llmView } from "./lib/context-cap-view.ts";
 import { CONTEXT_CAP_TAIL_TOKENS, type ResolvedTriggers } from "./lib/env.ts";
@@ -365,10 +365,7 @@ function evaluateTurnEnd(s: CapSession, ctx: ExtensionContext, event: TurnEndEve
 function collect(s: CapSession, ctx: ExtensionContext, event: TurnEndEvent, filePath: string): TurnEndEventResult | undefined {
 	const doc = s.cycle.doc;
 	if (!doc) return undefined; // decideTurnEnd collects only with a document
-	if (s.cycle.ending === "new-session") {
-		handOver(s, ctx, docSummary(doc));
-		return undefined;
-	}
+	if (s.cycle.ending === "new-session") return handOverAtTurnEnd(s, ctx, event, docSummary(doc));
 	stageSwap(s, ctx, { doc, filePath, stale: false, trigger: "soft", author: doc.author }, event.message);
 	return commitStagedSwap(s, ctx, event);
 }

@@ -14,10 +14,11 @@
  * two machines raced.
  *
  * Delivery: idle → the demand starts a run directly; mid-run → the demand is
- * committed at agent_before_settle once the run finished its work. Nothing goes
- * through pi's steer/followUp queues (lib/context-cap-demand.ts says why), so ESC
- * restores nothing to the editor and can never strand the command: agent_settled
- * fails any waiter its run did not satisfy.
+ * committed at agent_before_settle once the run finished its work; during a
+ * compaction or branch summary (busy, but no run) → decided once it is over.
+ * Nothing goes through pi's steer/followUp queues (lib/context-cap-demand.ts
+ * says why), so ESC restores nothing to the editor and can never strand the
+ * command: agent_settled fails any waiter its run did not satisfy.
  */
 
 import type {
@@ -37,10 +38,13 @@ import {
 	startCycle,
 	updateStatus,
 } from "./context-cap-session.ts";
-import { docSummary, handOver } from "./context-cap-swap.ts";
+import { docSummary, handOver, NO_CYCLE_DOC } from "./context-cap-swap.ts";
 import { HANDOFF_SUMMARY_TYPE } from "./message-types.ts";
 
 export async function runHandoffCommand(s: CapSession, ctx: ExtensionCommandContext): Promise<void> {
+	// Busy without an agent run: a compaction or branch summary. Nothing settles
+	// it, so a demand parked for the settle would wait forever — decide after it.
+	if (!ctx.isIdle() && ctx.signal === undefined) await ctx.waitForIdle();
 	if (s.manual) {
 		ctx.ui.notify("/handoff already in progress", "warning");
 		return;
@@ -87,8 +91,9 @@ function startManual(s: CapSession, ctx: ExtensionContext): void {
 
 /** The document is already there and nothing runs: hand it over at once. */
 function finishNow(s: CapSession, ctx: ExtensionContext): void {
-	const { doc, stagedSwap } = s.cycle;
-	handOver(s, ctx, doc ? docSummary(doc) : (stagedSwap?.summary ?? ""));
+	const { doc } = s.cycle;
+	if (doc) handOver(s, ctx, docSummary(doc));
+	else failManual(s, ctx, NO_CYCLE_DOC);
 }
 
 /** The /handoff demand replaces whatever demand the cycle had (none, or an exhausted/abandoned one). */

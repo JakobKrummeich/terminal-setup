@@ -97,6 +97,8 @@ export interface StagedSwap {
 	summary: string;
 	/** The swap ending appends "Continue your work." (documents only; the no-file note asks the user instead). */
 	continueSuffix: boolean;
+	/** Carries this cycle's document; false = a stale older file or the no-file note, never a /handoff seed. */
+	fromCycle: boolean;
 	details: SwapDetails;
 	swapCaps: ResolvedTriggers;
 	/** Exact assistant object whose message_end prepared this marker. */

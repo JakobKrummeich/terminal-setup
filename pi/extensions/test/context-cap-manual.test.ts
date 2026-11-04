@@ -20,11 +20,23 @@ process.env.CONTEXT_CAP_SOFT = "100";
 process.env.CONTEXT_CAP_HARD = "1000";
 
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { contextCapDir } from "../lib/agent-dir.ts";
 import { HANDOFF_PREAMBLE, HANDOFF_SUMMARY_TYPE, SWAP_MARKER_TYPE } from "../lib/message-types.ts";
-import { abortedStep, createTestSession, type ScriptedStep, sleep, type TestSession, textStep, toolStep } from "./harness.ts";
+import {
+	abortedStep,
+	batchStep,
+	createTestSession,
+	type ScriptedStep,
+	sleep,
+	type TestSession,
+	type TestSessionOptions,
+	textStep,
+	toolStep,
+} from "./harness.ts";
 
 const EXT_DIR = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const LONG_DOC = "## Current Task\nthe long, real handoff document";
@@ -35,7 +47,11 @@ const LONG_DOC = "## Current Task\nthe long, real handoff document";
  */
 const DEMAND_TYPE = "handoff-demand";
 
-function session(script: ScriptedStep[], onLlmCall?: (call: number) => void): Promise<TestSession> {
+function session(
+	script: ScriptedStep[],
+	onLlmCall?: (call: number) => void,
+	extra: Partial<TestSessionOptions> = {},
+): Promise<TestSession> {
 	let calls = 0;
 	return createTestSession({
 		extensionPaths: ["context-cap.ts", "builtin-tools.ts"].map((f) => path.join(EXT_DIR, f)),
@@ -44,6 +60,7 @@ function session(script: ScriptedStep[], onLlmCall?: (call: number) => void): Pr
 		llmDelayMs: 20,
 		script,
 		onLlmCall: () => onLlmCall?.(++calls),
+		...extra,
 	});
 }
 
@@ -310,3 +327,174 @@ test("session shutdown releases a waiting /handoff silently", async () => {
 		t.dispose();
 	}
 });
+
+test("context_handoff batched with another tool ends the run: no model call in the window being left, no second cycle", async () => {
+	let calls = 0;
+	const t = await session(
+		[
+			batchStep(
+				[
+					{ id: "h1", name: "context_handoff", args: { markdown: LONG_DOC } },
+					{ id: "l1", name: "ls", args: {} },
+				],
+				50,
+			),
+			// Above the soft cap without tool calls: would open a silent-stop cap cycle.
+			textStep("must never run: the window is being left", 110),
+		],
+		(call) => void (calls = call),
+	);
+	try {
+		await t.session.prompt("/handoff");
+		await t.session.waitForIdle();
+		assertSeeded(t, LONG_DOC);
+		assert.equal(calls, 1, "no model call after the document was recorded");
+		assert.deepEqual(
+			customEntries(t, DEMAND_TYPE).map((d) => [d.details.origin, d.details.kind]),
+			[["manual", "demand"]],
+			"no second (cap) cycle",
+		);
+		assert.deepEqual(customEntries(t, SWAP_MARKER_TYPE), []);
+		assertNothingQueued(t);
+	} finally {
+		t.dispose();
+	}
+});
+
+/** Resolves "settled" if `p` settles within `ms`, else "stuck". */
+async function settlesWithin(p: Promise<unknown>, ms: number): Promise<"settled" | "stuck"> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timeout = new Promise<"stuck">((resolve) => (timer = setTimeout(() => resolve("stuck"), ms)));
+	try {
+		return await Promise.race([p.then(() => "settled" as const), timeout]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/** A standalone completion as the handoff writer (lib/handoff-writer.ts) receives it. */
+function writerResponse(text: string, stopReason = "stop"): unknown {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "writer-model",
+		usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason,
+		timestamp: Date.now(),
+	};
+}
+
+test("/handoff typed during a manual compaction demands once the compaction is over — never stuck", async () => {
+	let handoff: Promise<unknown> | undefined;
+	const t = await session(
+		[
+			textStep("first answer", 20),
+			textStep("second answer", 20),
+			toolStep("h1", "context_handoff", { markdown: LONG_DOC }, 30),
+		],
+		undefined,
+		{ compaction: { enabled: true, keepRecentTokens: 1, reserveTokens: 16384 } },
+	);
+	// The compaction hook's writer call: the user types /handoff while pi compacts.
+	t.modelRuntime.complete = async () => {
+		handoff ??= t.session.prompt("/handoff");
+		await sleep(30);
+		return writerResponse("## Current Task\ncompaction summary");
+	};
+	try {
+		await t.session.prompt("do work");
+		await t.session.prompt("more work");
+		await t.session.compact();
+		assert.ok(handoff, "/handoff was typed during the compaction");
+		assert.equal(await settlesWithin(handoff, 3000), "settled", "the command must not wait for a settle that never comes");
+		await t.session.waitForIdle();
+		assertSeeded(t, LONG_DOC);
+		assert.deepEqual(
+			customEntries(t, DEMAND_TYPE).map((d) => [d.details.origin, d.details.kind]),
+			[["manual", "demand"]],
+		);
+		assertNothingQueued(t);
+	} finally {
+		t.dispose();
+	}
+});
+
+const MACHINE_DOC = "## Current Task\nMACHINE-DOC-SENTINEL";
+const NO_DOC_REASON = "/handoff: no handoff recorded — hard cap hit and no handoff could be written — the context was swapped in place";
+
+/**
+ * /handoff typed mid-run, then a reply without tool calls crosses the hard cap:
+ * the backstop writes (or fails to write) the document of the /handoff cycle.
+ */
+async function hardCapDuringHandoff(
+	writer: () => Promise<unknown>,
+	staleDoc?: string,
+): Promise<{ t: TestSession; llmCalls: number }> {
+	let handoff: Promise<unknown> | undefined;
+	let calls = 0;
+	const t: TestSession = await session(
+		[toolStep("w1", "ls", {}, 20), textStep("crosses the hard cap", 1200), textStep("post-swap turn", 5)],
+		(call) => {
+			calls = call;
+			if (call === 1) handoff = t.session.prompt("/handoff");
+		},
+	);
+	const sessionId = t.session.sessionManager.getSessionId();
+	if (staleDoc !== undefined) {
+		fs.mkdirSync(contextCapDir(), { recursive: true });
+		fs.writeFileSync(path.join(contextCapDir(), `${sessionId}-1.md`), `---\nseq: 1\nauthor: agent\n---\n\n${staleDoc}\n`);
+	}
+	t.modelRuntime.complete = writer;
+	await t.session.prompt("start");
+	assert.ok(handoff, "/handoff was typed mid-run");
+	assert.equal(await settlesWithin(handoff, 3000), "settled");
+	await t.session.waitForIdle();
+	return { t, llmCalls: calls };
+}
+
+test("hard cap during /handoff, machine-written document → new session from it, no swap", async () => {
+	const { t, llmCalls } = await hardCapDuringHandoff(async () => writerResponse(MACHINE_DOC));
+	try {
+		assert.equal(t.seeds.length, 1);
+		const seed = t.seeds[0]!;
+		assert.equal(seed.triggerTurn, false);
+		assert.ok(String(seed.content).includes("MACHINE-DOC-SENTINEL"), "this cycle's machine document seeds the session");
+		assert.ok(String(seed.content).includes("reconstructed automatically"), "marked second-hand");
+		assert.deepEqual(customEntries(t, SWAP_MARKER_TYPE), []);
+		assert.equal(llmCalls, 2, "no post-swap turn");
+	} finally {
+		t.dispose();
+	}
+});
+
+for (const [name, staleDoc, trigger] of [
+	["stale file", "## Current Task\nSTALE-DOC-SENTINEL", "hard"],
+	["no file", undefined, "hard-no-file"],
+] as const) {
+	test(`hard cap during /handoff, writer fails, ${name} → /handoff fails, the context is swapped in place`, async () => {
+		const { t } = await hardCapDuringHandoff(async () => writerResponse("", "error"), staleDoc);
+		try {
+			assert.deepEqual(t.seeds, [], "no session seeded with a document from another cycle (or none)");
+			assert.ok(
+				t.notices.some((n) => n.level === "error" && n.message === NO_DOC_REASON),
+				JSON.stringify(t.notices),
+			);
+			const markers = customEntries(t, SWAP_MARKER_TYPE);
+			assert.equal(markers.length, 1, "the cap swap runs as it does without /handoff");
+			assert.equal(markers[0].details.trigger, trigger);
+			if (staleDoc) {
+				assert.equal(markers[0].details.stale, true);
+				assert.ok(markers[0].content.includes("STALE-DOC-SENTINEL"));
+				assert.ok(markers[0].content.endsWith("Continue your work."), "the agent continues, as for the cap swap");
+			} else {
+				assert.ok(markers[0].content.includes("Ask the user for direction"));
+			}
+			const last = branch(t).at(-1);
+			assert.match(JSON.stringify(last.message?.content), /post-swap turn/, "the run continued after the marker");
+		} finally {
+			t.dispose();
+		}
+	});
+}

@@ -29,9 +29,23 @@ export type ExtensionMode = "tui" | "rpc" | "json" | "print";
 
 /** One scripted assistant response: a tool call, a final text answer, or a network failure. */
 export type ScriptedStep =
-	| { kind: "tool"; id: string; name: string; args: Record<string, unknown>; contextTokens?: number }
+	| {
+			kind: "tool";
+			id: string;
+			name: string;
+			args: Record<string, unknown>;
+			contextTokens?: number;
+			/** Further calls in the same assistant message (one tool batch). */
+			more?: ToolCallSpec[];
+	  }
 	| { kind: "text"; text: string; contextTokens?: number }
 	| { kind: "error"; message?: string; aborted?: boolean };
+
+export interface ToolCallSpec {
+	id: string;
+	name: string;
+	args: Record<string, unknown>;
+}
 
 /** A step that yields an assistant response — what stream drivers actually render. */
 export type ResponseStep = Exclude<ScriptedStep, { kind: "error" }>;
@@ -48,6 +62,12 @@ export const toolStep = (
 	args,
 	contextTokens,
 });
+
+/** One assistant message calling several tools at once — pi runs them as one batch. */
+export const batchStep = (calls: [ToolCallSpec, ...ToolCallSpec[]], contextTokens?: number): ScriptedStep => {
+	const [first, ...more] = calls;
+	return { kind: "tool", ...first, contextTokens, more };
+};
 
 export const textStep = (text: string, contextTokens?: number): ScriptedStep => ({
 	kind: "text",
@@ -203,6 +223,8 @@ export async function createTestSession(options: TestSessionOptions): Promise<Te
 	let step = 0;
 	const llmDelayMs = options.llmDelayMs ?? 50;
 	session.agent.streamFunction = ((m: any, context: any, streamOptions: any) => {
+		// Like a real provider: a request on an already-aborted signal never goes out.
+		if (streamOptions?.signal?.aborted) throw new Error("Request was aborted");
 		void options.onLlmCall?.(m, context, streamOptions);
 		const peek = options.script[step];
 		if (peek?.kind === "error") {
@@ -239,9 +261,12 @@ export async function createTestSession(options: TestSessionOptions): Promise<Te
 			stream.push({ type: "start", partial: output });
 			await sleep(llmDelayMs);
 			if (scripted.kind === "tool") {
-				output.content = [
-					{ type: "toolCall", id: scripted.id, name: scripted.name, arguments: scripted.args },
-				];
+				output.content = [scripted, ...(scripted.more ?? [])].map((c) => ({
+					type: "toolCall",
+					id: c.id,
+					name: c.name,
+					arguments: c.args,
+				}));
 				output.stopReason = "toolUse";
 			} else {
 				output.content = [{ type: "text", text: scripted.text }];
