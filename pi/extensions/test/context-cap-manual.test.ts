@@ -30,6 +30,7 @@ import {
 	abortedStep,
 	batchStep,
 	createTestSession,
+	errorStep,
 	type ScriptedStep,
 	sleep,
 	type TestSession,
@@ -498,3 +499,73 @@ for (const [name, staleDoc, trigger] of [
 		}
 	});
 }
+
+/**
+ * A session whose first request fails with a retryable error: /handoff is typed
+ * during pi's auto-retry backoff — busy, a run in flight, but no request out.
+ */
+async function retrySession(
+	script: ScriptedStep[],
+	duringBackoff: (t: TestSession) => void,
+): Promise<{ t: TestSession; settles: boolean[] }> {
+	const t = await session([errorStep("network error"), ...script], undefined, { retry: { enabled: true, baseDelayMs: 150 } });
+	const settles: boolean[] = [];
+	t.session.subscribe((event: any) => {
+		if (event.type === "auto_retry_start") duringBackoff(t);
+		else if (event.type === "agent_settled") settles.push(event.aborted);
+	});
+	return { t, settles };
+}
+
+const PARKED = "/handoff: handoff requested once the agent finishes";
+
+test("/handoff typed during an auto-retry backoff is delivered at agent_before_settle of that same run", async () => {
+	let handoff: Promise<unknown> | undefined;
+	const { t, settles } = await retrySession(
+		[textStep("work done", 30), toolStep("h1", "context_handoff", { markdown: LONG_DOC }, 40)],
+		(s) => void (handoff ??= s.session.prompt("/handoff")),
+	);
+	try {
+		await t.session.prompt("start");
+		assert.ok(handoff, "/handoff was typed during the backoff");
+		assert.equal(await settlesWithin(handoff, 3000), "settled");
+		await t.session.waitForIdle();
+		assertSeeded(t, LONG_DOC);
+		assert.ok(t.notices.some((n) => n.message === PARKED), "armed at once, not after the run");
+		assert.equal(settles.length, 1, "one run: the demand rode its settle boundary, no second run");
+		const entries = branch(t);
+		const demandAt = entries.findIndex((e) => e.type === "custom_message" && e.customType === DEMAND_TYPE);
+		const workDone = entries.findIndex((e) => e.type === "message" && JSON.stringify(e.message.content).includes("work done"));
+		assert.ok(workDone >= 0 && demandAt > workDone, "the demand follows the retried run's own answer");
+		assertNothingQueued(t);
+	} finally {
+		t.dispose();
+	}
+});
+
+test("ESC during an auto-retry backoff fails a waiting /handoff with 'aborted' — no demand run", async () => {
+	let handoff: Promise<unknown> | undefined;
+	const { t, settles } = await retrySession([textStep("must never run", 30)], (s) => {
+		handoff ??= s.session.prompt("/handoff");
+		void (async () => {
+			for (let i = 0; i < 50 && !s.notices.some((n) => n.message === PARKED); i++) await sleep(2);
+			await s.session.abort();
+		})();
+	});
+	try {
+		await t.session.prompt("start").catch(() => {});
+		assert.ok(handoff, "/handoff was typed during the backoff");
+		assert.equal(await settlesWithin(handoff, 3000), "settled");
+		await t.session.waitForIdle();
+		await sleep(20);
+		assert.deepEqual(t.seeds, []);
+		assert.ok(
+			t.notices.some((n) => n.level === "error" && n.message === "/handoff: no handoff recorded — aborted"),
+			JSON.stringify(t.notices),
+		);
+		assert.deepEqual(settles, [true], "the aborted run settled once; no demand run followed");
+		assert.deepEqual(customEntries(t, DEMAND_TYPE), []);
+	} finally {
+		t.dispose();
+	}
+});

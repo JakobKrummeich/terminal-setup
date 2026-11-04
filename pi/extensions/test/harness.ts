@@ -112,6 +112,8 @@ export interface TestSessionOptions {
 	 * prepareCompaction finds nothing to summarize in these small sessions.
 	 */
 	compaction?: { enabled?: boolean; reserveTokens?: number; keepRecentTokens?: number };
+	/** pi's auto-retry settings override (default: disabled). */
+	retry?: { enabled?: boolean; maxRetries?: number; baseDelayMs?: number };
 	/**
 	 * Session model as `[provider, modelId]` from pi's catalog (default
 	 * anthropic/claude-sonnet-4-5: no native mid-conversation tool changes).
@@ -208,7 +210,7 @@ export async function createTestSession(options: TestSessionOptions): Promise<Te
 		sessionManager: SessionManager.inMemory(dir),
 		settingsManager: SettingsManager.inMemory({
 			compaction: { enabled: false, ...options.compaction },
-			retry: { enabled: false },
+			retry: { enabled: false, ...options.retry },
 		} as any),
 	});
 

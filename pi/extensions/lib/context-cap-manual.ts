@@ -15,7 +15,7 @@
  *
  * Delivery: idle → the demand starts a run directly; mid-run → the demand is
  * committed at agent_before_settle once the run finished its work; during a
- * compaction or branch summary (busy, but no run) → decided once it is over.
+ * compaction or branch summary (busy, but no run) → it starts a run once pi is idle.
  * Nothing goes through pi's steer/followUp queues (lib/context-cap-demand.ts
  * says why), so ESC restores nothing to the editor and can never strand the
  * command: agent_settled fails any waiter its run did not satisfy.
@@ -42,9 +42,6 @@ import { docSummary, handOver, NO_CYCLE_DOC } from "./context-cap-swap.ts";
 import { HANDOFF_SUMMARY_TYPE } from "./message-types.ts";
 
 export async function runHandoffCommand(s: CapSession, ctx: ExtensionCommandContext): Promise<void> {
-	// Busy without an agent run: a compaction or branch summary. Nothing settles
-	// it, so a demand parked for the settle would wait forever — decide after it.
-	if (!ctx.isIdle() && ctx.signal === undefined) await ctx.waitForIdle();
 	if (s.manual) {
 		ctx.ui.notify("/handoff already in progress", "warning");
 		return;
@@ -65,7 +62,7 @@ export async function runHandoffCommand(s: CapSession, ctx: ExtensionCommandCont
 	});
 }
 
-function startManual(s: CapSession, ctx: ExtensionContext): void {
+function startManual(s: CapSession, ctx: ExtensionCommandContext): void {
 	const action = decideManual(s.cycle, ctx.isIdle());
 	s.cycle.ending = "new-session";
 	switch (action.kind) {
@@ -81,12 +78,29 @@ function startManual(s: CapSession, ctx: ExtensionContext): void {
 			return;
 		case "demand-at-settle":
 			armManual(s, ctx, action.open);
-			s.cycle.phase = "pending";
-			s.cycle.demandAt = "settle";
-			updateStatus(s, ctx, ctx.getContextUsage()?.tokens);
-			ctx.ui.notify("/handoff: handoff requested once the agent finishes", "info");
+			parkAtSettle(s, ctx);
 			return;
 	}
+}
+
+/**
+ * Busy: the demand waits for the run's agent_before_settle. A compaction or
+ * branch summary is busy without a run, so nothing settles it — the demand then
+ * starts once pi is idle. After a run the settle handlers already took it over.
+ */
+function parkAtSettle(s: CapSession, ctx: ExtensionCommandContext): void {
+	s.cycle.phase = "pending";
+	s.cycle.demandAt = "settle";
+	updateStatus(s, ctx, ctx.getContextUsage()?.tokens);
+	ctx.ui.notify("/handoff: handoff requested once the agent finishes", "info");
+	const waiter = s.manual;
+	void ctx.waitForIdle().then(() => {
+		if (s.manual === waiter && waitingAtSettle(s) && ctx.isIdle()) startDemandRun(s, ctx);
+	});
+}
+
+function waitingAtSettle(s: CapSession): boolean {
+	return s.cycle.phase === "pending" && s.cycle.demandAt === "settle";
 }
 
 /** The document is already there and nothing runs: hand it over at once. */
@@ -112,8 +126,7 @@ export function onBeforeSettle(
 	ctx: ExtensionContext,
 	event: AgentBeforeSettleEvent,
 ): BoundaryResult | undefined {
-	if (s.cycle.phase !== "pending" || s.cycle.demandAt !== "settle") return undefined;
-	if (event.outcome === "aborted") return undefined;
+	if (!waitingAtSettle(s) || event.outcome === "aborted") return undefined;
 	return commitDemand(s, ctx, event);
 }
 
@@ -124,9 +137,8 @@ export function onBeforeSettle(
  */
 export function onSettled(s: CapSession, ctx: ExtensionContext, aborted: boolean): void {
 	if (!s.manual) return;
-	const waiting = s.cycle.phase === "pending" && s.cycle.demandAt === "settle";
 	// pi defers a run started from inside agent_settled until settling is over.
-	if (waiting && !aborted) startDemandRun(s, ctx);
+	if (waitingAtSettle(s) && !aborted) startDemandRun(s, ctx);
 	else failManual(s, ctx, aborted ? "aborted" : "the agent ended without calling context_handoff");
 }
 
