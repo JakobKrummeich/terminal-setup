@@ -132,7 +132,9 @@ test("env: hard only — soft is derived from the explicit hard", () => {
 
 test("env: garbage and non-positive values count as unset", () => {
 	assert.equal(envIntOrNull("CONTEXT_CAP_SOFT"), null, "unset");
-	for (const bad of ["", "abc", "0", "-5"]) {
+	// "200k" et al. are garbage too, not their numeric prefix: the README writes caps
+	// as "260k", and parseInt read CONTEXT_CAP_SOFT=200k as a 200-TOKEN soft cap.
+	for (const bad of ["", "abc", "0", "-5", "200k", "1e6", "2.5", "260_000"]) {
 		const caps = withEnv({ CONTEXT_CAP_SOFT: bad }, () => {
 			assert.equal(envIntOrNull("CONTEXT_CAP_SOFT"), null, `${JSON.stringify(bad)} must read as unset`);
 			return resolveTriggers(200_000);

@@ -7,12 +7,9 @@ import { agentDir } from "./agent-dir.ts";
 // jiti caveat (see AGENTS.md): each top-level extension gets its own module copy
 // of this file, so only pure values/functions belong here — no shared state.
 
-/** Parse a positive-integer env var, falling back on unset/garbage values. */
+/** Parse a positive-integer env var, falling back on unset/garbage values (envIntOrNull's rule). */
 export function envInt(name: string, fallback: number): number {
-	const raw = process.env[name];
-	if (!raw) return fallback;
-	const n = Number.parseInt(raw, 10);
-	return Number.isFinite(n) && n > 0 ? n : fallback;
+	return envIntOrNull(name) ?? fallback;
 }
 
 /**
@@ -23,10 +20,13 @@ export function envInt(name: string, fallback: number): number {
  * a second function rather than a signature change.
  */
 export function envIntOrNull(name: string): number | null {
-	const raw = process.env[name];
-	if (!raw) return null;
-	const n = Number.parseInt(raw, 10);
-	return Number.isFinite(n) && n > 0 ? n : null;
+	const raw = process.env[name]?.trim();
+	// Whole-string digits, NOT parseInt: parseInt reads a numeric prefix, so the
+	// README's own "260k" notation (CONTEXT_CAP_SOFT=200k) became a 200-token cap
+	// and "1e6" became 1. Anything but a plain positive integer is garbage.
+	if (!raw || !/^\d+$/.test(raw)) return null;
+	const n = Number(raw);
+	return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
 /**
