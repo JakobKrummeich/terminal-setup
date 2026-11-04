@@ -422,6 +422,39 @@ test("/handoff typed during a manual compaction demands once the compaction is o
 	}
 });
 
+test("/handoff typed during a compaction joins a cap demand an errored run left behind — demands once idle, never stuck", async () => {
+	let handoff: Promise<unknown> | undefined;
+	const t = await session(
+		[
+			toolStep("w1", "ls", {}, 50),
+			toolStep("w2", "ls", {}, 105), // crosses soft → the cap demand is committed
+			errorStep(), // the next request fails: the cycle stays "demanded", no run left to serve it
+			toolStep("h1", "context_handoff", { markdown: LONG_DOC }, 108),
+		],
+		undefined,
+		{ compaction: { enabled: true, keepRecentTokens: 1, reserveTokens: 16384 } },
+	);
+	t.modelRuntime.complete = async () => {
+		handoff ??= t.session.prompt("/handoff");
+		await sleep(30);
+		return writerResponse("## Current Task\ncompaction summary");
+	};
+	try {
+		await t.session.prompt("start");
+		assert.deepEqual(customEntries(t, DEMAND_TYPE).map((d) => d.details.origin), ["soft"], "a cap demand is out");
+		await t.session.compact();
+		assert.ok(handoff, "/handoff was typed during the compaction");
+		assert.ok(t.notices.some((n) => n.message.startsWith("/handoff: a handoff is already requested")), "joined");
+		assert.equal(await settlesWithin(handoff, 3000), "settled", "a join during a compaction must not wait for a run");
+		await t.session.waitForIdle();
+		assertSeeded(t, LONG_DOC);
+		assert.deepEqual(customEntries(t, SWAP_MARKER_TYPE), []);
+		assertNothingQueued(t);
+	} finally {
+		t.dispose();
+	}
+});
+
 const MACHINE_DOC = "## Current Task\nMACHINE-DOC-SENTINEL";
 const NO_DOC_REASON = "/handoff: no handoff recorded — hard cap hit and no handoff could be written — the context was swapped in place";
 

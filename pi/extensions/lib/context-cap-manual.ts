@@ -15,7 +15,7 @@
  *
  * Delivery: idle → the demand starts a run directly; mid-run → the demand is
  * committed at agent_before_settle once the run finished its work; during a
- * compaction or branch summary (busy, but no run) → it starts a run once pi is idle.
+ * compaction or branch summary (busy, but no run) → decided again once pi is idle.
  * Nothing goes through pi's steer/followUp queues (lib/context-cap-demand.ts
  * says why), so ESC restores nothing to the editor and can never strand the
  * command: agent_settled fails any waiter its run did not satisfy.
@@ -71,6 +71,7 @@ function startManual(s: CapSession, ctx: ExtensionCommandContext): void {
 			return;
 		case "join":
 			ctx.ui.notify("/handoff: a handoff is already requested — a new session starts from it", "info");
+			resumeWhenIdle(s, ctx);
 			return;
 		case "demand-now":
 			armManual(s, ctx, action.open);
@@ -79,24 +80,29 @@ function startManual(s: CapSession, ctx: ExtensionCommandContext): void {
 		case "demand-at-settle":
 			armManual(s, ctx, action.open);
 			parkAtSettle(s, ctx);
+			resumeWhenIdle(s, ctx);
 			return;
 	}
 }
 
 /**
- * Busy: the demand waits for the run's agent_before_settle. A compaction or
- * branch summary is busy without a run, so nothing settles it — the demand then
- * starts once pi is idle. After a run the settle handlers already took it over.
+ * Busy: a run's turn_end or settle handlers serve or fail the waiter before pi
+ * is idle again. A compaction or branch summary is busy without a run, so
+ * nothing does — then decide again once pi is idle, as if typed only then.
  */
-function parkAtSettle(s: CapSession, ctx: ExtensionCommandContext): void {
+function resumeWhenIdle(s: CapSession, ctx: ExtensionCommandContext): void {
+	const waiter = s.manual;
+	void ctx.waitForIdle().then(() => {
+		if (s.manual === waiter && ctx.isIdle()) startManual(s, ctx);
+	});
+}
+
+/** The demand waits for the run's agent_before_settle. */
+function parkAtSettle(s: CapSession, ctx: ExtensionContext): void {
 	s.cycle.phase = "pending";
 	s.cycle.demandAt = "settle";
 	updateStatus(s, ctx, ctx.getContextUsage()?.tokens);
 	ctx.ui.notify("/handoff: handoff requested once the agent finishes", "info");
-	const waiter = s.manual;
-	void ctx.waitForIdle().then(() => {
-		if (s.manual === waiter && waitingAtSettle(s) && ctx.isIdle()) startDemandRun(s, ctx);
-	});
 }
 
 function waitingAtSettle(s: CapSession): boolean {
