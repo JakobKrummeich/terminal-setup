@@ -5,12 +5,12 @@
  * wiped the context at message_end ("hard-no-file" swap) before any handoff was
  * ever requested — the child continued on the "context lost, ask the user"
  * fallback and its report was garbage. Since the crossing message ends in tool
- * calls, another turn is guaranteed, so context-cap must steer an emergency
+ * calls, another turn is guaranteed, so context-cap must demand an emergency
  * handoff instead and the swap must carry the real handoff body.
  *
  * Also covers the display half of the same report: ChildView (F2 watch) must
- * render injected user messages (context-cap steers/reminders) and displayable
- * custom messages (the swap marker) — previously both were silently dropped, so
+ * render injected messages (user steers, context-cap demands/reminders) and
+ * displayable custom messages (the swap marker) — previously both were silently dropped, so
  * a watched child appeared to "lose" its handoff even when the swap worked.
  */
 
@@ -79,7 +79,7 @@ const CHILD_OPTIONS = {
  * The script that reproduces the live failure:
  *  1. harmless tool call whose result jumps the context to 60 tokens — past
  *     BOTH caps (soft 5, hard 50) in one message, with stopReason "toolUse"
- *  2. the emergency steer arrives → the child writes the handoff (still ≥ hard;
+ *  2. the emergency demand arrives → the child writes the handoff (still ≥ hard;
  *     the grace turn must protect this message from the backstop)
  *  3. post-swap turn: the sliced context must contain the handoff body
  */
@@ -171,7 +171,7 @@ function cleanup(childId: string | undefined) {
 	liveChildren.clear();
 }
 
-test("one-jump hard-cap crossing: emergency steer, handoff survives into the swap", async () => {
+test("one-jump hard-cap crossing: emergency demand, handoff survives into the swap", async () => {
 	const calls: CapturedCall[] = [];
 	const ctx = await makeCtx(jumpScript(), calls);
 	let childId: string | undefined;
@@ -188,8 +188,8 @@ test("one-jump hard-cap crossing: emergency steer, handoff survives into the swa
 		assert.match(text, /post-swap report/);
 		assert.equal(calls.length, 3, "jump turn, handoff turn, post-swap turn — nothing more");
 
-		// The emergency steer reached the agent before the handoff turn.
-		assert.ok(at(calls, 1).messages.includes("[context-cap]"), "handoff turn must have seen the emergency steer");
+		// The emergency demand reached the agent before the handoff turn.
+		assert.ok(at(calls, 1).messages.includes("[context-cap]"), "handoff turn must have seen the emergency demand");
 
 		// The load-bearing assertion: the post-swap context carries the REAL
 		// handoff body, not the "context lost" fallback.
@@ -238,14 +238,14 @@ test("one-jump hard-cap crossing: emergency steer, handoff survives into the swa
 	}
 });
 
-test("ChildView renders injected steers and swap markers; prompt renders once", () => {
+test("ChildView renders injected steers, demands and swap markers; prompt renders once", () => {
 	const view = new ChildView({ getToolDefinition: () => undefined } as never, "/tmp");
 	const event = (message: Record<string, unknown>) =>
 		({ type: "message_start", message }) as unknown as AgentSessionEvent;
 	view.addUserMessage("TASK-PROMPT-SENTINEL");
 	// prompt() re-delivers the prompt as a user message event — must not double-render.
 	view.handle(event({ role: "user", content: [{ type: "text", text: "TASK-PROMPT-SENTINEL" }] }));
-	// Mid-run injections: a context-cap steer (user) and the swap marker (custom).
+	// Mid-run injections: a user steer and the swap marker (custom).
 	view.handle(event({ role: "user", content: [{ type: "text", text: "STEER-SENTINEL" }] }));
 	view.handle(
 		event({ role: "custom", customType: "context-cap-swap", content: "MARKER-SENTINEL", display: true }),
@@ -256,6 +256,8 @@ test("ChildView renders injected steers and swap markers; prompt renders once", 
 	view.handle(
 		appended({ type: "custom_message", customType: "context-cap-swap", content: "BOUNDARY-MARKER-SENTINEL", display: true }),
 	);
+	// Boundary-committed context-cap demand (customType HANDOFF_DEMAND_TYPE).
+	view.handle(appended({ type: "custom_message", customType: "handoff-demand", content: "DEMAND-SENTINEL", display: true }));
 	view.handle(
 		appended({ type: "custom_message", customType: "other", content: "HIDDEN-ENTRY-SENTINEL", display: false }),
 	);
@@ -265,6 +267,7 @@ test("ChildView renders injected steers and swap markers; prompt renders once", 
 	assert.ok(out.includes("STEER-SENTINEL"), "steer message must render");
 	assert.ok(out.includes("MARKER-SENTINEL"), "swap marker must render");
 	assert.ok(out.includes("BOUNDARY-MARKER-SENTINEL"), "boundary-committed swap marker must render");
+	assert.ok(out.includes("DEMAND-SENTINEL"), "boundary-committed demand must render");
 	assert.ok(!out.includes("HIDDEN-SENTINEL"), "display:false custom messages must not render");
 	assert.ok(!out.includes("HIDDEN-ENTRY-SENTINEL"), "display:false custom entries must not render");
 	assert.equal(out.split("TASK-PROMPT-SENTINEL").length - 1, 1, "prompt must render exactly once");

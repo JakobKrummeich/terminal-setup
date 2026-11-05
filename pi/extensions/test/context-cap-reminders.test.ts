@@ -1,6 +1,6 @@
 /**
  * context-cap reminder budget, end to end: an agent that ignores the handoff
- * demand gets exactly MAX_RETRIES (2) followUp reminders, then the cycle goes
+ * demand gets exactly MAX_RETRIES (2) reminder entries, then the cycle goes
  * "exhausted" — silent, waiting for the hard-cap backstop — and a handoff the
  * agent still writes later is collected by the same cycle (soft swap).
  *
@@ -18,7 +18,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { createTestSession, textStep, toolStep, type TestSession } from "./harness.ts";
+import { createTestSession, demandTexts, textStep, toolStep, type TestSession } from "./harness.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";
 import { at } from "./assert-helpers.ts";
@@ -28,7 +28,7 @@ const CONTEXT_CAP_EXTENSION = path.join(EXT_DIR, "context-cap.ts");
 const TIMER_EXTENSION = path.join(EXT_DIR, "timer.ts");
 
 function reminders(t: TestSession): string[] {
-	return t.deliveredUserMessages.map((m) => m.text).filter((text) => text.includes("No handoff was recorded"));
+	return demandTexts(t).filter((text) => text.includes("No handoff was recorded"));
 }
 
 test("two reminders, then exhausted and silent; a late handoff still swaps", async () => {
@@ -37,7 +37,7 @@ test("two reminders, then exhausted and silent; a late handoff still swaps", asy
 		tools: ["timer", "context_handoff"],
 		llmDelayMs: 5,
 		script: [
-			// Tokens 10 >= soft 5, toolUse -> soft steer.
+			// Tokens 10 >= soft 5, toolUse -> soft demand.
 			toolStep("s1", "timer", { action: "cancel" }, 10),
 			// Three refusals (no tool calls): reminder 1/2, reminder 2/2, exhausted.
 			textStep("refusal 1", 10),

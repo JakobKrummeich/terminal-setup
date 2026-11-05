@@ -68,8 +68,11 @@ test("tail pairing: shapes around the walk", () => {
 	}
 });
 
-test("isCapWarning: user role only, first text part decides", () => {
+test("isCapWarning: demand entries by customType; legacy user warnings by their first text part", () => {
 	const rows: [unknown, boolean][] = [
+		[{ role: "custom", customType: "handoff-demand", content: "Write the handoff document" }, true],
+		[{ role: "custom", customType: "context-cap-swap", content: "[context-cap] x" }, false],
+		[{ role: "custom", content: "[context-cap] x" }, false],
 		[{ role: "user", content: "[context-cap] x" }, true],
 		[{ role: "user", content: [{ type: "image" }, { type: "text", text: "[context-cap] x" }] }, true],
 		[{ role: "user", content: [{ type: "text", text: "hi" }, { type: "text", text: "[context-cap] x" }] }, false],

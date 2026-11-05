@@ -169,15 +169,15 @@ export class ChildView {
 		}
 	}
 	/**
-	 * Injected mid-run messages — context-cap steers/reminders (role "user") and
-	 * swap markers (role "custom", e.g. customType SWAP_MARKER_TYPE) — otherwise
+	 * Injected mid-run messages — context-cap demands/reminders (role "custom",
+	 * customType HANDOFF_DEMAND_TYPE) and swap markers (customType SWAP_MARKER_TYPE) — otherwise
 	 * the F2 view shows a handoff tool call with no visible cause and no visible
 	 * post-swap injection. The child's own prompt() delivery re-emits the prompt
 	 * already shown by addUserMessage; pendingManualPrompts swallows exactly those.
-	 * Two transports reach here: message_start (queued/steered messages, e.g.
-	 * context-cap steers and reminders, sendMessage deliveries) and entry_appended
-	 * (boundary entries — context-cap commits its swap marker as a turn_end
-	 * boundary entry, which pi persists WITHOUT any message_start). Each delivery
+	 * Two transports reach here: message_start (queued/steered messages and
+	 * sendMessage deliveries) and entry_appended (boundary entries — context-cap
+	 * commits its demands, reminders and swap marker as turn_end /
+	 * agent_before_settle boundary entries, which pi persists WITHOUT any message_start). Each delivery
 	 * emits exactly one of the two, so handling both never double-renders.
 	 */
 	private addInjectedMessage(message: MessageBlock) {

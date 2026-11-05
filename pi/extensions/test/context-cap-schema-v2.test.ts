@@ -24,7 +24,7 @@ import * as path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { getCurrentTools, withoutInitialSystemMessage } from "@earendil-works/pi-ai";
-import { createTestSession, textStep, toolStep, type TestSession } from "./harness.ts";
+import { createTestSession, demandTexts, textStep, toolStep, type TestSession } from "./harness.ts";
 import { SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 import { contextCapDir } from "../lib/agent-dir.ts";
 import { at } from "./assert-helpers.ts";
@@ -84,7 +84,7 @@ test("v2 reaches the tool spec, the agent instructions and the machine writer", 
 		tools: ["timer", "context_handoff"],
 		llmDelayMs: 10,
 		script: [
-			// 60 tokens crosses BOTH caps in one jump -> emergency steer (CONTENT_SPEC).
+			// 60 tokens crosses BOTH caps in one jump -> emergency demand (CONTENT_SPEC).
 			toolStep("t1", "timer", { action: "cancel" }, 60),
 			// Ignored -> grace turn.
 			toolStep("t2", "timer", { action: "cancel" }, 60),
@@ -121,8 +121,8 @@ test("v2 reaches the tool spec, the agent instructions and the machine writer", 
 		assert.ok(toolSpec.includes("~60 lines."), `tool parameter description must carry the v2 budget: ${toolSpec.slice(0, 400)}`);
 
 		// Consumer 2: the agent-facing instructions.
-		const steer = t.deliveredUserMessages.map((m) => m.text).find((text) => text.includes("CONTEXT LIMIT"));
-		assert.ok(steer, "the hard cap must steer");
+		const steer = demandTexts(t).find((text) => text.includes("CONTEXT LIMIT"));
+		assert.ok(steer, "the hard cap must demand a handoff");
 		assert.ok(steer.includes("~60 lines total"), "instructions must quote the v2 line budget");
 		assert.ok(steer.includes(V2_FILES_LINE), `instructions must carry the v2 Files section:\n${steer}`);
 		assert.ok(steer.includes(V2_NEXT_STEP_LINE), "instructions must carry the v2 Next Step section");

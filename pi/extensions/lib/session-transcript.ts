@@ -34,7 +34,7 @@ const OUTPUT_LIMIT = 2000;
 const ARGS_LIMIT = 400;
 const TRUNCATION_MARK = "… [truncated]";
 
-/** customType values that mark a context handoff in the transcript (writers: context-cap.ts, handoff.ts). */
+/** customType values that mark a context handoff in the transcript (writers: context-cap.ts and its lib/context-cap-* modules). */
 const HANDOFF_CUSTOM_TYPES: ReadonlySet<string> = new Set([SWAP_MARKER_TYPE, HANDOFF_SUMMARY_TYPE]);
 
 export interface ParsedTranscript {

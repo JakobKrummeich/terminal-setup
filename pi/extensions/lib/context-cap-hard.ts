@@ -10,7 +10,7 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { hardFallbackSwap } from "./context-cap-decide.ts";
+import { hardFallbackSwap, type RecordedDoc } from "./context-cap-decide.ts";
 import { latestPath } from "./context-cap-files.ts";
 import {
 	type CapSession,
@@ -33,33 +33,44 @@ export async function hardCap(
 	lastMessage: unknown,
 ): Promise<void> {
 	armHardCycle(s, ctx, tokens, capsNow);
-	const fresh = s.cycle.expectedPath && s.cycle.handoffWritten ? s.cycle.expectedPath : undefined;
+	const doc = s.cycle.doc ?? undefined;
+	const fresh = doc ? s.cycle.expectedPath : undefined;
 	ctx.ui.notify(`context-cap: hard cap (${formatTokenCount(tokens)}) — forcing handoff`, "warning");
 	// No handoff from this cycle: rather than re-injecting a possibly minutes-old
 	// file (or nothing at all), spend one LLM call on a current one.
 	if (!fresh && (await machineSwap(s, ctx, tokens, lastMessage))) return;
+	stageFallbackSwap(s, ctx, doc, lastMessage);
+}
+
+/** This cycle's agent document, else the latest older file (stale), else no file at all. */
+function stageFallbackSwap(s: CapSession, ctx: ExtensionContext, doc: RecordedDoc | undefined, lastMessage: unknown): void {
+	const fresh = doc ? s.cycle.expectedPath : undefined;
 	const fallback = fresh ?? latestPath(sessionId(ctx));
 	const { stale, trigger } = hardFallbackSwap(fresh, fallback);
-	stageSwap(s, ctx, { filePath: fallback, stale, trigger, author: "agent" }, lastMessage);
+	stageSwap(s, ctx, { doc, filePath: fallback, stale, trigger, author: doc?.author ?? "agent" }, lastMessage);
 }
 
 /**
  * Hard crossed without a rescuable next turn: arm the cycle's path context (a
- * fresh one when no cycle is in flight — the one-jump toolUse case is steered in
- * message_end instead), or, with a cycle already in flight from the soft
+ * fresh one when no cycle is in flight — the one-jump toolUse case is demanded
+ * from message_end instead), or, with a cycle already in flight from the soft
  * trigger, record the hard-cap reading so the marker's forensic tokensAtSwap
  * reflects swap time. Leaves `phase` as it is.
  */
 function armHardCycle(s: CapSession, ctx: ExtensionContext, tokens: number, capsNow: ResolvedTriggers): void {
-	if (!s.cycle.expectedPath) startCycle(s, ctx, tokens, capsNow);
-	else s.cycle.tokensAtTrigger = tokens;
+	if (s.cycle.expectedPath) {
+		s.cycle.tokensAtTrigger = tokens;
+		return;
+	}
+	startCycle(s, ctx, tokens, capsNow);
+	s.cycle.origin ??= "hard";
 }
 
 /** Draft + stage a machine handoff. true = handled (staged, or deferred on abort); false = fall back. */
 async function machineSwap(s: CapSession, ctx: ExtensionContext, tokens: number, lastMessage: unknown): Promise<boolean> {
 	const written = await machineHandoff(s, ctx, lastMessage);
-	if (written) {
-		stageSwap(s, ctx, { filePath: written, stale: false, trigger: "hard", author: "machine" }, lastMessage);
+	if (written && s.cycle.doc) {
+		stageSwap(s, ctx, { doc: s.cycle.doc, filePath: written, stale: false, trigger: "hard", author: "machine" }, lastMessage);
 		return true;
 	}
 	// The draft failed because the user hit ESC mid-call — a window that only
@@ -78,7 +89,8 @@ async function machineSwap(s: CapSession, ctx: ExtensionContext, tokens: number,
 /**
  * Last resort before the backstop wipes: draft the handoff ourselves from the
  * context the agent still has, and write it through the normal file path
- * (same <sessionId>-<seq>.md mechanism, frontmatter author "machine").
+ * (same <sessionId>-<seq>.md mechanism, frontmatter author "machine"), which
+ * also records it as `cycle.doc` — a waiting /handoff gets this document too.
  * Returns the file path, or undefined on ANY failure — the caller then does
  * exactly what it did before this path existed.
  */

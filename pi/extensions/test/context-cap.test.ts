@@ -1,9 +1,9 @@
 /**
- * context-cap handoff continuation: the whole soft-cap cycle — steer, handoff
+ * context-cap handoff continuation: the whole soft-cap cycle — demand, handoff
  * write, swap marker, post-swap turn — must complete INSIDE one `session.prompt()`
  * call. This is the invariant that lets the Agent tool await a child's prompt()
  * (plus the queue grace in lib/session-quiet.ts) and treat the child as done:
- * every continuation (steered marker, followUp reminders) is drained by pi's
+ * every continuation (demand/reminder entries, swap marker) is driven by pi's
  * `_runAgentPrompt` loop before the run settles. If this test ever fails after a
  * `pi update`, the Agent tool needs a new "child not finished yet" signal for
  * handoffs.
@@ -40,12 +40,12 @@ test("soft-cap handoff cycle completes inside a single prompt() call", async () 
 		tools: ["timer", "context_handoff"],
 		llmDelayMs: 20,
 		script: [
-			// Tokens 10 >= soft cap 5, stopReason toolUse -> steer requesting a handoff.
+			// Tokens 10 >= soft cap 5, stopReason toolUse -> demand entry at turn_end.
 			// (timer cancel is just a harmless tool call to produce the toolUse stop.)
 			toolStep("s1", "timer", { action: "cancel" }, 10),
-			// The steered warning arrives; the agent writes the handoff.
+			// The demand arrives; the agent writes the handoff.
 			toolStep("h1", "context_handoff", { markdown: "## Current Task\nFinish the demo." }, 10),
-			// Turn ends -> verification swaps (steered marker) -> continuation turn.
+			// Turn ends -> verification swaps (marker entry) -> continuation turn.
 			textStep("continued after swap", 2),
 		],
 	});

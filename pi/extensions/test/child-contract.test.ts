@@ -81,9 +81,9 @@ const CHILD_OPTIONS = {
 /**
  * The script that drives a full soft-cap handoff cycle in the child
  * (CONTEXT_CAP_SOFT=5; contextTokens 10 is above the cap):
- *  1. harmless tool call above the cap → context-cap steers a handoff request
+ *  1. harmless tool call above the cap → context-cap demands a handoff
  *  2. the child finishes its work first — pre-swap "final" answer
- *  3. reminder followUp arrives → the child writes the handoff → swap
+ *  3. reminder entry arrives → the child writes the handoff → swap
  *  4. post-swap turn: context is sliced at the marker; this is the real report
  */
 const handoffScript = (): ScriptedStep[] => [

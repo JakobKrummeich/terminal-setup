@@ -51,7 +51,7 @@ export function envEnum<T extends string>(name: string, allowed: readonly T[], f
 	return (allowed as readonly string[]).includes(raw) ? (raw as T) : fallback;
 }
 
-/** Soft context cap (tokens) — the CEILING on context-cap.ts's steer trigger, and
+/** Soft context cap (tokens) — the CEILING on context-cap.ts's demand trigger, and
  * the static fallback when the model's context window is unknown. lib/child-watch.ts
  * shows it in the F2 watch footer. Resolved at import time; the trigger actually in
  * force is resolveTriggers() below, which is model-aware and resolved per check. */
@@ -61,7 +61,7 @@ export const CONTEXT_CAP_SOFT_TRIGGER = envInt("CONTEXT_CAP_SOFT", 260_000);
  * Hard context cap (tokens) — the CEILING on context-cap.ts's backstop (where it
  * spends one LLM call writing the handoff itself), and the static fallback when the
  * context window is unknown. Held at 1.25× the soft cap: the gap is the room the
- * agent has to finish its unit of work and write a handoff after the soft steer,
+ * agent has to finish its unit of work and write a handoff after the soft demand,
  * and the backstop still leaves most of a ~1M window for that last call.
  */
 export const CONTEXT_CAP_HARD_TRIGGER = envInt("CONTEXT_CAP_HARD", 325_000);
@@ -113,7 +113,7 @@ function settingsReserveTokens(): number | undefined {
 export type TriggerSource = "env" | "dynamic" | "fallback";
 
 export interface ResolvedTriggers {
-	/** Soft (steer) trigger in tokens. POSITIVE_INFINITY when `disabled`. */
+	/** Soft (demand) trigger in tokens. POSITIVE_INFINITY when `disabled`. */
 	soft: number;
 	/** Hard (backstop) trigger in tokens. POSITIVE_INFINITY when `disabled`. */
 	hard: number;
@@ -157,7 +157,7 @@ function softOfHard(hard: number): number {
  *  - if the window is unknown, hard falls back to the static 325k, which makes soft
  *    fall out as the static 260k — the pre-model-awareness behaviour.
  *
- * Sanity: soft >= hard would mean the steer never gets a turn before the backstop,
+ * Sanity: soft >= hard would mean the demand never gets a turn before the backstop,
  * so soft is clamped to hard-1 and `clamped` is set (the caller logs it).
  * Degenerate windows (ceiling <= 0, or a hard that lands at/below 1) cannot carry a
  * cap at all: `disabled` is set and both triggers are +Infinity, so a caller that

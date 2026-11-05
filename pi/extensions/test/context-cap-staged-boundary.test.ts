@@ -63,7 +63,8 @@ async function bindExtension(): Promise<BoundExtension> {
 			tool = registered;
 		},
 		registerToolRenderer: () => undefined,
-		sendUserMessage: () => {},
+		registerCommand: () => undefined,
+		sendMessage: () => {},
 	};
 	extension(pi);
 	assert.ok(tool, "context_handoff tool registered");
