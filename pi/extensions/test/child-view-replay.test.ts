@@ -10,6 +10,8 @@
  *   - any other call without a saved result → "(interrupted — no result recorded)",
  *     including an earlier message's call when a LATER message is the failed one;
  *   - nothing is left pending: a late live event for a replayed id changes nothing.
+ * The live path settles a failed message's calls the same way at its message_end
+ * (pi's interactive-mode does too): no tool_execution_end ever comes for them.
  */
 
 import assert from "node:assert/strict";
@@ -98,4 +100,29 @@ test("replay leaves nothing pending: a late live event for a replayed call chang
 	} as never);
 	assert.ok(!toolRow(view, "g1").includes("LATE-RESULT"), toolRow(view, "g1"));
 	assert.ok(toolRow(view, "g1").includes(INTERRUPTED), toolRow(view, "g1"));
+});
+
+/** The live events of one streamed assistant message: start (empty), update, end. */
+function streamLive(view: ChildView, message: Record<string, unknown>) {
+	view.handle({ type: "message_start", message: { ...message, content: [] } } as never);
+	view.handle({ type: "message_update", message } as never);
+	view.handle({ type: "message_end", message } as never);
+}
+
+test("live: calls of an aborted or errored message are settled at message_end, never left pending", () => {
+	const view = newView();
+	streamLive(view, assistant([call("h1")], "aborted").message);
+	streamLive(view, assistant([call("i1")], "error", "PROVIDER-BOOM").message);
+	streamLive(view, assistant([call("j1")], "toolUse").message);
+	assert.match(toolRow(view, "h1"), /Operation aborted/);
+	assert.match(toolRow(view, "i1"), /PROVIDER-BOOM/);
+	// A normal toolUse message's call stays pending until its tool_execution_end.
+	view.handle({
+		type: "tool_execution_end",
+		toolCallId: "j1",
+		toolName: "ls",
+		result: { content: [{ type: "text", text: "J1-RESULT" }] },
+		isError: false,
+	} as never);
+	assert.match(toolRow(view, "j1"), /J1-RESULT/);
 });

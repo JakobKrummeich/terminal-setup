@@ -158,14 +158,19 @@ export class ChildView {
 		this.container.addChild(new AssistantMessageComponent(assistant, false, getMarkdownTheme()));
 		const before = new Set(this.pendingTools.keys());
 		this.syncToolCalls(assistant);
-		if (assistant.stopReason === "aborted" || assistant.stopReason === "error") {
-			// Same as pi: tool calls of a failed message never ran — show why.
-			const text = assistant.stopReason === "aborted" ? "Operation aborted" : assistant.errorMessage || "Error";
-			for (const [id, tool] of this.pendingTools) {
-				if (before.has(id)) continue;
-				tool.updateResult({ content: [{ type: "text", text }], isError: true });
-				this.pendingTools.delete(id);
-			}
+		this.failNeverRunCalls(assistant, [...this.pendingTools.keys()].filter((id) => !before.has(id)));
+	}
+	/**
+	 * Same as pi: tool calls of an aborted/errored message never ran — show why.
+	 * Shared by replay and the live message_end: no tool_execution_end ever comes
+	 * for these calls, so without it the live view kept them pending forever.
+	 */
+	private failNeverRunCalls(assistant: AssistantMessage, ids: readonly string[]) {
+		if (assistant.stopReason !== "aborted" && assistant.stopReason !== "error") return;
+		const text = assistant.stopReason === "aborted" ? "Operation aborted" : assistant.errorMessage || "Error";
+		for (const id of ids) {
+			this.pendingTools.get(id)?.updateResult({ content: [{ type: "text", text }], isError: true });
+			this.pendingTools.delete(id);
 		}
 	}
 	/**
@@ -284,6 +289,9 @@ export class ChildView {
 	private endAssistant(message: { role: string }) {
 		if (!this.updateAssistant(message)) return;
 		for (const tool of this.pendingTools.values()) tool.setArgsComplete();
+		// All pending calls, like pi's interactive-mode message_end: earlier messages'
+		// calls have all ended before a new assistant message streams.
+		this.failNeverRunCalls(message as AssistantMessage, [...this.pendingTools.keys()]);
 		this.streaming = undefined;
 	}
 }
