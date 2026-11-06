@@ -248,6 +248,83 @@ test("D4: an aborted /handoff fails the command; the next /handoff works", async
 	}
 });
 
+const NEVER_CALLED = "/handoff: no handoff recorded — the agent ended without calling context_handoff";
+
+test("/handoff the agent never answers fails once the reminders run out — never stranded; the next /handoff works", async () => {
+	const t = await session([
+		textStep("not now", 20), // answers the demand without the tool …
+		textStep("still not", 21), // … and reminder 1 …
+		textStep("no", 22), // … and reminder 2: the cycle is exhausted, the run ends
+		toolStep("h1", "context_handoff", { markdown: LONG_DOC }, 30),
+	]);
+	try {
+		await t.session.prompt("/handoff");
+		await t.session.waitForIdle();
+		assert.deepEqual(t.seeds, []);
+		assert.ok(
+			t.notices.some((n) => n.level === "error" && n.message === NEVER_CALLED),
+			JSON.stringify(t.notices),
+		);
+		assert.deepEqual(
+			customEntries(t, DEMAND_TYPE).map((d) => [d.details.origin, d.details.kind]),
+			[
+				["manual", "demand"],
+				["manual", "reminder"],
+				["manual", "reminder"],
+			],
+		);
+		await t.session.prompt("/handoff");
+		await t.session.waitForIdle();
+		assert.ok(!t.notices.some((n) => /already in progress/.test(n.message)), "the failed command released its slot");
+		assertSeeded(t, LONG_DOC);
+		assertNothingQueued(t);
+	} finally {
+		t.dispose();
+	}
+});
+
+// failManual's `ending = "swap"`: a cap cycle a failed /handoff joined must still
+// swap. Left on "new-session", its late document would be handed to no one —
+// recorded, then dropped, the context never cut.
+test("a failed /handoff gives the cap cycle it joined its swap back — the late document swaps, seeds nothing", async () => {
+	let handoff: Promise<unknown> | undefined;
+	const t: TestSession = await session(
+		[
+			toolStep("w1", "ls", {}, 50),
+			toolStep("w2", "ls", {}, 105), // crosses soft → cap demand committed at this turn_end
+			textStep("ignoring the demand", 106), // /handoff joins during this request
+			textStep("still ignoring", 107),
+			textStep("done", 108), // reminders exhausted: the run ends without a document
+			toolStep("h1", "context_handoff", { markdown: LONG_DOC }, 109),
+			textStep("post-swap turn", 5),
+		],
+		(call) => {
+			if (call === 3) handoff = t.session.prompt("/handoff");
+		},
+	);
+	try {
+		await t.session.prompt("start");
+		assert.equal(await settlesWithin(handoff!, 3000), "settled");
+		assert.ok(t.notices.some((n) => n.message.startsWith("/handoff: a handoff is already requested")), "joined");
+		assert.ok(t.notices.some((n) => n.level === "error" && n.message === NEVER_CALLED), JSON.stringify(t.notices));
+		await t.session.prompt("go on");
+		await t.session.waitForIdle();
+		assert.deepEqual(t.seeds, [], "no waiting command: nothing seeds a new session");
+		assert.match(toolResultTexts(t)[0]!, /your context is replaced/, "the tool result follows the swap row");
+		const markers = customEntries(t, SWAP_MARKER_TYPE);
+		assert.equal(markers.length, 1, "the cap cycle swapped");
+		assert.ok(markers[0].content.includes(LONG_DOC));
+		assert.deepEqual(
+			customEntries(t, DEMAND_TYPE).map((d) => d.details.origin),
+			["soft", "soft", "soft"],
+			"the cap demand and its reminders only — the join never sent a demand",
+		);
+		assertNothingQueued(t);
+	} finally {
+		t.dispose();
+	}
+});
+
 test("D5/D6: a handoff call in the crossing message is refused; after the swap no demand reaches the model", async () => {
 	const contexts: string[] = [];
 	const t = await createTestSession({
