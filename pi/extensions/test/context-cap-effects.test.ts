@@ -417,3 +417,41 @@ test("effects: the swap carries the recorded document — a handoff file deleted
 	assert.equal(at(log, -1), "boundary continue=true marker=soft/agent/stale=false");
 	assert.ok(!log.some((l) => l.startsWith("notify error")), log.join("\n"));
 });
+
+// Since the cycle carries its document (9c88b00), the only handoff-file READ left
+// is the hard-cap stale fallback (lib/context-cap-swap.ts swapSummary). Falling
+// back to the no-file note there would wipe a context that still has everything.
+test("effects: an unreadable stale fallback file stages no marker — error shown, cycle reset, context kept", async () => {
+	let result: unknown;
+	const log = await scenario(async (d) => {
+		// An older handoff of this session that cannot be read: readFileSync fails with EISDIR.
+		const unreadable = path.join(contextCapDir(), `${d.sessionId}-1.md`);
+		fs.mkdirSync(unreadable, { recursive: true });
+		try {
+			d.writer = "fail";
+			d.usage.tokens = 60;
+			await d.messageEnd("stop", 60); // hard, idle → writer fails → stale seq 1 is unreadable
+			result = await d.turnEnd(0); // idle above soft: the silent-stop fallback demands a fresh handoff
+		} finally {
+			fs.rmdirSync(unreadable);
+		}
+	});
+	const entries = (result as BoundaryLog | undefined)?.entries ?? [];
+	assert.ok(!entries.some((e) => e.customType === SWAP_MARKER_TYPE), "no swap marker: the context is kept");
+	assert.deepEqual(log.slice(0, 5), [
+		"status 60/5",
+		"notify warning context-cap: hard cap (60) — forcing handoff",
+		"status writing handoff/5",
+		"notify warning context-cap: no fresh handoff — writing one from the context (one LLM call)",
+		"notify warning context-cap: could not write a handoff — falling back to the previous file",
+	]);
+	assert.equal(at(log, 5), "status 60/5"); // reset to idle: no "⚠" suffix
+	assert.match(at(log, 6), /^notify error context-cap: failed to read handoff file: EISDIR/);
+	assert.deepEqual(log.slice(7), [
+		"status 60/5 ⚠ handoff",
+		"notify info context-cap: soft cap (60) — last-turn handoff requested",
+		"status 60/5 ⚠ handoff",
+		"entry demand [context-cap] ⚠️ CONTEXT LIMIT WARNING: your context is at 60 tokens (soft cap 5, hard cap 50). This is your last turn before handoff.",
+		"boundary continue=true",
+	]);
+});
