@@ -3,11 +3,18 @@
 # Symlinks point INTO this repo. settings.json is copied, never symlinked.
 
 link() { # link <repo-relative-src> <dest>
-    local src="$REPO/$1" dest="$2"
+    local src="$REPO/$1" dest="$2" backup n=1
     mkdir -p "$(dirname "$dest")"
     if [ -e "$dest" ] && [ ! -L "$dest" ]; then
-        echo "BACKUP: $dest -> $dest.pre-terminal-setup"
-        mv "$dest" "$dest.pre-terminal-setup"
+        # Next free name: mv onto an existing backup would overwrite an earlier
+        # backup file (often the user's original config) or nest into a dir.
+        backup="$dest.pre-terminal-setup"
+        while [ -e "$backup" ] || [ -L "$backup" ]; do
+            backup="$dest.pre-terminal-setup.$n"
+            n=$((n + 1))
+        done
+        echo "BACKUP: $dest -> $backup"
+        mv "$dest" "$backup"
     fi
     ln -sfn "$src" "$dest"
     echo "LINKED: $dest -> $src"
