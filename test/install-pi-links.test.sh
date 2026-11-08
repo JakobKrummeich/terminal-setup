@@ -2,7 +2,8 @@
 # link + install_pi: every installer run (install-pi.sh and, via link,
 # install-terminal.sh) points user config paths into the repo. Pins the parts
 # that touch user data: a real file or dir in the way is moved to
-# <dest>.pre-terminal-setup, never deleted; an existing link is re-pointed
+# <dest>.pre-terminal-setup (.1, .2, ... when taken), never deleted or
+# overwritten; an existing link is re-pointed
 # without a backup and never followed (ln -n — otherwise a re-run plants a link
 # INSIDE the repo dir); skills are linked one-by-one so non-repo skills survive;
 # settings.json is copied once and never overwritten. Uses a fixture repo, so a
@@ -79,6 +80,23 @@ assert_link "$agent/extensions" "$repo/pi/extensions"
 assert_link "$agent/themes" "$repo/pi/themes"
 assert_link "$agent/skills/alpha" "$repo/pi/skills/alpha"
 [ "$(cat "$agent/skills/own-skill/SKILL.md")" = "own" ] || fail "non-repo skill touched"
+
+# ── second backup (link replaced by a real file/dir again, e.g. `sed -i`): ──
+# the earlier backup — often the user's ORIGINAL config — is never
+# overwritten (file) or nested into (dir); the new one takes the next free name.
+rm "$agent/themes" "$agent/extensions"
+printf 'edited theme\n' > "$agent/themes"
+mkdir -p "$agent/extensions"
+printf 'edited ext\n' > "$agent/extensions/mine.ts"
+out="$(run_install_pi "$home")" || fail "second backup run aborted: $out"
+[ "$(cat "$agent/themes.pre-terminal-setup")" = "user theme" ] || fail "first themes backup overwritten"
+[ "$(cat "$agent/themes.pre-terminal-setup.1")" = "edited theme" ] || fail "second themes backup missing"
+[ ! -e "$agent/extensions.pre-terminal-setup/extensions" ] || fail "second extensions backup nested into the first"
+[ "$(cat "$agent/extensions.pre-terminal-setup/mine.ts")" = "user ext" ] || fail "first extensions backup changed"
+[ "$(cat "$agent/extensions.pre-terminal-setup.1/mine.ts")" = "edited ext" ] || fail "second extensions backup missing"
+[[ "$out" == *"BACKUP: $agent/themes -> $agent/themes.pre-terminal-setup.1"* ]] || fail "BACKUP line names the wrong path: $out"
+assert_link "$agent/themes" "$repo/pi/themes"
+assert_link "$agent/extensions" "$repo/pi/extensions"
 
 # ── link from an old repo location: re-pointed, no backup ───────────
 home="$FIXTURE/moved"
