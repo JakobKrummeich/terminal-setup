@@ -4,8 +4,8 @@
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { appendEvent, type RunStatus } from "./agent-runs.ts";
 import type { ChildRecord } from "./child-types.ts";
-import { CONTEXT_CAP_TOOL_NAME } from "./env.ts";
 import { formatTokenCount } from "./format.ts";
+import { SWAP_MARKER_TYPE } from "./message-types.ts";
 
 export interface RunMeta {
 	id: string;
@@ -27,34 +27,20 @@ export function formatDuration(ms: number): string {
 	return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}m`;
 }
 
-function countCompactions(session: AgentSession): number {
-	let compactions = 0;
-	for (const entry of session.sessionManager.getEntries() as Array<{ type?: string }>) {
-		if (entry?.type === "compaction") compactions++;
-	}
-	return compactions;
-}
-
-function countContextCapCalls(session: AgentSession): number {
-	let calls = 0;
-	for (const message of session.messages) calls += contextCapCallsIn(message);
-	return calls;
-}
-
-function contextCapCallsIn(message: { role: string }): number {
-	if (message.role !== "assistant") return 0;
-	const content = (message as { content?: unknown }).content;
-	if (!Array.isArray(content)) return 0;
-	let calls = 0;
-	for (const block of content as Array<{ type?: string; name?: string }>) {
-		if (block?.type === "toolCall" && block.name === CONTEXT_CAP_TOOL_NAME) calls++;
-	}
-	return calls;
-}
-
-/** Context resets of a child: pi compactions plus context-cap handoff tool calls. */
+/**
+ * Context resets of a child: pi compactions plus context-cap swap markers, both
+ * counted as session ENTRIES (the full history). Not context_handoff tool calls in
+ * session.messages: a refused call (no demand out) swaps nothing, a hard-cap
+ * machine-written swap makes no call, and a compaction drops earlier calls from
+ * session.messages — the call count over- and under-reported all three.
+ */
 function countResets(session: AgentSession): number {
-	return countCompactions(session) + countContextCapCalls(session);
+	let resets = 0;
+	for (const entry of session.sessionManager.getEntries() as Array<{ type?: string; customType?: string }>) {
+		if (entry?.type === "compaction") resets++;
+		else if (entry?.type === "custom_message" && entry.customType === SWAP_MARKER_TYPE) resets++;
+	}
+	return resets;
 }
 
 export function collectMeta(record: ChildRecord): RunMeta {

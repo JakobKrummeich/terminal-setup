@@ -3,7 +3,7 @@
  * metaLine, F2 viewport via formatDuration, Agent/Explore tool result details
  * via collectMeta) and the progress-row write throttle of agent-runs.jsonl.
  * Integration tests only reach the common shapes (a "1m05s" duration, a known
- * context usage, resets from one context_handoff call); these pin the rest.
+ * context usage, resets from one context-cap swap); these pin the rest.
  */
 
 import assert from "node:assert/strict";
@@ -22,10 +22,11 @@ import {
 } from "../lib/child-runs.ts";
 import type { ChildRecord } from "../lib/child-types.ts";
 import { CONTEXT_CAP_TOOL_NAME } from "../lib/env.ts";
+import { HANDOFF_DEMAND_TYPE, SWAP_MARKER_TYPE } from "../lib/message-types.ts";
 
 interface FakeSession {
 	dir?: string;
-	entries?: Array<{ type?: string }>;
+	entries?: Array<{ type?: string; customType?: string }>;
 	messages?: Array<{ role: string; content?: unknown }>;
 	usage?: { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
 }
@@ -85,25 +86,21 @@ test("metaLine: full form, unknown percent, unknown usage", () => {
 	);
 });
 
-test("collectMeta: resets = pi compactions + context_handoff calls; unknown usage stays null", () => {
+test("collectMeta: resets = pi compactions + swap marker entries, not handoff calls; unknown usage stays null", () => {
 	const record = fakeRecord({
-		entries: [{ type: "message" }, { type: "compaction" }, { type: "compaction" }],
-		messages: [
-			{ role: "user", content: [{ type: "toolCall", name: CONTEXT_CAP_TOOL_NAME }] },
-			{
-				role: "assistant",
-				content: [
-					{ type: "text" },
-					{ type: "toolCall", name: CONTEXT_CAP_TOOL_NAME },
-					{ type: "toolCall", name: "read" },
-				],
-			},
-			{ role: "assistant", content: "plain string content" },
+		entries: [
+			{ type: "message" },
+			{ type: "compaction" },
+			{ type: "custom_message", customType: SWAP_MARKER_TYPE },
+			{ type: "custom_message", customType: HANDOFF_DEMAND_TYPE },
+			{ type: "compaction" },
 		],
+		// A call in the (compaction-trimmed) message array is no evidence of a swap.
+		messages: [{ role: "assistant", content: [{ type: "toolCall", name: CONTEXT_CAP_TOOL_NAME }] }],
 		usage: undefined,
 	});
 	const meta = collectMeta(record);
-	assert.equal(meta.resets, 3, "2 compactions + 1 assistant context_handoff call; user/other tool calls ignored");
+	assert.equal(meta.resets, 3, "2 compactions + 1 swap marker; demand entries and tool calls ignored");
 	assert.equal(meta.contextTokens, null);
 	assert.equal(meta.contextPercent, null);
 	assert.equal(meta.contextWindow, 0);
