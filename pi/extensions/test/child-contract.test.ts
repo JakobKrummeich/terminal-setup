@@ -202,7 +202,7 @@ test("finish-then-handoff: the post-swap message is harvested as the tool result
 		// as a delegate, and the LAST message — the post-swap one — is the report.
 		assert.match(resultText(result), /post-swap report/);
 		assert.doesNotMatch(resultText(result), /real final answer/);
-		// The swap really happened (collectMeta counts the context_handoff call).
+		// The swap really happened (collectMeta counts the swap marker entry).
 		assert.equal((result.details as { resets?: number }).resets, 1);
 		assert.equal(calls.length, 4, "the whole cycle must drain inside one tool call");
 	} finally {
@@ -250,6 +250,26 @@ test("contract survives the swap: still in the system prompt on post-swap and re
 		assert.match(resultText(resumed), /resumed answer/);
 		assert.equal(calls.length, 5);
 		assert.ok(at(calls, 4).systemPrompt.includes(CONTRACT), "resume-turn system prompt must carry the contract");
+	} finally {
+		cleanup(childId);
+	}
+});
+
+// resets counts swaps, not context_handoff calls: a call made with no demand
+// out is refused by the tool and swaps nothing. Counting calls reported it as a
+// reset (and missed hard-cap machine-written swaps, which make no call at all).
+test("a refused context_handoff call is not a reset", async () => {
+	const calls: CapturedCall[] = [];
+	// contextTokens 2 < CONTEXT_CAP_SOFT 5: no cycle, so the tool refuses.
+	const script = [toolStep("h0", CONTEXT_CAP_TOOL_NAME, { markdown: "## Current Task\nnot asked" }, 2), textStep("done", 2)];
+	const ctx = await makeCtx(script, calls);
+	let childId: string | undefined;
+	try {
+		const result = await runChildTool({ prompt: "task", description: "eager caller" }, CHILD_OPTIONS, undefined, undefined, ctx);
+		childId = (result.details as { id?: string }).id;
+		assert.match(resultText(result), /done/);
+		assert.ok(at(calls, 1).messages.includes("Refused: no handoff was requested"), "the call was refused");
+		assert.equal((result.details as { resets?: number }).resets, 0);
 	} finally {
 		cleanup(childId);
 	}
