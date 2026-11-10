@@ -60,8 +60,8 @@ const MAX_WAKE_RESENDS = 3;
 const MAX_TIMER_SECONDS = Math.floor(0x7fffffff / 1000);
 /**
  * Optional cap on ONE blocking (headless) wait, in seconds. Unset (or <= 0) means
- * NO cap: a headless agent has the same reach as an interactive one, which can arm
- * a wake-up of any length. Capping would force the agent to re-call every N
+ * NO cap: a headless agent has the same reach as an interactive one (up to
+ * MAX_TIMER_SECONDS in both modes). Capping would force the agent to re-call every N
  * seconds, and every re-call is a full LLM round-trip at the current context size
  * — 3 extra round-trips at 200k+ tokens for a 30-minute wait, buying nothing.
  * Nothing in pi times a tool call out (pi-agent-core dist/agent-loop.js:453 awaits
