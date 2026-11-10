@@ -9,6 +9,8 @@
  *    start a new agent run on every settle, forever;
  *  - what counts as delivery: only a USER message carrying the exact wake text;
  *  - a send that throws (at expiry or on re-send) gives up instead of retrying.
+ * Also here (direct tool calls, both modes): a `seconds` beyond setTimeout's
+ * range is refused instead of firing at once.
  */
 
 import assert from "node:assert/strict";
@@ -45,6 +47,14 @@ function stubPi(throwOnSend: (attempt: number) => boolean = () => false) {
 		attempts: () => attempts,
 		settle: () => emit("agent_settled"),
 		messageStart: (message: unknown) => emit("message_start", { message }),
+		/** Call the timer tool directly; `mode` is ctx.mode ("tui" = interactive). */
+		async run(params: unknown, mode: string) {
+			assert.ok(execute, "timer tool registered");
+			return (await execute("call-1", params, undefined, undefined, { mode })) as {
+				content: Array<{ text: string }>;
+				isError?: boolean;
+			};
+		},
 		/** Interactive `set` for 1 s, then let it expire (mocked clock). */
 		async armAndExpire(t: TestContext) {
 			assert.ok(execute, "timer tool registered");
@@ -119,3 +129,17 @@ test("a re-send that throws ends the wake cycle — no further attempts", async 
 	stub.settle();
 	assert.equal(stub.attempts(), 2, "expiry send + the one failed re-send");
 });
+
+// Real timers on purpose: Node clamps a setTimeout delay above 2^31-1 ms (~24.8
+// days) to 1 ms, and the mocked clock does not reproduce that clamp.
+for (const mode of ["tui", "print"]) {
+	test(`${mode}: seconds beyond setTimeout's range is refused, never fired at once`, async () => {
+		const stub = stubPi();
+		timerExtension(stub.pi);
+		const result = await stub.run({ action: "set", name: "month", seconds: 3_000_000 }, mode);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.equal(result.isError, true, `expected a refusal, got: ${JSON.stringify(result)}`);
+		assert.match(result.content[0]?.text ?? "", /at most 2147483/);
+		assert.deepEqual(stub.sends, [], "no wake-up may fire");
+	});
+}

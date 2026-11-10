@@ -53,6 +53,12 @@ import { registerCompactCallRenderer } from "./lib/tool-call-render.ts";
 /** Re-send attempts for a stranded wake-up before giving up. */
 const MAX_WAKE_RESENDS = 3;
 /**
+ * Longest `seconds` a set accepts, in both modes: setTimeout clamps any delay
+ * above 2^31-1 ms (~24.8 days) to 1 ms with only a process warning, so a longer
+ * wait would "fire" at once — the agent told its month-long wait is over.
+ */
+const MAX_TIMER_SECONDS = Math.floor(0x7fffffff / 1000);
+/**
  * Optional cap on ONE blocking (headless) wait, in seconds. Unset (or <= 0) means
  * NO cap: a headless agent has the same reach as an interactive one, which can arm
  * a wake-up of any length. Capping would force the agent to re-call every N
@@ -302,14 +308,26 @@ function registerTimerTool(pi: ExtensionAPI, timer: WakeTimer): void {
 			if (params.action === "cancel") return timer.cancel(interactive);
 
 			// action === "set"
-			if (params.seconds === undefined || params.seconds <= 0) {
-				return err("Error: 'seconds' must be a positive number when action is 'set'.");
-			}
+			const seconds = checkedSeconds(params.seconds);
+			if (typeof seconds !== "number") return seconds;
 			const name = params.name?.trim() || "timer";
-			if (!interactive) return blockingWait(name, params.seconds, signal, onUpdate);
-			return timer.arm(name, params.seconds);
+			if (!interactive) return blockingWait(name, seconds, signal, onUpdate);
+			return timer.arm(name, seconds);
 		},
 	});
+}
+
+/** The `seconds` of a set, or the error result refusing it. */
+function checkedSeconds(seconds: number | undefined): number | ReturnType<typeof err> {
+	if (seconds === undefined || seconds <= 0) {
+		return err("Error: 'seconds' must be a positive number when action is 'set'.");
+	}
+	if (seconds > MAX_TIMER_SECONDS) {
+		return err(
+			`Error: 'seconds' must be at most ${MAX_TIMER_SECONDS} (~24 days); set a shorter timer and set it again when it fires.`,
+		);
+	}
+	return seconds;
 }
 
 /** `set 300s · build` / `cancel`; args may be partial while the call streams. */
