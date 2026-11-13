@@ -26,6 +26,7 @@ import test from "node:test";
 process.env.PI_CODING_AGENT_DIR = mkdtempSync(path.join(tmpdir(), "pi-watchoverlay-agentdir-"));
 process.env.PI_CODING_AGENT_SESSION_DIR = mkdtempSync(path.join(tmpdir(), "pi-watchoverlay-sessions-"));
 process.env.PI_OFFLINE = "1";
+delete process.env.CONTEXT_CAP_RESERVE;
 
 import { type ExtensionContext, initTheme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
@@ -360,6 +361,32 @@ test("running child: header line 2 duration is live (previous runs + current run
 		});
 	} finally {
 		Date.now = realNow;
+	}
+});
+
+// The child runs its own model, so its footer's cap status must come from the
+// CHILD's window (lib/env.ts resolveTriggers), not the static 260k ceiling —
+// fixed once in 8710bf8 and moved twice since without a test pinning it.
+// Reserve is pi's default 16384 (hermetic agent dir: no settings.json).
+test("view footer: context-cap status uses the child's own window (soft cap, off, unknown)", () => {
+	for (const key of ["CONTEXT_CAP_SOFT", "CONTEXT_CAP_HARD"]) {
+		assert.equal(process.env[key], undefined, `${key} must be unset: it overrides the child's window`);
+	}
+	const cases: Array<[string, { tokens: number; contextWindow: number } | undefined, string]> = [
+		// ceiling 183_616 → hard 165_254 → soft 132_203
+		["200k window", { tokens: 12_000, contextWindow: 200_000 }, "12k/132k"],
+		// window below pi's reserve: no cap can fire → disabled, rendered "off"
+		["tiny window", { tokens: 12_000, contextWindow: 10_000 }, "12k/off"],
+		// no usage at all: unknown tokens, static fallback soft cap
+		["no usage", undefined, "?/260k"],
+	];
+	for (const [name, usage, status] of cases) {
+		const record = makeRecord("f1", [userEntry("TASK")]);
+		(record.session as unknown as { getContextUsage: () => unknown }).getContextUsage = () => usage;
+		withOverlay(record, (overlay) => {
+			const footer = parts(overlay.render()).footer.join("\n");
+			assert.ok(footer.includes(status), `${name}: expected "${status}" in footer:\n${footer}`);
+		});
 	}
 });
 
