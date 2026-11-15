@@ -17,10 +17,11 @@ export function envInt(name: string, fallback: number): number {
  * when the var is unset OR garbage. Needed by resolveTriggers below, where an
  * explicit value must win over the dynamic computation and a defaulted one must
  * not. envInt cannot express that (its callers want a number, always), so this is
- * a second function rather than a signature change.
+ * a second function rather than a signature change. `env` lets callers that take
+ * an env object (explore.ts resolveExplorerParallel) share the rule.
  */
-export function envIntOrNull(name: string): number | null {
-	const raw = process.env[name]?.trim();
+export function envIntOrNull(name: string, env: NodeJS.ProcessEnv = process.env): number | null {
+	const raw = env[name]?.trim();
 	// Whole-string digits, NOT parseInt: parseInt reads a numeric prefix, so the
 	// README's own "260k" notation (CONTEXT_CAP_SOFT=200k) became a 200-token cap
 	// and "1e6" became 1. Anything but a plain positive integer is garbage.
