@@ -380,9 +380,10 @@ nesting at one layer (structural, not a counter — nothing to configure).
 - Explorers (`explore.ts`) are the readonly counterpart: same plumbing, same watch view,
   but a readonly tool allowlist and a separate busy group. Unlike agents they run in
   parallel — explorers are readonly, so the shared-worktree rationale does not apply. Up
-  to `PI_EXPLORER_PARALLEL` (default 3; integer ≥ 1, invalid values fall back to 3) run
-  concurrently; calls beyond the limit are rejected like a busy agent. With several
-  children running, repeated **F2** presses cycle through them. Configure the model with
+  to `PI_EXPLORER_PARALLEL` (default 3; a plain positive integer like `4`, not `1e1` —
+  anything else falls back to 3) run concurrently; calls beyond the limit are rejected
+  like a busy agent. With several children running, repeated **F2** presses cycle
+  through them. Configure the model with
   `PI_EXPLORER_MODEL=provider/modelId` (split on the first slash — model ids may contain
   slashes) and `PI_EXPLORER_THINKING=off|minimal|low|medium|high|xhigh|max` (default `low`).
   For per-machine setup, create `~/.pi/agent/extensions/explorer-models.json`

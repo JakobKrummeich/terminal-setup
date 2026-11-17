@@ -239,6 +239,15 @@ test("resolveExplorerParallel: unset → 3; valid values honored; junk and non-p
 	assert.equal(resolveExplorerParallel({ PI_EXPLORER_PARALLEL: "garbage" }), 3);
 });
 
+// Same rule as every other integer env var (lib/env.ts envIntOrNull). Number(raw)
+// read "1e6" as a million concurrent explorers — the limit silently gone.
+test("resolveExplorerParallel: exponent/hex/decimal spellings fall back to 3, like envInt", () => {
+	for (const raw of ["1e6", "1e1", "0x10", "4.0", "+4", " "]) {
+		assert.equal(resolveExplorerParallel({ PI_EXPLORER_PARALLEL: raw }), 3, `${JSON.stringify(raw)} must fall back`);
+	}
+	assert.equal(resolveExplorerParallel({ PI_EXPLORER_PARALLEL: " 4 " }), 4, "surrounding whitespace tolerated");
+});
+
 // --- busy groups + explorer tool set (real runChildTool, scripted LLM) ---
 
 /**

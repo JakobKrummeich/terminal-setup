@@ -7,7 +7,7 @@ import { EXPLORE_TOOL, runChildTool } from "./lib/child-session.ts";
 import type { ChildModel, ChildThinkingLevel } from "./lib/child-types.ts";
 import { agentDir } from "./lib/agent-dir.ts";
 import { childCallSummary, registerCompactCallRenderer } from "./lib/tool-call-render.ts";
-import { CONTEXT_CAP_TOOL_NAME } from "./lib/env.ts";
+import { CONTEXT_CAP_TOOL_NAME, envIntOrNull } from "./lib/env.ts";
 
 const TOOL_DESCRIPTION = `Delegate readonly exploration to a fast, cheap agent that reports back.
 
@@ -60,14 +60,13 @@ const THINKING_LEVELS: readonly ChildThinkingLevel[] = [
 
 /**
  * Max concurrent explorers from PI_EXPLORER_PARALLEL. Default 3; anything that is
- * not an integer >= 1 (garbage, "0", negatives) falls back to 3. Read per call, not
- * at module load, so the env can change under a running session (and under tests).
+ * not a plain decimal integer >= 1 (garbage, "0", negatives, "1e6") falls back to 3 —
+ * envIntOrNull's rule, NOT Number(raw), which read "1e6" as a million explorers.
+ * Read per call, not at module load, so the env can change under a running session
+ * (and under tests).
  */
 export function resolveExplorerParallel(env: NodeJS.ProcessEnv): number {
-	const raw = env.PI_EXPLORER_PARALLEL;
-	if (!raw) return 3;
-	const parsed = Number(raw);
-	return Number.isInteger(parsed) && parsed >= 1 ? parsed : 3;
+	return envIntOrNull("PI_EXPLORER_PARALLEL", env) ?? 3;
 }
 
 export interface ExplorerConfig {
