@@ -325,6 +325,45 @@ test("a failed /handoff gives the cap cycle it joined its swap back — the late
 	}
 });
 
+// decideManual "finish" (finishNow): an ESC right after the tool recorded a cap
+// cycle's document skips that turn_end, so the cycle idles with its document
+// uncollected. /handoff must hand THAT document over at once — no demand run
+// (the agent already wrote it), no swap of the window being left.
+test("/handoff while idle with a cap cycle's document already recorded seeds from it at once — no demand, no swap", async () => {
+	let calls = 0;
+	const t: TestSession = await session(
+		[
+			toolStep("w1", "ls", {}, 50),
+			toolStep("w2", "ls", {}, 105), // crosses soft → cap demand committed at this turn_end
+			toolStep("h1", "context_handoff", { markdown: LONG_DOC }, 108), // ESC lands right after it ran
+			textStep("must never run", 6),
+		],
+		(call) => void (calls = call),
+	);
+	t.session.subscribe((event: any) => {
+		if (event.type === "tool_execution_end" && event.toolName === "context_handoff") void t.session.abort();
+	});
+	try {
+		await t.session.prompt("start").catch(() => {});
+		await t.session.waitForIdle();
+		assert.match(toolResultTexts(t)[0] ?? "", /^Handoff recorded/, "the document was recorded before the ESC");
+		assert.deepEqual(customEntries(t, SWAP_MARKER_TYPE), [], "the aborted turn_end collected nothing");
+		await t.session.prompt("/handoff");
+		await t.session.waitForIdle();
+		assertSeeded(t, LONG_DOC);
+		assert.equal(calls, 3, "no model call: the recorded document is handed over as is");
+		assert.deepEqual(
+			customEntries(t, DEMAND_TYPE).map((d) => [d.details.origin, d.details.kind]),
+			[["soft", "demand"]],
+			"the cap demand only — /handoff sent none",
+		);
+		assert.deepEqual(customEntries(t, SWAP_MARKER_TYPE), [], "the new-session ending never swaps");
+		assertNothingQueued(t);
+	} finally {
+		t.dispose();
+	}
+});
+
 test("D5/D6: a handoff call in the crossing message is refused; after the swap no demand reaches the model", async () => {
 	const contexts: string[] = [];
 	const t = await createTestSession({
