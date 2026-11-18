@@ -174,6 +174,23 @@ output="$(run_self_link)"
 [ ! -s "$CURL_LOG" ] || fail "re-run via own link must not download: $(cat "$CURL_LOG")"
 [ "$(readlink "$self/.pi/agent/bin/rtk")" = "$self_target" ] || fail "re-run via own link is not idempotent"
 
+# Same own link, HOME spelled through a symlink while PATH names the real dir
+# (symlinked/NFS home): still our link. A string compare missed it, "linked"
+# the link to itself (ELOOP) and reported success — rtk gone until a re-run.
+ln -s "$self" "$FIXTURE/self-alias"
+: > "$CURL_LOG"
+output="$(
+    HOME="$FIXTURE/self-alias"
+    PATH="$self/.pi/agent/bin:/usr/local/bin:/usr/bin:/bin"
+    install_rtk
+)"
+[ ! -s "$CURL_LOG" ] || fail "own link via symlinked HOME must not download: $(cat "$CURL_LOG")"
+[ "$(readlink "$self/.pi/agent/bin/rtk")" = "$self_target" ] \
+    || fail "own link via symlinked HOME re-pointed to $(readlink "$self/.pi/agent/bin/rtk")"
+[ "$("$self/.pi/agent/bin/rtk")" = "rtk 0.0.1" ] || fail "own link via symlinked HOME no longer runs rtk"
+[[ "$output" == *"NOTE: using existing $self_target (rtk 0.0.1)"* ]] \
+    || fail "expected the link target as the existing rtk, got: $output"
+
 # Dangling own link → treated as not installed: pinned release downloaded.
 rm "$self/.local/bin/rtk"
 output="$(run_self_link)"
