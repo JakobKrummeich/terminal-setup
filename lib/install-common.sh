@@ -290,8 +290,10 @@ install_rtk() {
     found="$(command -v rtk)" || found=""
     # Never use our own dest symlink as the binary (self-link = ELOOP): follow it
     # to its target instead; a dangling/looping link or a non-link file there
-    # counts as not installed.
-    if [ "$found" = "$link_dest" ]; then
+    # counts as not installed. Same dir by identity (-ef), not by string: PATH may
+    # spell it differently than $HOME (symlinked home), and a string miss re-pointed
+    # the link at itself.
+    if [ -n "$found" ] && [ "$(dirname "$found")" -ef "$(dirname "$link_dest")" ]; then
         found=""
         if [ -L "$link_dest" ]; then
             found="$(readlink -f "$link_dest")" || found=""
