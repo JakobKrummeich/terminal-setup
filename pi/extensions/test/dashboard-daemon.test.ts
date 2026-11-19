@@ -46,6 +46,7 @@ chmodSync(SYSTEMCTL_STUB, 0o755);
 process.env.PI_AGENT_DASH_SYSTEMCTL = SYSTEMCTL_STUB;
 
 import * as agentDashModule from "../agent-dash.ts";
+import { dashPort } from "../agent-dash.ts";
 import type { MetaResponse, SessionsResponse } from "../lib/dashboard-api.ts";
 import { startDashboardServer } from "../lib/dashboard-server.ts";
 import { type CodeVersion, computeCodeVersion } from "../lib/dashboard-version.ts";
@@ -192,6 +193,18 @@ test("dashboard-daemon.mjs: PI_AGENT_DASH_EXIT_WITH_PARENT → daemon exits when
 });
 
 // --- agent-dash probe --------------------------------------------------------
+
+test("agent-dash dashPort: unset/junk/out-of-range → 7357, so the probe never gets a port http.get throws on", () => {
+	// http.get THROWS synchronously (ERR_SOCKET_BAD_PORT) on a port outside
+	// 0..65535 or a fraction; inside probeDaemon's executor that became an
+	// unhandled rejection, which pi turns into an uncaughtException exit.
+	for (const raw of [undefined, "", "abc", "0", "-1", "1.5", "65536", "73570"]) {
+		assert.equal(dashPort({ PI_AGENT_DASH_PORT: raw }), 7357, `PI_AGENT_DASH_PORT=${JSON.stringify(raw)}`);
+	}
+	for (const [raw, port] of [["8080", 8080], [" 9000 ", 9000], ["65535", 65535], ["1", 1]] as const) {
+		assert.equal(dashPort({ PI_AGENT_DASH_PORT: raw }), port, `PI_AGENT_DASH_PORT=${JSON.stringify(raw)}`);
+	}
+});
 
 type Handler = (event: unknown, ctx: unknown) => void;
 

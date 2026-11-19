@@ -43,10 +43,15 @@ function dashState(): DashState {
 	return sharedState<DashState>(STATE_KEY, () => ({ probeAttempted: false }));
 }
 
-/** PI_AGENT_DASH_PORT, else 7357. Non-numeric/non-positive values fall back. */
-function dashPort(env: NodeJS.ProcessEnv): number {
+/**
+ * PI_AGENT_DASH_PORT, else 7357. Non-numeric, non-positive and >65535 values
+ * fall back. The upper bound is load-bearing: http.get THROWS synchronously on
+ * an out-of-range port, probeDaemon's promise then rejects unhandled, and pi
+ * exits on it at session start (a typo like 73570 crashed pi). Exported for tests.
+ */
+export function dashPort(env: NodeJS.ProcessEnv): number {
 	const port = Number(env.PI_AGENT_DASH_PORT);
-	return Number.isInteger(port) && port > 0 ? port : DEFAULT_PORT;
+	return Number.isInteger(port) && port > 0 && port <= 65535 ? port : DEFAULT_PORT;
 }
 
 function optionalString(value: unknown): string | undefined {
