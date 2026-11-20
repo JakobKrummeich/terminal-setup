@@ -130,6 +130,35 @@ test("dashboard-daemon.mjs: plain node serves /api/meta and /api/sessions (pi-fr
 	}
 });
 
+test("dashboard-daemon.mjs: out-of-range PI_AGENT_DASH_PORT falls back to 7357 like agent-dash, not a RangeError crash", async () => {
+	// agent-dash's dashPort maps 73570 (a typo of 7357) to 7357; a daemon that
+	// crashed on it instead left pi probing 7357 while systemd restarted the
+	// daemon every 30s. Host 192.0.2.1 (TEST-NET-1, never local) makes the
+	// listen fail AFTER port validation, so the suite never binds 7357 — the
+	// error then names the port the daemon chose.
+	const child = spawn(process.execPath, [DAEMON], {
+		env: {
+			...process.env,
+			PI_AGENT_DASH_PORT: "73570",
+			PI_AGENT_DASH_HOST: "192.0.2.1",
+			PI_AGENT_DASH_SESSIONS_ROOT: mkdtempSync(path.join(tmpdir(), "pi-daemon-badport-root-")),
+			PI_AGENT_DASH_EXIT_WITH_PARENT: "1",
+		},
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	let output = "";
+	child.stdout.setEncoding("utf8").on("data", (chunk: string) => (output += chunk));
+	child.stderr.setEncoding("utf8").on("data", (chunk: string) => (output += chunk));
+	try {
+		const deadline = Date.now() + 10_000;
+		while (child.exitCode === null && !output.includes("pi-dash: serving") && Date.now() < deadline) await sleep(50);
+		assert.doesNotMatch(output, /ERR_SOCKET_BAD_PORT/, "the daemon must not crash on the port value");
+		assert.match(output, /\b7357\b/, `daemon must fall back to port 7357; output: ${output}`);
+	} finally {
+		if (child.exitCode === null) child.kill("SIGTERM");
+	}
+});
+
 // --- no orphans: PI_AGENT_DASH_EXIT_WITH_PARENT ------------------------------
 
 /** Live and not a zombie (an unreaped zombie still answers kill(pid, 0)). */
