@@ -10,7 +10,8 @@
  * that way: a runtime pi import in that chain breaks this daemon.
  *
  * Env:
- *   PI_AGENT_DASH_PORT           port, default 7357 (0 = ephemeral, smoke tests)
+ *   PI_AGENT_DASH_PORT           port, default 7357 (0 = ephemeral, smoke tests;
+ *                                junk or >65535 → 7357)
  *   PI_AGENT_DASH_HOST           bind address, default 0.0.0.0
  *   PI_AGENT_DASH_SESSIONS_ROOT  default ~/.pi/agent/sessions
  *   PI_AGENT_DASH_EXIT_WITH_PARENT  "1" = exit once the spawning parent dies
@@ -29,7 +30,10 @@ function envPort(raw) {
 	// Number("") is 0, which would silently mean "ephemeral port" instead.
 	if (raw === undefined || raw.trim() === "") return 7357;
 	const port = Number(raw);
-	return Number.isInteger(port) && port >= 0 ? port : 7357;
+	// Upper bound: listen() throws on >65535, and agent-dash's dashPort maps such
+	// a value (e.g. 73570, a typo) to 7357 — a crash here left pi probing a port
+	// no daemon would ever serve. Keep both fallbacks in step.
+	return Number.isInteger(port) && port >= 0 && port <= 65535 ? port : 7357;
 }
 
 /**
