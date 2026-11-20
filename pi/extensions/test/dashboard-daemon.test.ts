@@ -149,13 +149,17 @@ test("dashboard-daemon.mjs: out-of-range PI_AGENT_DASH_PORT falls back to 7357 l
 	let output = "";
 	child.stdout.setEncoding("utf8").on("data", (chunk: string) => (output += chunk));
 	child.stderr.setEncoding("utf8").on("data", (chunk: string) => (output += chunk));
+	let closed = false;
+	const closing = new Promise<void>((resolve) => child.once("close", () => resolve()));
+	void closing.then(() => (closed = true));
 	try {
 		const deadline = Date.now() + 10_000;
-		while (child.exitCode === null && !output.includes("pi-dash: serving") && Date.now() < deadline) await sleep(50);
+		while (!closed && !output.includes("pi-dash: serving") && Date.now() < deadline) await sleep(50);
 		assert.doesNotMatch(output, /ERR_SOCKET_BAD_PORT/, "the daemon must not crash on the port value");
 		assert.match(output, /\b7357\b/, `daemon must fall back to port 7357; output: ${output}`);
 	} finally {
-		if (child.exitCode === null) child.kill("SIGTERM");
+		if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+		await closing;
 	}
 });
 
