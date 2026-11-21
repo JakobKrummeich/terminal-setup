@@ -29,10 +29,12 @@ import { Markdown } from "@earendil-works/pi-tui";
  */
 export const ORIGINAL_RENDER = Symbol.for("terminal-setup.markdown-no-padding.v1");
 
+// readonly: since pi 1.6.0 render() may hand back pi-tui's cached array, which
+// must not be modified in place (a string[] from older pi still fits).
 type PatchableProto = {
 	paddingX: number;
-	render(width: number): string[];
-	[ORIGINAL_RENDER]?: (width: number) => string[];
+	render(width: number): readonly string[];
+	[ORIGINAL_RENDER]?: (width: number) => readonly string[];
 };
 
 export default function (_pi: ExtensionAPI) {
@@ -44,7 +46,7 @@ export default function (_pi: ExtensionAPI) {
 	if (proto[ORIGINAL_RENDER]) return;
 	const origRender = proto.render;
 	proto[ORIGINAL_RENDER] = origRender;
-	proto.render = function (this: PatchableProto, width: number): string[] {
+	proto.render = function (this: PatchableProto, width: number): readonly string[] {
 		this.paddingX = 0;
 		return origRender.call(this, width);
 	};

@@ -107,7 +107,7 @@ test("renderChildResult: a run's meta line (toolTitle) heads the result text (to
 	};
 	const component = renderChildResult({ content: [text("done")], details }, theme, {});
 	const [summary, body] = rendered(component);
-	assert.ok(summary?.startsWith("<toolTitle>agent#c1 \u00b7 2 turns \u00b7 ctx ? \u00b7 1 resets \u00b7 $0.500"), summary);
+	assert.ok(summary?.startsWith("<toolTitle>agent#c1 \u00b7 2 turns \u00b7 ctx ? \u00b7 1 resets \u00b7 $0.500"), String(summary));
 	assert.equal(body, "<toolOutput>done");
 });
 
