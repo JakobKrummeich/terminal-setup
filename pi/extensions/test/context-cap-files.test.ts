@@ -80,6 +80,22 @@ test("stripFrontmatter: a lone markdown hr at the top is body, not frontmatter",
 	assert.equal(stripFrontmatter(midBlock), midBlock, "only a block at the very start counts");
 });
 
+test("stripFrontmatter: hr-fenced markdown at the top is body — only `key: value` lines make frontmatter", () => {
+	// Any text between two hrs used to count, so a document opening with an hr
+	// and using hrs as section breaks lost its first section — the Current Task —
+	// on write (writeHandoff) and in the cycle's doc alike.
+	const body = "---\n## Current Task\nFix the flaky test in a.ts\n\n---\n\n## Files\n- a.ts\n";
+	assert.equal(stripFrontmatter(body), body);
+	assert.equal(stripFrontmatter("---\ntitle: x\ntags:\n  - a\n---\nbody\n"), "body\n", "indented YAML lines still count");
+	withAgentDir((capDir) => {
+		const filePath = path.join(capDir, "sid-1.md");
+		const caps = { soft: 1, hard: 2, source: "fallback" as const, contextWindow: 3, disabled: false, clamped: false };
+		const meta = { sessionId: "sid", seq: 1, tokens: 1, author: "agent" as const, schema: "v2" as const };
+		writeHandoff(filePath, body, { ...meta, tailTokens: 0, tailKeptTokens: 0, caps });
+		assert.equal(stripFrontmatter(fs.readFileSync(filePath, "utf8")), body);
+	});
+});
+
 test("writeHandoff: creates the dir; frontmatter in field order; disabled caps as null; body's own frontmatter dropped", () => {
 	withAgentDir((capDir) => {
 		const filePath = path.join(capDir, "sid-3.md");

@@ -47,8 +47,14 @@ export function latestPath(sessionId: string): string | undefined {
 	return path.join(contextCapDir(), `${sessionId}-${seqs[seqs.length - 1]}.md`);
 }
 
-/** Full frontmatter block only — a lone markdown hr (`---`) at the top must NOT match. */
-const FRONTMATTER_RE = /^---\n[\s\S]*?\n---\n/;
+/**
+ * Full frontmatter block only — a lone markdown hr (`---`) at the top must NOT
+ * match, and neither may two hrs around markdown: every line in between must be
+ * a `key: value` line or an indented YAML continuation. Matching anything up to
+ * the next hr dropped the first section (the Current Task) of a handoff that
+ * opens with an hr and uses hrs as section breaks.
+ */
+const FRONTMATTER_RE = /^---\n(?:[\w-]+:.*\n|[ \t].*\n)*---\n/;
 
 export function stripFrontmatter(text: string): string {
 	const m = text.match(FRONTMATTER_RE);
