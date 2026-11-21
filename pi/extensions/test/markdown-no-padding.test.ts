@@ -41,7 +41,7 @@ const SOURCE = "# Title\n\nSome text.\n\n```python\ndef f():\n    return 1\n```\
 // paddingX 1 = what pi's assistant messages construct.
 const render = () => new Markdown(SOURCE, 1, 0, THEME).render(40);
 
-type Proto = { render(width: number): string[]; [ORIGINAL_RENDER]?: (width: number) => string[] };
+type Proto = { render(width: number): readonly string[]; [ORIGINAL_RENDER]?: (width: number) => readonly string[] };
 const proto = Markdown.prototype as unknown as Proto;
 
 test("repeated loads install exactly one render wrapper", (t) => {
@@ -53,13 +53,13 @@ test("repeated loads install exactly one render wrapper", (t) => {
 	});
 	assert.equal(proto[ORIGINAL_RENDER], undefined, "prototype must start unpatched");
 	const unpatched = render();
-	const textLine = (lines: string[]) => lines.find((line) => line.includes("Some text."));
+	const textLine = (lines: readonly string[]) => lines.find((line) => line.includes("Some text."));
 	assert.ok(textLine(unpatched)?.startsWith(" Some text."), "sanity: paddingX=1 indents lines");
 
 	// Spy standing in for pi-tui's render: records how many wrapper frames
 	// (functions defined in markdown-no-padding.ts) sit above it per call.
 	let wrapperFrames: number[] = [];
-	const spy = function (this: unknown, width: number): string[] {
+	const spy = function (this: unknown, width: number): readonly string[] {
 		const stack = new Error().stack ?? "";
 		wrapperFrames.push(stack.split("\n").filter((line) => line.includes("markdown-no-padding.ts")).length);
 		return pristine.call(this, width);
