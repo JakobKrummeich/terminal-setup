@@ -246,6 +246,24 @@ test("a lost wake turns into idle once the deadline grace passes", (t) => {
 	});
 });
 
+test("timer.ts's longest set (2147483 s) stays waiting — the fallback timeout must not overflow and fire at once", async () => {
+	// Real timers: mock timers don't reproduce Node's clamp of a delay above
+	// 2^31-1 ms to 1 ms. timer.ts accepts up to 2147483 s (and its refusal text
+	// names exactly that value), so deadline + WAKE_GRACE_MS overflowed and the
+	// fallback ended the park ~1 ms after the set.
+	const h = loadWsstate();
+	fire(h, "session_start");
+	fire(h, "agent_start");
+	timerCall(h, "t1", "set", 2_147_483);
+	try {
+		assert.deepEqual(emitted(() => fire(h, "agent_settled")), ["waiting"]);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.deepEqual(emitted(() => fire(h, "agent_settled")), ["waiting"]);
+	} finally {
+		fire(h, "session_shutdown"); // clears the (unref'd) fallback
+	}
+});
+
 test("a later set replaces the deadline; cancel and session_shutdown end the park and its fallback", (t) => {
 	withEnv("TMUX", undefined, () => {
 		const tick = mockClock(t);
