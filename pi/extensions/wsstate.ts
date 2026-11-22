@@ -51,6 +51,11 @@ type WsState = "busy" | "blocked" | "waiting" | "idle";
 // wake run's agent_start consumes the park. Past it, the fallback timeout ends
 // the park: a wake that never came reads as idle / "needs you".
 const WAKE_GRACE_MS = 30_000;
+// setTimeout clamps a delay above 2^31-1 ms to 1 ms (timer.ts MAX_TIMER_SECONDS
+// guards the same trap). timer.ts accepts sets up to that limit, so the grace on
+// top overflowed and ended the park at once; capped, the fallback of such a set
+// fires up to 30 s early — still after its deadline (24.8 days out).
+const MAX_TIMEOUT_MS = 0x7fffffff;
 
 interface Status {
 	running: boolean;
@@ -108,7 +113,7 @@ function trackTimer(pi: ExtensionAPI, status: Status, report: () => void): Timer
 		fallback = setTimeout(() => {
 			disarm();
 			report();
-		}, seconds * 1000 + WAKE_GRACE_MS);
+		}, Math.min(seconds * 1000 + WAKE_GRACE_MS, MAX_TIMEOUT_MS));
 		fallback.unref?.();
 	}
 
