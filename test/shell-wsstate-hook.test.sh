@@ -119,4 +119,28 @@ if [ "$(id -u)" -ne 0 ]; then
     assert_no_temp_files "$home"
 fi
 
+# ── .bashrc linked into a read-only dir (home-manager's /nix/store): warn, never abort ──
+# Last step of both set -e installers; a raw mktemp/touch failure used to exit 1
+# without the WARN. Existing target (mktemp fails) and missing target (touch fails).
+if [ "$(id -u)" -ne 0 ]; then
+    for case in existing missing; do
+        home="$FIXTURE/readonly-$case"
+        store="$FIXTURE/readonly-store-$case"
+        mkdir -p "$home" "$store"
+        [ "$case" = missing ] || printf 'managed\n' > "$store/bashrc"
+        ln -s "$store/bashrc" "$home/.bashrc"
+        chmod 555 "$store"
+        out="$(run_install "$home" 2>/dev/null)" || { chmod 755 "$store"; fail "read-only .bashrc ($case) must not fail the installer"; }
+        chmod 755 "$store"
+        [[ "$out" == "WARN: cannot write $home/.bashrc ($store/bashrc); wsstate hook not installed"* ]] \
+            || fail "expected read-only warning ($case), got: $out"
+        if [ "$case" = existing ]; then
+            [ "$(cat "$store/bashrc")" = managed ] || fail "read-only .bashrc modified: $(cat "$store/bashrc")"
+        else
+            [ ! -e "$store/bashrc" ] || fail "missing read-only .bashrc was created"
+        fi
+        assert_no_temp_files "$store"
+    done
+fi
+
 printf 'PASS: shell wsstate hook is idempotent and preserves the user .bashrc\n'

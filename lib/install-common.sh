@@ -40,10 +40,14 @@ install_shell_wsstate() {
     else
         rc_target="$rc"
     fi
-    touch "$rc_target"
-
     rc_dir="$(dirname "$rc_target")"
-    tmp="$(mktemp "$rc_dir/.bashrc.terminal-setup.XXXXXX")"
+    # Warn, never abort: this is the last step of both set -e installers, and a
+    # read-only target (home-manager links .bashrc into /nix/store) is a valid setup.
+    if ! touch "$rc_target" 2>/dev/null \
+        || ! tmp="$(mktemp "$rc_dir/.bashrc.terminal-setup.XXXXXX" 2>/dev/null)"; then
+        echo "WARN: cannot write $rc ($rc_target); wsstate hook not installed — add '[ -f \"$src\" ] && . \"$src\"' by hand"
+        return 0
+    fi
     chmod --reference="$rc_target" "$tmp"
     # Drop the old managed block. A begin marker with no end marker would drop
     # every user line after it, so awk exits 3 and .bashrc is left untouched.
