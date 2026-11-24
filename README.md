@@ -95,8 +95,9 @@ the current shell, either restart it or source `shell/wsstate.sh` once. If
 `~/.bashrc` has the `# >>> terminal-setup wsstate >>>` begin marker but no
 `# <<< terminal-setup wsstate <<<` end marker, the installer leaves the file
 untouched and prints a `WARN:` — fix the block by hand and rerun. A read-only
-`~/.bashrc` (e.g. home-manager's link into `/nix/store`) also gets only a
-`WARN:` with the line to add yourself.
+`~/.bashrc` (e.g. home-manager's link into `/nix/store`) or a `~/.bashrc`
+symlink that does not resolve (target directory gone, or a link loop) also
+gets only a `WARN:` with the line to add yourself; the link is left as is.
 
 ### Bumping rtk
 
