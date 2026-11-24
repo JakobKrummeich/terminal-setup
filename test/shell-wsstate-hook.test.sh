@@ -143,4 +143,25 @@ if [ "$(id -u)" -ne 0 ]; then
     done
 fi
 
+# ── .bashrc link that does not resolve (dotfiles dir gone, or a loop): warn, never abort ──
+# readlink -f exits 1 on both; under set -e that ended the installer silently.
+# Root-independent: no permissions involved.
+for case in missing-dir loop; do
+    home="$FIXTURE/unresolvable-$case"
+    mkdir -p "$home"
+    if [ "$case" = missing-dir ]; then
+        target="$FIXTURE/gone-dotfiles/bashrc"
+    else
+        target="$home/.bashrc.loop"
+        ln -s "$home/.bashrc" "$target"
+    fi
+    ln -s "$target" "$home/.bashrc"
+    out="$(run_install "$home" 2>/dev/null)" || fail "unresolvable .bashrc link ($case) must not fail the installer"
+    [[ "$out" == "WARN: cannot write $home/.bashrc ($target); wsstate hook not installed"* ]] \
+        || fail "expected cannot-write warning ($case), got: $out"
+    [ "$(readlink "$home/.bashrc")" = "$target" ] || fail "unresolvable .bashrc link ($case) replaced or re-pointed"
+    [ ! -e "$FIXTURE/gone-dotfiles" ] || fail "missing dotfiles dir was created"
+    assert_no_temp_files "$home"
+done
+
 printf 'PASS: shell wsstate hook is idempotent and preserves the user .bashrc\n'
