@@ -36,16 +36,19 @@ install_shell_wsstate() {
 
     mkdir -p "$(dirname "$rc")"
     if [ -L "$rc" ]; then
-        rc_target="$(readlink -f "$rc")"
+        # readlink -f exits 1 (no output) when the target's dir is gone or the link
+        # loops; empty → the WARN below, never a set -e abort. Not "$rc" as fallback:
+        # mv would replace the user's link with a file; not -m: busybox lacks it.
+        rc_target="$(readlink -f "$rc")" || rc_target=""
     else
         rc_target="$rc"
     fi
     rc_dir="$(dirname "$rc_target")"
     # Warn, never abort: this is the last step of both set -e installers, and a
     # read-only target (home-manager links .bashrc into /nix/store) is a valid setup.
-    if ! touch "$rc_target" 2>/dev/null \
+    if [ -z "$rc_target" ] || ! touch "$rc_target" 2>/dev/null \
         || ! tmp="$(mktemp "$rc_dir/.bashrc.terminal-setup.XXXXXX" 2>/dev/null)"; then
-        echo "WARN: cannot write $rc ($rc_target); wsstate hook not installed — add '[ -f \"$src\" ] && . \"$src\"' by hand"
+        echo "WARN: cannot write $rc (${rc_target:-$(readlink "$rc")}); wsstate hook not installed — add '[ -f \"$src\" ] && . \"$src\"' by hand"
         return 0
     fi
     chmod --reference="$rc_target" "$tmp"
