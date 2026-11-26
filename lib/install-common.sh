@@ -51,7 +51,12 @@ install_shell_wsstate() {
         echo "WARN: cannot write $rc (${rc_target:-$(readlink "$rc")}); wsstate hook not installed — add '[ -f \"$src\" ] && . \"$src\"' by hand"
         return 0
     fi
-    chmod --reference="$rc_target" "$tmp"
+    # Keep the user's mode (mktemp makes 0600). stat -c, not chmod --reference:
+    # busybox chmod (Alpine containers) has no --reference and its exit 1 aborted
+    # the set -e installer. If stat fails too, warn and go on: 0600 is safe.
+    local mode
+    mode="$(stat -c %a "$rc_target" 2>/dev/null)" && chmod "$mode" "$tmp" \
+        || echo "WARN: could not copy the mode of $rc_target; it is now 0600"
     # Drop the old managed block. A begin marker with no end marker would drop
     # every user line after it, so awk exits 3 and .bashrc is left untouched.
     local status=0
