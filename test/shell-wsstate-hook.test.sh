@@ -68,6 +68,26 @@ chmod 640 "$home/.bashrc"
 run_install "$home" >/dev/null
 [ "$(stat -c %a "$home/.bashrc")" = 640 ] || fail "mode changed to $(stat -c %a "$home/.bashrc")"
 
+# ── chmod without --reference (busybox in Alpine containers): mode still kept, no abort ──
+# chmod --reference used to exit 1 there, ending the set -e installer without
+# the hook and leaving the temp file behind.
+home="$FIXTURE/busybox-chmod"
+shim="$FIXTURE/busybox-chmod-bin"
+mkdir -p "$home" "$shim"
+cat > "$shim/chmod" <<EOF
+#!/bin/sh
+case "\$1" in --reference*) echo "chmod: unrecognized option '\$1'" >&2; exit 1 ;; esac
+exec $(command -v chmod) "\$@"
+EOF
+chmod +x "$shim/chmod"
+printf 'export A=1\n' > "$home/.bashrc"
+chmod 640 "$home/.bashrc"
+out="$(PATH="$shim:$PATH" run_install "$home" 2>/dev/null)" || fail "chmod without --reference must not fail the installer"
+[[ "$out" == "UPDATED: $home/.bashrc wsstate hook -> $REPO/shell/wsstate.sh" ]] || fail "unexpected output: $out"
+[ "$(cat "$home/.bashrc")" = "$(printf 'export A=1\n'; expected_block)" ] || fail "hook not installed: $(cat "$home/.bashrc")"
+[ "$(stat -c %a "$home/.bashrc")" = 640 ] || fail "mode changed to $(stat -c %a "$home/.bashrc")"
+assert_no_temp_files "$home"
+
 # ── symlinked .bashrc (dotfiles repo): link kept, target updated ───
 home="$FIXTURE/symlink"
 mkdir -p "$home" "$FIXTURE/dotfiles"
