@@ -167,10 +167,14 @@ async function makeCtx(calls: ChildCall[]): Promise<ExtensionContext> {
 	} as unknown as ExtensionContext;
 }
 
-/** The freshly spawned child's first LLM call. */
-async function spawnChild(options: typeof CHILD_OPTIONS & { contract?: string } = CHILD_OPTIONS): Promise<ChildCall> {
+/** The freshly spawned child's first LLM call; `prepare` adjusts the fake parent ctx first. */
+async function spawnChild(
+	options: typeof CHILD_OPTIONS & { contract?: string } = CHILD_OPTIONS,
+	prepare?: (ctx: ExtensionContext) => void,
+): Promise<ChildCall> {
 	const calls: ChildCall[] = [];
 	const ctx = await makeCtx(calls);
+	prepare?.(ctx);
 	try {
 		await runChildTool({ prompt: "which extensions do you have?" }, options, undefined, undefined, ctx);
 		return calls[0] ?? { tools: [], systemPrompt: "" };
@@ -220,6 +224,28 @@ test("PI_CHILD_EXTENSIONS unset: the child keeps auto-discovering <agentDir>/ext
 	delete process.env.PI_CHILD_EXTENSIONS;
 	const { tools } = await spawnChild();
 	assert.ok(tools.includes(MARKER_DISCOVERED), `discovered extension not loaded: ${tools.join(", ")}`);
+});
+
+// pi gates <cwd>/.pi/extensions (and project settings, packages, skills,
+// SYSTEM.md) behind project trust. A child built with a default SettingsManager
+// counted every project as trusted, so the first Agent/Explore call ran code from
+// a repo whose trust prompt the user had declined.
+test("untrusted project: the child skips <cwd>/.pi/extensions like its parent; trusted: loads them", async () => {
+	delete process.env.PI_CHILD_EXTENSIONS;
+	const MARKER_PROJECT = "marker_project";
+	const options = { ...CHILD_OPTIONS, tools: [...CHILD_OPTIONS.tools, MARKER_PROJECT] };
+	const toolsWhen = async (trusted: boolean) =>
+		(
+			await spawnChild(options, (ctx) => {
+				writeMarkerExtension(path.join(ctx.cwd, ".pi", "extensions"), MARKER_PROJECT);
+				Object.assign(ctx, { isProjectTrusted: () => trusted });
+			})
+		).tools;
+	const untrusted = await toolsWhen(false);
+	assert.ok(untrusted.includes(MARKER_DISCOVERED), `child did not run: ${untrusted.join(", ")}`);
+	assert.ok(!untrusted.includes(MARKER_PROJECT), "an untrusted project's extension must not load in a child");
+	const trusted = await toolsWhen(true);
+	assert.ok(trusted.includes(MARKER_PROJECT), `trusted project extension not loaded: ${trusted.join(", ")}`);
 });
 
 test("PI_CHILD_EXTENSIONS set: listed extensions load inside the child scope (contract in, no terminal escapes)", async () => {

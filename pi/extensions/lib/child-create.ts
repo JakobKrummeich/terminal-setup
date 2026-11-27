@@ -27,6 +27,7 @@ const CHILD_EXTENSIONS_ENV = "PI_CHILD_EXTENSIONS";
  *
  * createAgentSession does NOT inherit the parent process's CLI flags: called bare it
  * builds a DefaultResourceLoader that auto-discovers ~/.pi/agent/extensions and
+ * (only if the parent trusts the project, see childSettingsManager)
  * <cwd>/.pi/extensions. That is right for a normal host session (the child then has
  * the same extensions as its parent), but wrong wherever the parent deliberately ran
  * with -ne and an explicit -e list. Concretely, the podman-hands devcontainer setup
@@ -123,7 +124,7 @@ export async function createChildSession(
 	// explorer model may have been reconfigured since).
 	const saved = sessionFile ? savedModelSettings(ctx, sessionManager) : {};
 	const agentDir = getAgentDir();
-	const settingsManager = SettingsManager.create(cwd, agentDir);
+	const settingsManager = childSettingsManager(ctx, cwd, agentDir);
 	const modelRuntime = parentModelRuntime(ctx);
 	const model = saved.model ?? options.model ?? ctx.model;
 	const thinkingLevel = saved.thinkingLevel ?? options.thinkingLevel ?? ctx.thinkingLevel;
@@ -156,6 +157,18 @@ export async function createChildSession(
 	// After bindExtensions: the btw fork source (F2 `b`) wraps the finished transform chain.
 	trackChildBtw(session);
 	return session;
+}
+
+/**
+ * The child's settings under the PARENT's project-trust decision, not
+ * SettingsManager's default (trusted): pi gates <cwd>/.pi/extensions, project
+ * settings/packages/skills and SYSTEM.md on it, and a child that trusted by
+ * default ran an untrusted repo's extension code. Unknown (bare test ctx) =
+ * untrusted: that only drops project-local resources; the other default runs
+ * code the user never approved.
+ */
+function childSettingsManager(ctx: ExtensionContext, cwd: string, agentDir: string): SettingsManager {
+	return SettingsManager.create(cwd, agentDir, { projectTrusted: ctx.isProjectTrusted?.() ?? false });
 }
 
 /** A fresh session manager, or the saved one of `sessionFile` (ReopenError when unreadable). */
