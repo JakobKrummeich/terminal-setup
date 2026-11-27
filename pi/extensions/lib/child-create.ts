@@ -27,6 +27,7 @@ const CHILD_EXTENSIONS_ENV = "PI_CHILD_EXTENSIONS";
  *
  * createAgentSession does NOT inherit the parent process's CLI flags: called bare it
  * builds a DefaultResourceLoader that auto-discovers ~/.pi/agent/extensions and
+ * (only if the parent trusts the project, see childSettingsManager)
  * <cwd>/.pi/extensions. That is right for a normal host session (the child then has
  * the same extensions as its parent), but wrong wherever the parent deliberately ran
  * with -ne and an explicit -e list. Concretely, the podman-hands devcontainer setup
