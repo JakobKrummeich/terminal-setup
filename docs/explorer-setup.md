@@ -30,9 +30,8 @@ Create `~/.pi/agent/extensions/explorer-models.json`:
 ```
 
 Use `anthropic/claude-opus-5-5` (or `anthropic/claude-sonnet-5-5`) instead on
-Anthropic-only machines. The Azure provider is `azure` since Pi 1.0.3 (renamed
-from `azure-openai-responses`); on Pi 1.0.1–1.0.2 write
-`azure-openai-responses/gpt-6-luna`.
+Anthropic-only machines. The Azure provider is `azure` (renamed from
+`azure-openai-responses` in Pi 1.0.3, below the supported minimum).
 If `PI_CODING_AGENT_DIR` is set, place file under
 `$PI_CODING_AGENT_DIR/extensions/explorer-models.json` instead.
 

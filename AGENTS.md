@@ -39,7 +39,7 @@ Read `README.md` first — layout, install, known issues live there. Don't dupli
   into a `/tmp` farm, point a scratch tsconfig's `paths` at it with absolute repo
   `include`s, and run the pinned `pi/extensions/test/tools/node_modules/.bin/tsc -p`
   on it. Never install the new version to test it. Extension-visible shapes a new version may move (as of
-  1.0.1, the supported minimum — README): the system prompt is ordered XML sections
+  1.1.0, the supported minimum — README): the system prompt is ordered XML sections
   (`<tools>`/`<rules>`/`<docs>`/`<cwd>`); the prompt + tool declarations ride as
   `system` messages inside the provider `context.messages` (filtered out of
   extension `context` events); `turn_end` handlers get boundary events and may

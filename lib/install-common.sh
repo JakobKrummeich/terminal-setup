@@ -84,8 +84,10 @@ EOF
     echo "UPDATED: $rc wsstate hook -> $src"
 }
 
-# Oldest pi the extensions support; README "Install pi runtime".
-PI_MIN_VERSION="1.0.1"
+# Oldest pi the extensions support; README "Install pi runtime". 1.1.0: context-cap's
+# /handoff reads agent_settled's `aborted` (new in 1.1.0); older pi leaves it
+# undefined, so an ESC'd /handoff restarted its demand run. Raise on new API use.
+PI_MIN_VERSION="1.1.0"
 
 version_lt() { # <a> <b>: true if dotted numeric version a < b; pure bash (no sort -V)
     local -a a b
