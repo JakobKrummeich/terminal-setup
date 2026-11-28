@@ -19,12 +19,13 @@ run_with_pi_version() { # <version-output> → warn_if_pi_too_old stdout
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-for version in 0.99.1 1.0.0; do
+# 1.0.x: no agent_settled `aborted` (new in 1.1.0), which context-cap's /handoff reads.
+for version in 0.99.1 1.0.0 1.0.1 1.0.4; do
     out="$(run_with_pi_version "$version")"
     [[ "$out" == *"WARNING: pi $version is older than the supported minimum"* ]] || fail "$version must warn, got: $out"
 done
 
-for version in 1.0.1 1.0.4 1.1.0 2.0.0; do
+for version in 1.1.0 1.1.1 1.6.0 2.0.0; do
     out="$(run_with_pi_version "$version")"
     [ -z "$out" ] || fail "$version must not warn, got: $out"
 done

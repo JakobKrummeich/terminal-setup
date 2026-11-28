@@ -77,7 +77,9 @@ Run `install-pi.sh` as your normal user, **never with `sudo`**: everything it in
 per-user (`~/.pi`, `systemd --user`, `~/.bashrc`); under `sudo` it warns that those steps act as
 root.
 
-**Minimum supported pi: 1.0.1** (`PI_MIN_VERSION` in `lib/install-common.sh`). The
+**Minimum supported pi: 1.1.0** (`PI_MIN_VERSION` in `lib/install-common.sh`). `/handoff`
+reads `agent_settled`'s `aborted` flag (new in 1.1.0 — on older pi an ESC'd `/handoff`
+restarts its demand run instead of cancelling). The
 extensions draw their compact tool-call rows through `pi.registerToolRenderer()`
 (new in 1.0.1 — on older pi, explore/subagent/timer/context-cap fail to load), on top
 of earlier extension APIs (e.g. actionable `turn_end` boundary results, transcript
